@@ -1,12 +1,101 @@
 @import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-500.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
 
-:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-size: 13px; }
-.mono { font-family: "SF Mono", Menlo, monospace; }
-.cm-editor { height: 100%; background: #18181b; }
+/* Light is the default; `.dark` on <html> swaps every token. */
+:root {
+  --canvas: #f3f5f9;      /* frost: sidebar, toolbars */
+  --panel: #ffffff;       /* editor, grid, dialogs */
+  --raised: #e9edf4;      /* hover, chips, buttons */
+  --raised2: #dde3ed;
+  --line: #e1e6ee;
+  --line-strong: #c9d1de;
+  --ink: #141c2e;
+  --soft: #44526b;
+  --muted: #7c8aa3;
+  --accent: #2f5af5;
+  --accent-hover: #2447d6;
+  --accent-soft: #e4eafe;
+  --warn: #b45309;  --warn-soft: #fdeed0;
+  --ok: #1f7a3d;    --ok-soft: #e1f3e6;
+  --danger: #c2362f; --danger-soft: #fbe3e1;
+  --env-local: #7c8aa3; --env-staging: #d98a00; --env-production: #d6453d;
+  --shadow: 0 1px 2px rgb(20 28 46 / .06), 0 8px 28px rgb(20 28 46 / .14);
+  --tok-keyword: #2f5af5; --tok-string: #1f7a3d; --tok-number: #b45309; --tok-comment: #8a97ad; --tok-type: #7a3fd1; --tok-fn: #0f7490;
+  color-scheme: light;
+}
+.dark {
+  --canvas: #11151f; --panel: #161b28; --raised: #1f2636; --raised2: #2a3347;
+  --line: #252e41; --line-strong: #364259;
+  --ink: #e6eaf3; --soft: #a8b3c7; --muted: #75829b;
+  --accent: #6f8cff; --accent-hover: #8aa1ff; --accent-soft: #212b4d;
+  --warn: #f0b04a; --warn-soft: #3a2d14;
+  --ok: #6fcf8b; --ok-soft: #16301f;
+  --danger: #ff7b72; --danger-soft: #3d1b1b;
+  --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 10px 32px rgb(0 0 0 / .5);
+  --tok-keyword: #8aa1ff; --tok-string: #7fd69a; --tok-number: #f0b04a; --tok-comment: #6b7890; --tok-type: #c19bff; --tok-fn: #5cc8e0;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+  --color-canvas: var(--canvas); --color-panel: var(--panel); --color-raised: var(--raised); --color-raised2: var(--raised2);
+  --color-line: var(--line); --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink); --color-soft: var(--soft); --color-muted: var(--muted);
+  --color-accent: var(--accent); --color-accent-hover: var(--accent-hover); --color-accent-soft: var(--accent-soft);
+  --color-warn: var(--warn); --color-warn-soft: var(--warn-soft);
+  --color-ok: var(--ok); --color-ok-soft: var(--ok-soft);
+  --color-danger: var(--danger); --color-danger-soft: var(--danger-soft);
+  --shadow-pop: var(--shadow);
+}
+
+html, body { background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 13px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input, select, textarea { font: inherit; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+
+/* CodeMirror, themed through the tokens above */
+.cm-editor { height: 100%; background: var(--panel); color: var(--ink); }
 .cm-editor.cm-focused { outline: none; }
-.cm-gutters { background: #18181b !important; border: none !important; color: #52525b !important; }
-.cm-content, .cm-scroller { font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+.cm-gutters { background: var(--panel) !important; border: none !important; color: var(--muted) !important; }
+.cm-activeLineGutter { background: transparent !important; color: var(--soft) !important; }
+.cm-activeLine { background: color-mix(in srgb, var(--accent) 5%, transparent) !important; }
+.cm-content, .cm-scroller { font-family: var(--font-mono); font-size: 13px; line-height: 1.6; }
+.cm-cursor { border-left-color: var(--accent) !important; }
+.cm-selectionBackground, .cm-editor .cm-selectionBackground { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }
+.cm-tooltip { background: var(--panel) !important; border: 1px solid var(--line-strong) !important; border-radius: 8px !important; box-shadow: var(--shadow); overflow: hidden; }
+.cm-tooltip-autocomplete ul { font-family: var(--font-mono) !important; font-size: 12px; }
+.cm-tooltip-autocomplete ul li { padding: 3px 10px !important; color: var(--ink); }
+.cm-tooltip-autocomplete ul li[aria-selected] { background: var(--accent) !important; color: #fff !important; }
+.cm-completionDetail { color: var(--muted); font-style: normal !important; margin-left: 1em; }
+.cm-tooltip-autocomplete ul li[aria-selected] .cm-completionDetail { color: rgb(255 255 255 / .75); }
+.cm-completionIcon { display: none; }
+
 .titlebar { -webkit-app-region: drag; }
-.titlebar * { -webkit-app-region: no-drag; }
-.grid-cell { height: 24px; line-height: 24px; padding: 0 8px; border-right: 1px solid #27272a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.null { color: #71717a; font-style: italic; }
+.titlebar button, .titlebar input, .titlebar select, .titlebar [data-nodrag] { -webkit-app-region: no-drag; }
+
+/* Data grid */
+.grid-cell { height: 26px; line-height: 26px; padding: 0 10px; border-right: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.null-chip { display: inline-block; line-height: 14px; padding: 0 5px; border-radius: 4px; background: var(--raised); color: var(--muted); font-size: 10px; letter-spacing: .02em; vertical-align: 1px; }
+.gutter { color: var(--muted); text-align: right; background: var(--canvas); border-right: 1px solid var(--line-strong); }
+
+/* Small shared pieces */
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px; background: var(--raised); color: var(--ink); font-weight: 500; transition: background .12s; }
+.btn:hover:not(:disabled) { background: var(--raised2); }
+.btn:disabled { opacity: .45; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-ghost { background: transparent; color: var(--soft); }
+.btn-ghost:hover:not(:disabled) { background: var(--raised); color: var(--ink); }
+.field { height: 28px; padding: 0 9px; border-radius: 7px; background: var(--panel); border: 1px solid var(--line-strong); color: var(--ink); outline: none; }
+.field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.kbd { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); padding: 0 4px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel); }
+.pill { display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 7px; border-radius: 9px; background: var(--raised); color: var(--soft); font-size: 11px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

@@ -53,3 +53,20 @@ test("T-SQL uses TOP instead of LIMIT", () => {
   m.limit = 10;
   assert.equal(buildSql(m, (s) => `[${s}]`, true), "SELECT TOP 10 *\nFROM [dbo].[t];".replace("[dbo].", "[dbo].") );
 });
+
+import { buildWhere } from "../.test-build/builder-sql.mjs";
+
+test("row filter: operators, escaping, AND/OR, blanks skipped", () => {
+  const q = (s) => `"${s}"`;
+  assert.equal(buildWhere([], q), "");
+  assert.equal(buildWhere([
+    { col: "status", op: "=", value: "paid" },
+    { col: "total", op: ">=", value: "100" },
+    { col: "name", op: "contains", value: "50%_o'b" },
+    { col: "x", op: "=", value: "" },                       // blank value: ignored
+    { col: "note", op: "is null", value: "", or: true },
+    { col: "id", op: "in list", value: "1, 2 ,three" },
+  ], q), `"status" = 'paid' AND "total" >= 100 AND "name" LIKE '%50!%!_o''b%' ESCAPE '!' OR "note" IS NULL AND "id" IN (1, 2, 'three')`);
+  // The first rule's AND/OR is irrelevant; a leading OR must not leak into the SQL.
+  assert.equal(buildWhere([{ col: "a", op: "begins with", value: "x", or: true }], q), `"a" LIKE 'x%' ESCAPE '!'`);
+});

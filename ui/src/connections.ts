@@ -15,17 +15,17 @@ const KINDS: Kind[] = [
   { id: "greenplum", label: "Greenplum", port: 5432 },
 ];
 
-const field = "w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 outline-none focus:border-blue-600";
+const field = "w-full bg-panel border border-line-strong rounded px-2 py-1 outline-none focus:border-accent";
 
 /** Connection manager modal: saved list on the left, form on the right. */
 export function showConnectionManager(onConnect: (connId: number, p: Profile) => Promise<void>) {
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50 select-none";
   overlay.innerHTML = `
-    <div class="w-[760px] h-[560px] bg-zinc-800 rounded-lg shadow-2xl border border-zinc-700 flex overflow-hidden">
-      <div class="w-56 bg-zinc-900 border-r border-zinc-700 flex flex-col">
+    <div class="w-[760px] h-[560px] bg-raised rounded-lg shadow-2xl border border-line-strong flex overflow-hidden">
+      <div class="w-56 bg-panel border-r border-line-strong flex flex-col">
         <div id="list" class="flex-1 overflow-auto p-1"></div>
-        <button id="new" class="m-2 bg-zinc-800 hover:bg-zinc-700 rounded py-1">+ New connection</button>
+        <button id="new" class="m-2 bg-raised hover:bg-raised2 rounded py-1">+ New connection</button>
       </div>
       <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[12.5px]">
         <label>Name <input name="name" class="${field}" placeholder="Local Postgres"/></label>
@@ -46,14 +46,14 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
           </div>
         </div>
         <div id="file" class="hidden flex gap-2 items-end"><label class="flex-1">File <input name="path" class="${field}"/></label>
-          <button type="button" id="browse" class="bg-zinc-700 hover:bg-zinc-600 rounded px-3 py-1">Browse…</button></div>
+          <button type="button" id="browse" class="bg-raised2 hover:bg-raised2 rounded px-3 py-1">Browse…</button></div>
         <div id="msg" class="text-[12px] min-h-4 mt-1"></div>
         <div class="mt-auto flex gap-2 justify-end">
-          <button type="button" id="del" class="mr-auto text-red-400 hover:text-red-300">Delete</button>
-          <button type="button" id="close" class="px-3 py-1 rounded hover:bg-zinc-700">Close</button>
-          <button type="button" id="test" class="px-3 py-1 rounded bg-zinc-700 hover:bg-zinc-600">Test</button>
-          <button type="button" id="save" class="px-3 py-1 rounded bg-zinc-700 hover:bg-zinc-600">Save</button>
-          <button type="submit" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500">Connect</button>
+          <button type="button" id="del" class="mr-auto text-danger hover:text-danger">Delete</button>
+          <button type="button" id="close" class="px-3 py-1 rounded hover:bg-raised2">Close</button>
+          <button type="button" id="test" class="px-3 py-1 rounded bg-raised2 hover:bg-raised2">Test</button>
+          <button type="button" id="save" class="px-3 py-1 rounded bg-raised2 hover:bg-raised2">Save</button>
+          <button type="submit" class="px-3 py-1 rounded btn-primary">Connect</button>
         </div>
       </form>
     </div>`;
@@ -61,7 +61,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   const q = <T extends HTMLElement>(s: string) => overlay.querySelector(s) as T;
   const form = q<HTMLFormElement>("#form");
   const el = (n: string) => form.elements.namedItem(n) as HTMLInputElement;
-  const msg = (t: string, bad = false) => { const m = q("#msg"); m.textContent = t; m.className = "text-[12px] min-h-4 mt-1 " + (bad ? "text-red-400" : "text-green-400"); };
+  const msg = (t: string, bad = false) => { const m = q("#msg"); m.textContent = t; m.className = "text-[12px] min-h-4 mt-1 " + (bad ? "text-danger" : "text-ok"); };
   let current: Profile | null = null;
 
   const kindOf = () => KINDS.find((k) => k.id === el("kind").value)!;
@@ -130,8 +130,8 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     const list = await api.listConnections();
     q("#list").replaceChildren(...list.map((p) => {
       const d = document.createElement("div");
-      d.className = "px-2 py-1.5 rounded cursor-default hover:bg-zinc-800 " + (p.id === current?.id ? "bg-zinc-700" : "");
-      d.innerHTML = `<div class="truncate">${p.name.replace(/</g, "&lt;")}</div><div class="text-[10px] text-zinc-500">${p.kind}</div>`;
+      d.className = "px-2 py-1.5 rounded cursor-default hover:bg-raised " + (p.id === current?.id ? "bg-raised2" : "");
+      d.innerHTML = `<div class="truncate">${p.name.replace(/</g, "&lt;")}</div><div class="text-[10px] text-muted">${p.kind}</div>`;
       d.onclick = () => { fill(p); refresh(); };
       d.ondblclick = async () => { fill(p); form.requestSubmit(); };
       return d;

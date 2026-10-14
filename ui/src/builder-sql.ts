@@ -82,3 +82,38 @@ export function suggestJoin(existing: SchemaTable[], next: SchemaTable): { left:
   }
   return null;
 }
+
+/** Row filter rules for the table view (column / operator / value). */
+export const FILTER_OPS = ["=", "<>", "<", ">", "<=", ">=", "contains", "begins with", "ends with", "in list", "is null", "is not null"] as const;
+export type FilterOp = (typeof FILTER_OPS)[number];
+export interface FilterRule { col: string; op: FilterOp; value: string; or?: boolean }
+
+const str = (v: string) => `'${v.replace(/'/g, "''")}'`;
+// `!` is the LIKE escape: unlike backslash it means the same thing in every dialect's string literals.
+const likeEsc = (v: string) => v.replace(/[!%_]/g, (c) => "!" + c);
+
+/** WHERE condition (without the keyword) for the rules. Empty rules and blank values are skipped. */
+export function buildWhere(rules: FilterRule[], q: Quote): string {
+  const parts: string[] = [];
+  for (const r of rules) {
+    if (!r.col) continue;
+    const c = q(r.col);
+    let cond = "";
+    switch (r.op) {
+      case "is null": cond = `${c} IS NULL`; break;
+      case "is not null": cond = `${c} IS NOT NULL`; break;
+      case "contains": cond = r.value === "" ? "" : `${c} LIKE ${str("%" + likeEsc(r.value) + "%")} ESCAPE '!'`; break;
+      case "begins with": cond = r.value === "" ? "" : `${c} LIKE ${str(likeEsc(r.value) + "%")} ESCAPE '!'`; break;
+      case "ends with": cond = r.value === "" ? "" : `${c} LIKE ${str("%" + likeEsc(r.value))} ESCAPE '!'`; break;
+      case "in list": {
+        const items = r.value.split(",").map((s) => s.trim()).filter(Boolean);
+        cond = items.length ? `${c} IN (${items.map(literal).join(", ")})` : "";
+        break;
+      }
+      default: cond = r.value === "" ? "" : `${c} ${r.op} ${literal(r.value)}`;
+    }
+    if (!cond) continue;
+    parts.push(parts.length ? `${r.or ? "OR" : "AND"} ${cond}` : cond);
+  }
+  return parts.join(" ");
+}

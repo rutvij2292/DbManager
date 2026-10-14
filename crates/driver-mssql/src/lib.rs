@@ -105,6 +105,13 @@ impl Connection for MsConn {
         };
         format!("SELECT TOP {limit} * FROM {t}")
     }
+    fn select_where(&self, schema: Option<&str>, name: &str, filter: &str, limit: usize) -> String {
+        let t = match schema {
+            Some(s) => format!("{}.{}", self.quote(s), self.quote(name)),
+            None => self.quote(name),
+        };
+        format!("SELECT TOP {limit} * FROM {t} WHERE {filter}")
+    }
     async fn ping(&self) -> Result<()> {
         self.query("SELECT 1").await.map(|_| ())
     }

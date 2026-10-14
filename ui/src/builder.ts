@@ -1,7 +1,7 @@
 import type { SchemaTable } from "./api";
 import { buildSql, emptyModel, suggestJoin, OPS, type Agg, type JoinType, type Model, type Quote, type Ref } from "./builder-sql";
 
-const sel = "bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 outline-none focus:border-blue-600";
+const sel = "bg-panel border border-line-strong rounded px-1 py-0.5 outline-none focus:border-accent";
 const key = (t: { table: string; schema: string | null }) => `${t.schema ?? ""}.${t.table}`;
 const tkey = (t: SchemaTable) => `${t.schema ?? ""}.${t.name}`;
 
@@ -11,7 +11,7 @@ const tkey = (t: SchemaTable) => `${t.schema ?? ""}.${t.name}`;
  */
 export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote, onSql: (sql: string) => void, top: () => boolean = () => false): HTMLElement {
   const root = document.createElement("div");
-  root.className = "h-full overflow-auto p-2 text-[12px] bg-zinc-950 border-b border-zinc-700";
+  root.className = "h-full overflow-auto p-2 text-[12px] bg-canvas border-b border-line-strong";
   let m: Model = emptyModel();
 
   const tables = () => getTables();
@@ -40,7 +40,7 @@ export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote
   function button(label: string, on: () => void, cls = "") {
     const b = document.createElement("button");
     b.textContent = label;
-    b.className = "px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 " + cls;
+    b.className = "px-2 py-0.5 rounded bg-raised hover:bg-raised2 " + cls;
     b.onclick = on;
     return b;
   }
@@ -48,7 +48,7 @@ export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote
     const d = document.createElement("div");
     d.className = "mb-2";
     const h = document.createElement("div");
-    h.className = "text-[10px] uppercase tracking-wide text-zinc-500 mb-1";
+    h.className = "text-[10px] uppercase tracking-wide text-muted mb-1";
     h.textContent = title;
     d.append(h, ...kids);
     return d;
@@ -107,7 +107,7 @@ export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote
       for (const t of used()) {
         const g = document.createElement("div");
         g.className = "min-w-40";
-        g.innerHTML = `<div class="text-zinc-400 font-semibold">${t.name.replace(/</g, "&lt;")}</div>`;
+        g.innerHTML = `<div class="text-soft font-semibold">${t.name.replace(/</g, "&lt;")}</div>`;
         for (const c of t.columns) {
           const r = refOf(t, c);
           const existing = m.cols.find((x) => refKey(x.ref) === refKey(r));

@@ -26,7 +26,8 @@ impl Driver for MysqlDriver {
             _ => Some(SslOpts::default().with_danger_accept_invalid_certs(true).with_danger_skip_domain_validation(true)),
         };
         let opts: Opts = OptsBuilder::default()
-            .ssl_opts(ssl)
+            .ssl_opts(if cfg.socket.is_some() { None } else { ssl })
+            .socket(cfg.socket.clone().filter(|s| !s.is_empty()))
             .ip_or_hostname(cfg.host.clone().unwrap_or_else(|| "127.0.0.1".into()))
             .tcp_port(cfg.port.unwrap_or(3306))
             .user(cfg.user.clone().or(Some("root".into())))

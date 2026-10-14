@@ -1,6 +1,6 @@
 [package]
 name = "lattice"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 
 [build-dependencies]
@@ -22,3 +22,4 @@ driver-mssql = { path = "../crates/driver-mssql" }
 driver-redis = { path = "../crates/driver-redis" }
 driver-mongo = { path = "../crates/driver-mongo" }
 dataio = { path = "../crates/dataio" }
+tableplus-import = { path = "../crates/tableplus-import" }

@@ -5,7 +5,7 @@ export interface Col { name: string; type_name: string }
 export interface Summary { query_id: number; columns: Col[]; row_count: number; truncated: boolean; affected: number | null; elapsed_ms: number }
 export interface ObjectRef { schema: string | null; name: string; kind: string }
 export interface SchemaTable { schema: string | null; name: string; columns: string[] }
-export interface Profile { id: string; name: string; kind: string; host?: string | null; port?: number | null; user?: string | null; database?: string | null; path?: string | null; ssl?: string | null; ssh_host?: string | null; ssh_port?: number | null; ssh_user?: string | null; ssh_key?: string | null }
+export interface Profile { id: string; name: string; kind: string; host?: string | null; port?: number | null; user?: string | null; database?: string | null; path?: string | null; ssl?: string | null; ssh_host?: string | null; ssh_port?: number | null; ssh_user?: string | null; ssh_key?: string | null; socket?: string | null; environment?: string | null; color?: string | null }
 export interface ColumnInfo { name: string; type_name: string; nullable: boolean; primary_key: boolean; default: string | null }
 export interface PlanNode { op: string; detail: string; relation: string | null; est_rows: number | null; actual_rows: number | null; cost: number | null; time_ms: number | null; children: PlanNode[] }
 export type Change =
@@ -35,7 +35,7 @@ export const api = {
   testConnection: (config: ConnConfig) => invoke<void>("test_connection", { config }),
   connectSaved: (id: string) => invoke<number>("connect_saved", { id }),
   schemaMap: (connId: number) => invoke<SchemaTable[]>("schema_map", { connId }),
-  selectAllSql: (connId: number, schema: string | null, name: string, limit?: number) => invoke<string>("select_all_sql", { connId, schema, name, limit }),
+  selectAllSql: (connId: number, schema: string | null, name: string, limit?: number, filter?: string) => invoke<string>("select_all_sql", { connId, schema, name, limit, filter }),
   exportData: (connId: number, sql: string, path: string, options: ExportOptions, job: number) => invoke<number>("export_data", { connId, sql, path, options, job }),
   importPreview: (path: string, hasHeader: boolean, delimiter?: string) => invoke<ImportPreview>("import_preview", { path, hasHeader, delimiter }),
   importData: (connId: number, path: string, options: ImportOptions, job: number) => invoke<{ rows: number; created: boolean }>("import_data", { connId, path, options, job }),
@@ -46,6 +46,8 @@ export const api = {
   cancelQuery: (connId: number) => invoke<void>("cancel_query", { connId }),
   applyStructure: (connId: number, schema: string | null, table: string, changes: StructChange[], preview: boolean) =>
     invoke<string[]>("apply_structure", { connId, schema, table, changes, preview }),
+  tableplusScan: () => invoke<TpEntry[]>("tableplus_scan"),
+  tableplusImport: (ids: string[], passwords: boolean) => invoke<{ imported: number; passwords_copied: number; passwords_missing: number }>("tableplus_import", { ids, passwords }),
   runQuery: (connId: number, sql: string) => invoke<Summary>("run_query", { connId, sql }),
   getRows: (queryId: number, offset: number, limit: number) => invoke<Val[][]>("get_rows", { queryId, offset, limit }),
   release: (queryId: number) => invoke<void>("release_query", { queryId }),
@@ -63,3 +65,5 @@ export type ExportFormat = "csv" | "tsv" | "json" | "jsonl" | "sql";
 export interface ExportOptions { format: ExportFormat; header: boolean; delimiter?: string; table?: string; batch_rows?: number }
 export interface ImportPreview { headers: string[]; sample: (string | null)[][]; types: ("integer" | "real" | "text")[]; delimiter: string; format: string }
 export interface ImportOptions { schema: string | null; table: string; create: boolean; has_header: boolean; delimiter?: string; mapping: (string | null)[]; empty_as_null: boolean }
+
+export interface TpEntry { id: string; name: string; kind: string | null; driver: string; host?: string | null; port?: number | null; user?: string | null; database?: string | null; path?: string | null; socket?: string | null; ssh_host?: string | null; environment?: string | null; already_imported: boolean }

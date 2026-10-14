@@ -129,6 +129,14 @@ struct Profile {
     ssh_user: Option<String>,
     #[serde(default)]
     ssh_key: Option<String>,
+    #[serde(default)]
+    socket: Option<String>,
+    /// local / staging / production — shown as a badge.
+    #[serde(default)]
+    environment: Option<String>,
+    /// Accent colour (hex) shown on the connection.
+    #[serde(default)]
+    color: Option<String>,
 }
 
 fn profiles_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -166,6 +174,72 @@ fn save_connection(app: tauri::AppHandle, mut profile: Profile, password: Option
     Ok(profile)
 }
 
+/// Connections found in the TablePlus app data, flagged if already imported.
+#[derive(Serialize)]
+struct TpEntry {
+    #[serde(flatten)]
+    conn: tableplus_import::Imported,
+    already_imported: bool,
+}
+
+#[tauri::command]
+fn tableplus_scan(app: tauri::AppHandle) -> Result<Vec<TpEntry>, String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let file = home.join(tableplus_import::CONNECTIONS_PATH);
+    let bytes = std::fs::read(&file).map_err(|_| "TablePlus connections were not found on this Mac".to_string())?;
+    let existing = read_profiles(&app)?;
+    Ok(tableplus_import::parse(&bytes)?
+        .into_iter()
+        .map(|c| TpEntry { already_imported: existing.iter().any(|p| p.id == c.id), conn: c })
+        .collect())
+}
+
+#[derive(Serialize, Default)]
+struct TpSummary {
+    imported: usize,
+    passwords_copied: usize,
+    passwords_missing: usize,
+}
+
+/// Import the chosen TablePlus connections. The profile id is TablePlus' id, so importing twice
+/// updates instead of duplicating. With `passwords`, each saved password is read from the macOS
+/// Keychain via `security`, which makes macOS ask the user for permission per item.
+#[tauri::command]
+async fn tableplus_import(app: tauri::AppHandle, ids: Vec<String>, passwords: bool) -> Result<TpSummary, String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(home.join(tableplus_import::CONNECTIONS_PATH)).map_err(|e| e.to_string())?;
+    let all = tableplus_import::parse(&bytes)?;
+    let mut profiles = read_profiles(&app)?;
+    let mut sum = TpSummary::default();
+    for c in all.into_iter().filter(|c| ids.contains(&c.id)) {
+        let Some(kind) = c.kind.clone() else { continue };
+        profiles.retain(|p| p.id != c.id);
+        profiles.push(Profile {
+            id: c.id.clone(), name: c.name.clone(), kind, host: c.host, port: c.port, user: c.user, database: c.database, path: c.path,
+            ssl: c.ssl, ssh_host: c.ssh_host, ssh_port: c.ssh_port, ssh_user: c.ssh_user, ssh_key: c.ssh_key,
+            socket: c.socket, environment: c.environment, color: c.color,
+        });
+        sum.imported += 1;
+        if passwords {
+            let account = format!("{}_database", c.id);
+            let out = tokio::process::Command::new("/usr/bin/security")
+                .args(["find-generic-password", "-s", tableplus_import::KEYCHAIN_SERVICE, "-a", &account, "-w"])
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+            let pw = String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_string();
+            if out.status.success() && !pw.is_empty() {
+                keychain(&c.id)?.set_password(&pw).map_err(|e| e.to_string())?;
+                sum.passwords_copied += 1;
+            } else {
+                sum.passwords_missing += 1; // none saved, or the user declined the prompt
+            }
+        }
+    }
+    std::fs::write(profiles_path(&app)?, serde_json::to_string_pretty(&profiles).unwrap()).map_err(|e| e.to_string())?;
+    Ok(sum)
+}
+
 #[tauri::command]
 fn delete_connection(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let mut all = read_profiles(&app)?;
@@ -187,7 +261,7 @@ async fn connect_saved(app: tauri::AppHandle, state: State<'_, AppState>, id: St
     let password = keychain(&id).ok().and_then(|e| e.get_password().ok());
     let config = ConnConfig {
         kind: p.kind, path: p.path, host: p.host, port: p.port, user: p.user, password, database: p.database,
-        ssl: p.ssl, ssh_host: p.ssh_host, ssh_port: p.ssh_port, ssh_user: p.ssh_user, ssh_key: p.ssh_key,
+        ssl: p.ssl, ssh_host: p.ssh_host, ssh_port: p.ssh_port, ssh_user: p.ssh_user, ssh_key: p.ssh_key, socket: p.socket,
     };
     let (conn, tunnel) = open_conn_tunneled(config).await?;
     let cid = state.id();
@@ -204,8 +278,13 @@ async fn schema_map(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<Sche
 }
 
 #[tauri::command]
-fn select_all_sql(state: State<'_, AppState>, conn_id: u64, schema: Option<String>, name: String, limit: Option<usize>) -> Result<String, String> {
-    Ok(state.conn(conn_id)?.select_all(schema.as_deref(), &name, limit.unwrap_or(1000)))
+fn select_all_sql(state: State<'_, AppState>, conn_id: u64, schema: Option<String>, name: String, limit: Option<usize>, filter: Option<String>) -> Result<String, String> {
+    let conn = state.conn(conn_id)?;
+    let limit = limit.unwrap_or(1000);
+    Ok(match filter.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+        Some(f) => conn.select_where(schema.as_deref(), &name, f, limit),
+        None => conn.select_all(schema.as_deref(), &name, limit),
+    })
 }
 
 #[derive(Serialize, Clone)]
@@ -372,7 +451,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

@@ -23,7 +23,16 @@ impl Driver for PostgresDriver {
 
 async fn connect_client(cfg: &ConnConfig) -> Result<(Client, Option<MakeTlsConnector>)> {
     let mut c = tokio_postgres::Config::new();
-    c.host(cfg.host.as_deref().unwrap_or("127.0.0.1"));
+    match cfg.socket.as_deref().filter(|s| !s.is_empty()) {
+        // tokio-postgres takes the socket *directory*; accept either a directory or the socket file.
+        Some(sock) => {
+            let p = std::path::Path::new(sock);
+            c.host_path(if p.is_dir() { p } else { p.parent().unwrap_or(p) });
+        }
+        None => {
+            c.host(cfg.host.as_deref().unwrap_or("127.0.0.1"));
+        }
+    }
     c.port(cfg.port.unwrap_or(5432));
     c.user(cfg.user.as_deref().unwrap_or("postgres"));
     if let Some(p) = &cfg.password {

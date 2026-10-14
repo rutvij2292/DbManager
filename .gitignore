@@ -4,3 +4,5 @@ dist/
 .DS_Store
 .test-build/
 bench/
+.playwright-mcp/
+shot-*.png

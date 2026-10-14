@@ -1,6 +1,19 @@
 import { api, show, type Summary, type Val } from "./api";
 
-const ROW_H = 24, PAGE = 200, MIN_W = 80;
+const ROW_H = 26, PAGE = 200, MIN_W = 72, GUTTER = 48;
+
+type Kind = "num" | "text" | "time" | "bool" | "json";
+/** Rough value family of a column, from its declared type. Drives alignment, width and the header glyph. */
+function kindOf(type: string): Kind {
+  const t = type.toLowerCase();
+  if (/bool|bit\b|tinyint\(1\)/.test(t)) return "bool";
+  if (/int|serial|dec|numeric|float|double|real|number|money|long/.test(t)) return "num";
+  if (/date|time|year/.test(t)) return "time";
+  if (/json|bson|array|object/.test(t)) return "json";
+  return "text";
+}
+const GLYPH: Record<Kind, string> = { num: "#", text: "Aa", time: "◷", bool: "◐", json: "{}" };
+const WIDTH: Record<Kind, number> = { num: 96, text: 170, time: 172, bool: 84, json: 200 };
 
 /** Virtualized result grid: only visible rows are in the DOM; rows load in pages from Rust. */
 export class Grid {
@@ -23,8 +36,8 @@ export class Grid {
   inserted: Val[][] = [];
 
   constructor() {
-    this.el.className = "h-full flex flex-col mono text-[12px] bg-zinc-900";
-    this.head.className = "flex bg-zinc-800 border-b border-zinc-700 overflow-hidden shrink-0";
+    this.el.className = "h-full flex flex-col text-[12.5px] bg-panel";
+    this.head.className = "flex bg-canvas border-b border-line-strong overflow-hidden shrink-0";
     this.body.className = "flex-1 overflow-auto relative";
     this.spacer.style.position = "relative";
     this.rowsLayer.style.position = "absolute";
@@ -79,7 +92,7 @@ export class Grid {
     const n = this.summary!.row_count;
     const cur = r >= n ? this.inserted[r - n][c] : this.edits.get(r)?.get(c) ?? this.original(r)?.[c];
     const input = document.createElement("input");
-    input.className = "w-full h-full bg-zinc-950 text-zinc-100 outline outline-1 outline-blue-500 px-1 mono";
+    input.className = "w-full h-full bg-panel text-ink outline outline-2 outline-accent px-1 mono";
     input.value = !cur || cur.t === "Null" ? "" : show(cur);
     input.placeholder = "NULL";
     cell.replaceChildren(input);
@@ -115,16 +128,23 @@ export class Grid {
     this.rowsLayer.innerHTML = "";
     this.body.scrollTop = 0;
     if (!s) return;
-    this.widths = s.columns.map((c) => Math.max(MIN_W, Math.min(280, c.name.length * 9 + 24)));
+    this.widths = s.columns.map((c) => Math.max(MIN_W, WIDTH[kindOf(c.type_name)], Math.min(260, c.name.length * 8 + 54)));
+    const corner = document.createElement("div");
+    corner.className = "grid-cell gutter shrink-0";
+    corner.style.width = GUTTER + "px";
+    this.head.append(corner);
     s.columns.forEach((c, i) => {
+      const k = kindOf(c.type_name);
       const h = document.createElement("div");
-      h.className = "grid-cell font-semibold text-zinc-300 shrink-0";
+      h.className = "grid-cell font-medium text-ink shrink-0 flex items-center gap-1.5";
       h.style.width = this.widths[i] + "px";
-      h.textContent = c.name;
-      h.title = `${c.name} ${c.type_name}`;
+      h.style.justifyContent = k === "num" ? "flex-end" : "flex-start";
+      h.title = `${c.name}  ${c.type_name}`;
+      h.innerHTML = `<span class="text-muted font-normal" style="font-size:10.5px;font-family:var(--font-mono)">${GLYPH[k]}</span><span class="truncate"></span>`;
+      (h.lastElementChild as HTMLElement).textContent = c.name;
       this.head.append(h);
     });
-    const total = this.widths.reduce((a, b) => a + b, 0);
+    const total = this.widths.reduce((a, b) => a + b, 0) + GUTTER;
     this.resize();
     this.spacer.style.width = total + "px";
     this.rowsLayer.style.width = total + "px";
@@ -144,21 +164,34 @@ export class Grid {
       const row = isNew ? this.inserted[r - s.row_count] : this.cache.get(Math.floor(r / PAGE))?.[r % PAGE];
       const div = document.createElement("div");
       const gone = this.deleted.has(r);
-      div.className = "flex hover:bg-zinc-800 " + (gone ? "bg-red-950/60 line-through text-zinc-500 " : isNew ? "bg-green-950/50 " : "") + (r === this.sel ? "outline outline-1 -outline-offset-1 outline-blue-500 " : r % 2 ? "bg-zinc-900" : "bg-zinc-900/60");
+      const selected = r === this.sel;
+      div.className = "flex " + (gone ? "bg-danger-soft line-through text-muted " : isNew ? "bg-ok-soft " : selected ? "bg-accent-soft " : r % 2 ? "bg-canvas/50 " : "") + (selected || gone || isNew ? "" : "hover:bg-accent-soft/60");
       div.onclick = () => { this.sel = r; this.render(); };
-      s.columns.forEach((_, i) => {
+      const g = document.createElement("div");
+      g.className = "grid-cell gutter shrink-0 mono text-[11px]";
+      g.style.width = GUTTER + "px";
+      g.textContent = isNew ? "new" : String(r + 1);
+      div.append(g);
+      s.columns.forEach((col, i) => {
         const c = document.createElement("div");
         c.className = "grid-cell shrink-0";
         c.style.width = this.widths[i] + "px";
         const edited = this.edits.get(r)?.get(i);
         const v = edited ?? row?.[i];
-        if (edited) c.classList.add("bg-amber-900/50");
+        if (edited) c.classList.add("bg-warn-soft");
         c.ondblclick = () => this.startEdit(r, i, c);
         if (v) {
-          c.textContent = show(v);
-          if (v.t === "Null") c.classList.add("null");
-          else if (v.t === "I64" || v.t === "F64") c.style.textAlign = "right";
-          c.title = c.textContent;
+          const k = kindOf(col.type_name);
+          if (v.t === "Null") c.innerHTML = '<span class="null-chip">NULL</span>';
+          else if (v.t === "Bool" || (k === "bool" && (v.t === "I64" || v.t === "Text"))) {
+            const on = v.t === "Bool" ? v.v : v.v === 1 || v.v === "1" || v.v === "true";
+            c.innerHTML = `<span style="color:${on ? "var(--ok)" : "var(--muted)"}">${on ? "● true" : "○ false"}</span>`;
+          } else {
+            c.textContent = show(v);
+            if (k === "num" || v.t === "I64" || v.t === "F64") { c.style.textAlign = "right"; c.classList.add("mono"); }
+            else if (k === "time" || k === "json") c.classList.add("mono");
+            c.title = c.textContent ?? "";
+          }
         }
         div.append(c);
       });

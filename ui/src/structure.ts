@@ -1,6 +1,7 @@
-import { api, type ColumnInfo, type IndexInfo, type ObjectInfo, type StructChange } from "./api";
+import { type ColumnInfo, type IndexInfo, type ObjectInfo, type StructChange } from "./api";
+import { icon } from "./icons";
 
-const cell = "bg-transparent border border-transparent hover:border-zinc-700 focus:border-blue-600 rounded px-1 py-0.5 outline-none w-full mono";
+const cell = "bg-transparent border border-transparent hover:border-line-strong focus:border-accent focus:bg-panel rounded-md px-2 h-7 outline-none w-full mono";
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 interface Row { orig: ColumnInfo | null; name: string; type: string; nullable: boolean; def: string; dropped: boolean }
@@ -33,7 +34,7 @@ export function createStructureView(
   status: (s: string) => void,
 ): { el: HTMLElement; reload: () => Promise<void> } {
   const el = document.createElement("div");
-  el.className = "h-full overflow-auto p-3 text-[12px] bg-zinc-900";
+  el.className = "h-full overflow-auto px-6 py-5 text-[12.5px] bg-panel";
   let rows: Row[] = [];
   let indexes: IndexInfo[] = [];
   let droppedIdx = new Set<string>();
@@ -57,35 +58,38 @@ export function createStructureView(
 
   function draw() {
     const n = pending().length;
+    const box = (title: string, count: number, body: string) => `<section class="rounded-xl border border-line-strong overflow-hidden mb-6">
+        <div class="flex items-center gap-2 px-4 h-9 bg-canvas border-b border-line"><span class="font-medium">${title}</span><span class="pill">${count}</span></div>${body}</section>`;
+    const th = "text-left font-medium text-soft px-2 h-8";
     el.innerHTML = `
-      <div class="flex items-center gap-2 mb-2">
-        <button id="addcol" class="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700">+ Column</button>
-        <button id="addidx" class="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700">+ Index</button>
-        <button id="commit" class="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-40" ${n ? "" : "disabled"}>Review &amp; commit${n ? ` (${n})` : ""}</button>
-        <button id="discard" class="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40" ${n ? "" : "disabled"}>Discard</button>
-        <span class="text-zinc-500 ml-2">Edit a cell, then review the generated DDL before it runs.</span>
+      <div class="flex items-center gap-2 mb-5">
+        <button id="addcol" class="btn">${icon("plus", 14)}<span>Column</span></button>
+        <button id="addidx" class="btn">${icon("plus", 14)}<span>Index</span></button>
+        <span class="w-px h-4 bg-line-strong mx-1"></span>
+        <button id="commit" class="btn btn-primary" ${n ? "" : "disabled"}>Review &amp; commit${n ? ` (${n})` : ""}</button>
+        <button id="discard" class="btn" ${n ? "" : "disabled"}>Discard</button>
+        <span class="text-muted ml-2">Changes are staged. You review the generated SQL before anything runs.</span>
       </div>
-      <table class="w-full mb-4"><thead class="text-zinc-400 text-left"><tr><th class="px-1 w-8"></th><th class="px-1">Column</th><th class="px-1">Type</th><th class="px-1 w-20">Nullable</th><th class="px-1">Default</th><th class="w-8"></th></tr></thead><tbody>
-      ${rows.map((r, i) => `<tr class="border-t border-zinc-800 ${r.dropped ? "opacity-40 line-through" : ""} ${!r.orig ? "bg-green-950/30" : ""}">
-        <td class="px-1 text-zinc-500">${r.orig?.primary_key ? "🔑" : ""}</td>
-        <td><input data-r="${i}" data-f="name" class="${cell}" value="${esc(r.name)}"/></td>
-        <td><input data-r="${i}" data-f="type" class="${cell}" value="${esc(r.type)}"/></td>
-        <td class="px-1"><input type="checkbox" data-r="${i}" data-f="nullable" ${r.nullable ? "checked" : ""}/></td>
-        <td><input data-r="${i}" data-f="def" class="${cell}" value="${esc(r.def)}" placeholder="—"/></td>
-        <td><button data-drop="${i}" class="text-zinc-500 hover:text-red-400" title="${r.dropped ? "Undo drop" : "Drop column"}">${r.dropped ? "↺" : "×"}</button></td></tr>`).join("")}
-      </tbody></table>
-      <div class="text-zinc-400 mb-1">Indexes</div>
-      <table class="w-full mb-4"><tbody>
-      ${indexes.map((ix) => `<tr class="border-t border-zinc-800 ${droppedIdx.has(ix.name) ? "opacity-40 line-through" : ""}"><td class="px-1 mono">${esc(ix.name)}</td><td class="px-1 mono text-zinc-400">${esc(ix.columns.join(", "))}</td>
-        <td class="px-1 text-zinc-500">${ix.primary ? "primary" : ix.unique ? "unique" : ""}</td>
-        <td class="w-8">${ix.primary ? "" : `<button data-dropidx="${esc(ix.name)}" class="text-zinc-500 hover:text-red-400">${droppedIdx.has(ix.name) ? "↺" : "×"}</button>`}</td></tr>`).join("")}
-      ${newIdx.map((ix, i) => `<tr class="border-t border-zinc-800 bg-green-950/30"><td><input data-ni="${i}" data-f="name" class="${cell}" placeholder="index_name" value="${esc(ix.name)}"/></td>
-        <td><input data-ni="${i}" data-f="columns" class="${cell}" placeholder="col1, col2" value="${esc(ix.columns)}"/></td>
-        <td class="px-1"><label><input type="checkbox" data-ni="${i}" data-f="unique" ${ix.unique ? "checked" : ""}/> unique</label></td>
-        <td><button data-rmni="${i}" class="text-zinc-500 hover:text-red-400">×</button></td></tr>`).join("")}
-      </tbody></table>
-      ${info && info.foreign_keys.length ? `<div class="text-zinc-400 mb-1">Foreign keys</div><table class="w-full"><tbody>${info.foreign_keys.map((f) => `<tr class="border-t border-zinc-800"><td class="px-1 mono">${esc(f.name)}</td><td class="px-1 mono text-zinc-400">${esc(f.columns.join(", "))} → ${esc((f.ref_schema && f.ref_schema !== "public" ? f.ref_schema + "." : "") + f.ref_table)}(${esc(f.ref_columns.join(", "))})</td></tr>`).join("")}</tbody></table>` : ""}
-      ${info?.ddl ? `<div class="text-zinc-400 mt-4 mb-1">DDL</div><pre class="mono text-[11px] bg-zinc-950 rounded p-2 overflow-auto select-text whitespace-pre-wrap">${esc(info.ddl)}</pre>` : ""}`;
+      ${box("Columns", rows.filter((r) => !r.dropped).length, `<table class="w-full"><thead><tr class="border-b border-line"><th class="w-9"></th><th class="${th}">Name</th><th class="${th}">Type</th><th class="${th} w-24">Nullable</th><th class="${th}">Default</th><th class="w-9"></th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr class="border-b border-line last:border-b-0 ${r.dropped ? "opacity-40 line-through" : ""} ${!r.orig ? "bg-ok-soft" : ""}">
+        <td class="pl-3 text-warn">${r.orig?.primary_key ? icon("key", 14) : ""}</td>
+        <td class="px-1 py-0.5"><input data-r="${i}" data-f="name" class="${cell}" value="${esc(r.name)}"/></td>
+        <td class="px-1"><input data-r="${i}" data-f="type" class="${cell}" value="${esc(r.type)}"/></td>
+        <td class="px-3"><input type="checkbox" data-r="${i}" data-f="nullable" ${r.nullable ? "checked" : ""}/></td>
+        <td class="px-1"><input data-r="${i}" data-f="def" class="${cell}" value="${esc(r.def)}" placeholder="none"/></td>
+        <td class="pr-2"><button data-drop="${i}" class="btn btn-ghost" style="width:24px;padding:0;justify-content:center" title="${r.dropped ? "Undo drop" : "Drop column"}">${r.dropped ? icon("undo", 13) : icon("close", 12)}</button></td></tr>`).join("")}
+      </tbody></table>`)}
+      ${box("Indexes", indexes.length + newIdx.length, `<table class="w-full"><tbody>
+      ${indexes.map((ix) => `<tr class="border-b border-line last:border-b-0 ${droppedIdx.has(ix.name) ? "opacity-40 line-through" : ""}"><td class="px-4 h-9 mono">${esc(ix.name)}</td><td class="px-2 mono text-soft">${esc(ix.columns.join(", "))}</td>
+        <td class="px-2">${ix.primary ? '<span class="pill">primary</span>' : ix.unique ? '<span class="pill">unique</span>' : ""}</td>
+        <td class="pr-2 w-9">${ix.primary ? "" : `<button data-dropidx="${esc(ix.name)}" class="btn btn-ghost" style="width:24px;padding:0;justify-content:center">${droppedIdx.has(ix.name) ? icon("undo", 13) : icon("close", 12)}</button>`}</td></tr>`).join("")}
+      ${newIdx.map((ix, i) => `<tr class="border-b border-line last:border-b-0 bg-ok-soft"><td class="px-2 py-0.5"><input data-ni="${i}" data-f="name" class="${cell}" placeholder="index_name" value="${esc(ix.name)}"/></td>
+        <td class="px-1"><input data-ni="${i}" data-f="columns" class="${cell}" placeholder="col1, col2" value="${esc(ix.columns)}"/></td>
+        <td class="px-2"><label class="flex items-center gap-1.5"><input type="checkbox" data-ni="${i}" data-f="unique" ${ix.unique ? "checked" : ""}/> unique</label></td>
+        <td class="pr-2 w-9"><button data-rmni="${i}" class="btn btn-ghost" style="width:24px;padding:0;justify-content:center">${icon("close", 12)}</button></td></tr>`).join("")}
+      </tbody></table>`)}
+      ${info && info.foreign_keys.length ? box("Foreign keys", info.foreign_keys.length, `<table class="w-full"><tbody>${info.foreign_keys.map((f) => `<tr class="border-b border-line last:border-b-0"><td class="px-4 h-9 mono">${esc(f.name)}</td><td class="px-2 mono text-soft">${esc(f.columns.join(", "))} <span class="text-muted">references</span> ${esc((f.ref_schema && f.ref_schema !== "public" ? f.ref_schema + "." : "") + f.ref_table)}(${esc(f.ref_columns.join(", "))})</td></tr>`).join("")}</tbody></table>`) : ""}
+      ${info?.ddl ? box("Definition", 1, `<pre class="mono text-[12px] p-4 overflow-auto select-text whitespace-pre-wrap">${esc(info.ddl)}</pre>`) : ""}`;
 
     const q = <T extends HTMLElement>(s: string) => el.querySelector(s) as T;
     q("#addcol").onclick = () => { rows.push({ orig: null, name: "", type: "TEXT", nullable: true, def: "", dropped: false }); draw(); };

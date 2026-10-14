@@ -136,6 +136,9 @@ pub struct ConnConfig {
     /// "disable" | "prefer" | "require" (encrypt, don't verify) | "verify" (verify against system roots)
     #[serde(default)]
     pub ssl: Option<String>,
+    /// Unix domain socket path (MySQL/MariaDB, Postgres) instead of host/port.
+    #[serde(default)]
+    pub socket: Option<String>,
     #[serde(default)]
     pub ssh_host: Option<String>,
     #[serde(default)]
@@ -232,6 +235,15 @@ pub trait Connection: Send + Sync {
             None => self.quote(name),
         };
         format!("SELECT * FROM {t} LIMIT {limit}")
+    }
+    /// `SELECT * FROM <table> WHERE <filter> LIMIT n` in this dialect. `filter` is a trusted,
+    /// user-typed condition (the same text they could run in the query editor).
+    fn select_where(&self, schema: Option<&str>, name: &str, filter: &str, limit: usize) -> String {
+        let t = match schema {
+            Some(s) => format!("{}.{}", self.quote(s), self.quote(name)),
+            None => self.quote(name),
+        };
+        format!("SELECT * FROM {t} WHERE {filter} LIMIT {limit}")
     }
     /// All tables with their column names, for editor autocomplete.
     async fn schema_map(&self) -> Result<Vec<SchemaTable>> {
@@ -430,5 +442,25 @@ mod ddl_tests {
         assert_eq!(build_ddl(&Fake("mysql"), None, "t", &[di.clone()]).unwrap(), ["DROP INDEX `ix` ON `t`;"]);
         assert_eq!(build_ddl(&Fake("sqlite"), None, "t", &[di]).unwrap(), ["DROP INDEX \"ix\";"]);
         assert!(build_ddl(&Fake("sqlite"), None, "t", &[StructChange::CreateIndex { name: "x".into(), columns: vec![], unique: false }]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod select_tests {
+    use super::*;
+    struct Fake(&'static str);
+    #[async_trait]
+    impl Connection for Fake {
+        fn dialect(&self) -> &'static str { self.0 }
+        fn quote(&self, i: &str) -> String { if self.0 == "mysql" { format!("`{i}`") } else { format!("\"{i}\"") } }
+        async fn ping(&self) -> Result<()> { Ok(()) }
+        async fn objects(&self) -> Result<Vec<ObjectRef>> { Ok(vec![]) }
+        async fn describe(&self, _: Option<&str>, _: &str) -> Result<ObjectInfo> { Ok(ObjectInfo::default()) }
+        async fn query(&self, _: &str) -> Result<QueryResult> { Ok(QueryResult::default()) }
+    }
+    #[test]
+    fn select_where_uses_the_dialect_quoting() {
+        assert_eq!(Fake("postgres").select_where(Some("s"), "t", "a = 1", 50), "SELECT * FROM \"s\".\"t\" WHERE a = 1 LIMIT 50");
+        assert_eq!(Fake("mysql").select_where(None, "t", "a = 1", 50), "SELECT * FROM `t` WHERE a = 1 LIMIT 50");
     }
 }

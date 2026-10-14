@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "lattice"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "dataio",
  "dbcore",
@@ -2526,6 +2526,7 @@ dependencies = [
  "keyring",
  "serde",
  "serde_json",
+ "tableplus-import",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4826,6 +4827,14 @@ dependencies = [
  "pkg-config",
  "toml 0.8.2",
  "version-compare",
+]
+
+[[package]]
+name = "tableplus-import"
+version = "0.1.0"
+dependencies = [
+ "plist",
+ "serde",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 /** Small stroke icon set (16px grid, currentColor). */
 const P: Record<string, string> = {
+  star: '<path d="M8 2.2 9.8 6l4.1.5-3 2.9.8 4.1L8 11.5 4.3 13.5l.8-4.1-3-2.9L6.2 6 8 2.2Z"/>',
   table: '<rect x="2" y="3" width="12" height="10" rx="1.6"/><path d="M2 6.5h12M6.5 6.5V13"/>',
   view: '<path d="M1.8 8s2.2-4 6.2-4 6.2 4 6.2 4-2.2 4-6.2 4S1.8 8 1.8 8Z"/><circle cx="8" cy="8" r="1.7"/>',
   key: '<circle cx="5.2" cy="10.8" r="2.6"/><path d="m7.1 9 5.6-5.6M10.6 5.5l1.6 1.6M12 4.1l1.4 1.4"/>',
@@ -33,8 +34,8 @@ const P: Record<string, string> = {
   warn: '<path d="M8 2.5 14 13H2L8 2.5ZM8 6.5v3M8 11.2v.1"/>',
 };
 
-export function icon(name: keyof typeof P | string, size = 16, cls = ""): string {
-  return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] ?? ""}</svg>`;
+export function icon(name: keyof typeof P | string, size = 16, cls = "", filled = false): string {
+  return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 16 16" fill="${filled ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] ?? ""}</svg>`;
 }
 
 /** Engine identity: a two-letter glyph on the engine's own hue (tokens, so it adapts to light and dark). */

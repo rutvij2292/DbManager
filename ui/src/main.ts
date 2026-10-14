@@ -31,7 +31,7 @@ import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
 import { formatRows, type CopyFormat } from "./copyfmt";
 import { splitStatements, statementAt } from "./sqlsplit";
-import { loadHistory, addHistory, removeHistory, clearHistory, loadSaved, saveQuery, renameQuery, deleteQuery } from "./qstore";
+import { pushHistory, loadSaved, findFavorite, addFavorite, renameQuery, deleteQuery, loadDrafts, saveDraft, removeDraft, dropLegacyHistory, type HistoryItem } from "./qstore";
 import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
 import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
 
@@ -49,7 +49,7 @@ document.addEventListener("focusin", (e) => {
 });
 
 /** One open database: its own backend connection, tables and completion schema. */
-interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean; lastTab?: Tab | null; routines?: ObjectRef[]; log?: { at: number; ms: number; sql: string; err?: string }[] }
+interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean; lastTab?: Tab | null; routines?: ObjectRef[]; history?: HistoryItem[]; log?: { at: number; ms: number; sql: string; err?: string }[] }
 /** A saved connection that is currently connected, with the databases opened on it. */
 interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[] }
 /** One statement's outcome from ⌘⇧Enter (run all): a row set (kept in Rust until the next run), a row count, or an error. */
@@ -57,7 +57,7 @@ interface StmtResult { sql: string; summary: Summary | null; affected?: number; 
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; countSeq?: number;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; draftId: string; draftTimer?: number; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; countSeq?: number;
 }
 
 /** The current workspace: the database the sidebar last selected or the active tab belongs to. */
@@ -185,7 +185,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   const selInfo = document.createElement("span");
   selInfo.className = "shrink-0 text-muted";
   statusBar.append(selInfo);
-  const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [], countBtn };
+  const tab: Tab = { draftId: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [], countBtn };
   grid.sortable = kind !== "diagram" && !["redis", "mongo"].includes(c?.kind ?? "");
   grid.onSort = (col, additive, x, y) => {
     if (additive) { applySort(tab, nextSort(tab.sort, col, true)); return; }
@@ -211,7 +211,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
         extensions: [
           lineNumbers(), history(), search({ top: true }), syntaxHighlighting(sqlHighlight), sqlLang.of(langFor(c)),
           autocompletion({ override: [makeCompletionSource(() => tab.conn?.schema ?? [])], activateOnTyping: true, icons: false }),
-          EditorView.updateListener.of((u) => { for (const tr of u.transactions) { const c = tr.annotation(pickedCompletion); if (c) recordAccepted(c.label); } }),
+          EditorView.updateListener.of((u) => { if (u.docChanged) scheduleDraft(tab); for (const tr of u.transactions) { const c = tr.annotation(pickedCompletion); if (c) recordAccepted(c.label); } }),
           keymap.of([
             { key: "Mod-Enter", run: () => (runActive(), true) },
             { key: "Mod-Shift-Enter", run: () => (runActive(true), true) },
@@ -408,15 +408,16 @@ function rememberSession(t: Tab, closing: boolean) {
   if (closing && t.shown) { removeSessions(key, t.shown); t.shown = undefined; }
   addSession(key, t.editor.state.doc.toString());
 }
-window.addEventListener("pagehide", () => { for (const t of tabs) rememberSession(t, false); });
 
-function closeTab(t: Tab) {
+/** `keepDraft`: the whole database is being closed, not just this tab, so its text is kept to reopen with the database. */
+function closeTab(t: Tab, keepDraft = false) {
   const g = tabs.indexOf(t);
   if (g < 0) return;
   const next = nextAfterClose(tabs, t); // always a tab of the same connection, or null
   tabs.splice(g, 1);
   t.grid.setResult(null);
-  rememberSession(t, true);
+  if (keepDraft) flushDraft(t);
+  else { rememberSession(t, true); clearTimeout(t.draftTimer); if (t.conn && t.kind === "query") removeDraft(draftKey(t.conn), t.draftId); }
   releaseResults(t);
   t.editor?.destroy();
   if (t.conn && t.conn.lastTab === t) t.conn.lastTab = null;
@@ -921,7 +922,7 @@ function runActive(all = false) {
 function execOne(t: Tab, text: string) {
   t.baseSql = text; t.sort = detectSort(text); t.grid.sort = t.sort;
   const started = Date.now();
-  exec(t, text).then(() => { if (t.conn) { addHistory(histKey(t.conn), { sql: text, at: started, ms: t.lastMs ?? Date.now() - started, ok: !t.failed }); if (sideView === "history") renderObjects(); } });
+  exec(t, text).then(() => { if (t.conn) { recordHistory(t.conn, { sql: text, at: started, ms: t.lastMs ?? Date.now() - started, ok: !t.failed }); if (sideView === "history") renderObjects(); } });
 }
 
 /** Safety checks before typed SQL runs: read-only refuses writes, protected asks first, destructive statements always ask. */
@@ -967,13 +968,13 @@ async function execAll(t: Tab, text: string) {
     try {
       const s = await api.runQuery(c.id, st.text);
       logSql(c, st.text, s.elapsed_ms);
-      addHistory(histKey(c), { sql: st.text, at, ms: s.elapsed_ms, ok: true });
+      recordHistory(c, { sql: st.text, at, ms: s.elapsed_ms, ok: true });
       const rows = s.columns.length > 0 && kept < MAX_KEPT_RESULTS;
       if (rows) kept++; else api.release(s.query_id).catch(() => {});
       results.push({ sql: st.text, summary: rows ? s : null, affected: s.columns.length ? s.row_count : s.affected ?? 0, ms: s.elapsed_ms });
     } catch (e) {
       logSql(c, st.text, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0]);
-      addHistory(histKey(c), { sql: st.text, at, ms: 0, ok: false });
+      recordHistory(c, { sql: st.text, at, ms: 0, ok: false });
       results.push({ sql: st.text, summary: null, error: String(e).replace(/^Error:\s*/, "") });
       t.failed = true;
       break;
@@ -1138,13 +1139,13 @@ const ROUTINE_KINDS = ["function", "procedure", "trigger", "event"];
 // ---------- sidebar views: Items (tables, …) | Queries (saved) | History ----------
 type SideView = "items" | "queries" | "history";
 let sideView: SideView = (localStorage.getItem("tabnix.sideView") as SideView) || "items";
-const SIDE_PLACEHOLDER: Record<SideView, string> = { items: "Search tables", queries: "Search saved queries", history: "Search history" };
+const SIDE_PLACEHOLDER: Record<SideView, string> = { items: "Search tables", queries: "Search favorites", history: "Search history" };
 
 function renderSideTabs() {
   const host = $("sidetabs");
   host.replaceChildren(...(["items", "queries", "history"] as SideView[]).map((v) => {
     const b = document.createElement("button");
-    b.textContent = { items: "Items", queries: "Queries", history: "History" }[v];
+    b.textContent = { items: "Items", queries: "Favorites", history: "History" }[v];
     b.style.flex = "1";
     b.setAttribute("aria-pressed", String(sideView === v));
     b.onclick = () => { sideView = v; localStorage.setItem("tabnix.sideView", v); $<HTMLInputElement>("filter").placeholder = SIDE_PLACEHOLDER[v]; renderSideTabs(); renderObjects(); };
@@ -1154,11 +1155,27 @@ function renderSideTabs() {
 }
 
 const oneLine = (sql: string, n = 90) => { const t = sql.replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "…" : t; };
-const histKey = (c: Conn) => sessionKey(c.server.id, c.db);
+/** History lives in memory for as long as the database stays open; it is never written to disk. */
+function recordHistory(c: Conn, item: HistoryItem) { c.history = pushHistory(c.history ?? [], item); }
+
+// ---------- drafts: open query tabs are saved as you type and come back when the database is opened again ----------
+const draftKey = (c: Conn) => sessionKey(c.server.id, c.db);
+function flushDraft(t: Tab) {
+  clearTimeout(t.draftTimer); t.draftTimer = undefined;
+  if (t.kind !== "query" || !t.conn || !t.editor) return;
+  saveDraft(draftKey(t.conn), t.draftId, t.title, t.editor.state.doc.toString());
+}
+function scheduleDraft(t: Tab) {
+  clearTimeout(t.draftTimer);
+  t.draftTimer = window.setTimeout(() => flushDraft(t), 500);
+}
+window.addEventListener("pagehide", () => { for (const t of tabs) flushDraft(t); });
+dropLegacyHistory();
 
 /** New query tab holding `sql` (nothing is run). */
-function openQueryTab(c: Conn, sql: string, title = "Query") {
+function openQueryTab(c: Conn, sql: string, title = "Query", draftId?: string) {
   const t = makeTab("query", title, undefined, c);
+  if (draftId) t.draftId = draftId;
   t.empty?.remove(); t.empty = undefined;
   t.editor?.dispatch({ changes: { from: 0, to: t.editor.state.doc.length, insert: sql }, selection: { anchor: sql.length } });
   return t;
@@ -1172,16 +1189,32 @@ function sideHeader(title: string, action?: { label: string; fn: () => void }): 
   return h;
 }
 
-function sideRow(title: string, sub: string, o: { click: () => void; menu: (x: number, y: number) => void; tone?: "bad" }): HTMLElement {
+function sideRow(title: string, sub: string, o: { click: () => void; menu: (x: number, y: number) => void; tone?: "bad"; star?: { on: boolean; fn: () => void } }): HTMLElement {
   const d = document.createElement("div");
-  d.className = "px-3 py-1.5 rounded-lg cursor-default hover:bg-raised";
-  d.innerHTML = `<div class="truncate ${o.tone === "bad" ? "text-danger" : ""}"></div><div class="text-[12px] text-muted truncate"></div>`;
-  (d.children[0] as HTMLElement).textContent = title;
-  (d.children[1] as HTMLElement).textContent = sub;
+  d.className = "group px-3 py-1.5 rounded-lg cursor-default hover:bg-raised flex items-center gap-2";
+  d.innerHTML = `<div class="flex-1 min-w-0"><div class="truncate ${o.tone === "bad" ? "text-danger" : ""}"></div><div class="text-[12px] text-muted truncate"></div></div>`;
+  (d.firstElementChild!.children[0] as HTMLElement).textContent = title;
+  (d.firstElementChild!.children[1] as HTMLElement).textContent = sub;
   d.title = title;
   d.onclick = o.click;
   d.oncontextmenu = (e) => { e.preventDefault(); o.menu(e.clientX, e.clientY); };
+  if (o.star) {
+    const b = document.createElement("button");
+    b.className = "shrink-0 rounded p-1 " + (o.star.on ? "text-warn" : "text-muted opacity-0 group-hover:opacity-100 hover:text-warn");
+    b.innerHTML = icon("star", 15, "", o.star.on);
+    b.title = o.star.on ? "Remove from favorites" : "Add to favorites";
+    b.onclick = (e) => { e.stopPropagation(); o.star!.fn(); };
+    d.append(b);
+  }
   return d;
+}
+
+/** Ask, then drop a favourite. */
+async function removeFavorite(pid: string, f: { id: string; name: string }) {
+  if (!(await confirmDanger({ title: `Remove “${oneLine(f.name, 40)}” from favorites?`, body: "The saved query is deleted. Its text stays in any open tab.", confirmLabel: "Remove" }))) return false;
+  deleteQuery(pid, f.id);
+  renderObjects();
+  return true;
 }
 
 function renderSavedQueries() {
@@ -1189,38 +1222,37 @@ function renderSavedQueries() {
   const c = conn ?? activeServer?.conns[0] ?? null;
   const q = $<HTMLInputElement>("filter").value.trim().toLowerCase();
   const pid = activeServer?.id;
-  if (!pid) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">Connect to a database to use saved queries.</div>`; return; }
+  if (!pid) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">Connect to a database to use favorites.</div>`; return; }
   const list = loadSaved(pid).filter((s) => !q || s.name.toLowerCase().includes(q) || s.sql.toLowerCase().includes(q));
   const frag = document.createDocumentFragment();
-  frag.append(sideHeader(`Saved on ${activeServer!.name}`, { label: "+ Save current", fn: () => saveCurrentQuery() }));
+  frag.append(sideHeader(`Favorites on ${activeServer!.name}`, { label: "☆ Add current", fn: () => favoriteCurrentQuery() }));
   for (const s of list) {
     frag.append(sideRow(s.name, oneLine(s.sql), {
       click: () => c && openQueryTab(c, s.sql, s.name),
+      star: { on: true, fn: () => removeFavorite(pid, s) },
       menu: (x, y) => contextMenu(x, y, [
         { label: "Open in new tab", action: () => c && openQueryTab(c, s.sql, s.name) },
         { label: "Copy SQL", action: () => { navigator.clipboard?.writeText(s.sql); toast("Copied", "ok"); } },
-        { label: "Rename…", action: async () => { const n = await promptName("Rename query", s.name, "Rename", s.name); if (n) { renameQuery(pid, s.id, n); renderObjects(); } } },
+        { label: "Rename…", action: async () => { const n = await promptName("Rename favorite", s.name, "Rename", s.name); if (n) { renameQuery(pid, s.id, n); renderObjects(); } } },
         { divider: true, label: "" },
-        { label: "Delete…", danger: true, action: async () => { if (await confirmDanger({ title: `Delete “${s.name}”?`, body: "The saved query is removed.", confirmLabel: "Delete" })) { deleteQuery(pid, s.id); renderObjects(); } } },
+        { label: "Remove from favorites…", danger: true, action: () => removeFavorite(pid, s) },
       ]),
     }));
   }
-  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "No saved queries yet. Write a query and press ⌘⇧S to keep it here."; frag.append(e); }
+  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "No favorites yet. Press ⌘⇧S in a query tab, or star a query in History."; frag.append(e); }
   host.replaceChildren(frag);
 }
 
-/** ⌘⇧S: save the editor text of the active query tab under a name. */
-async function saveCurrentQuery() {
+/** ⌘⇧S: add the editor text of the active query tab to the favorites, no questions asked. */
+function favoriteCurrentQuery() {
   const t = active;
   const pid = t?.conn?.server.id ?? activeServer?.id;
   if (!pid) return;
   const sql = t?.kind === "query" && t.editor ? t.editor.state.doc.toString().trim() : "";
   if (!sql) { toast("Open a query tab with some SQL first.", "info"); return; }
-  const name = await promptName("Save query", "Saved queries are kept per connection.", "Save", oneLine(sql, 40));
-  if (!name) return;
-  saveQuery(pid, name, sql);
-  toast(`Saved “${name}”`, "ok");
-  if (sideView === "queries") renderObjects();
+  const r = addFavorite(pid, sql);
+  toast(r.added ? `Added to favorites: “${oneLine(r.fav.name, 40)}”` : "Already in favorites", r.added ? "ok" : "info");
+  if (sideView !== "items") renderObjects();
 }
 
 function renderHistory() {
@@ -1228,24 +1260,27 @@ function renderHistory() {
   const c = conn;
   const q = $<HTMLInputElement>("filter").value.trim().toLowerCase();
   if (!c) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">Open a database to see its history.</div>`; return; }
-  const key = histKey(c);
-  const list = loadHistory(key).filter((h) => !q || h.sql.toLowerCase().includes(q));
+  const pid = c.server.id;
+  const all = c.history ?? [];
+  const list = all.filter((h) => !q || h.sql.toLowerCase().includes(q));
   const frag = document.createDocumentFragment();
-  frag.append(sideHeader(`Run on ${c.db ?? c.name}`, loadHistory(key).length ? { label: "Clear", fn: async () => { if (await confirmDanger({ title: "Clear history?", body: `Forgets the queries run on <b>${esc(c.db ?? c.name)}</b>.`, confirmLabel: "Clear history" })) { clearHistory(key); renderObjects(); } } } : undefined));
+  frag.append(sideHeader(`This session · ${c.db ?? c.name}`, all.length ? { label: "Clear", fn: async () => { if (await confirmDanger({ title: "Clear history?", body: `Forgets the queries run on <b>${esc(c.db ?? c.name)}</b> in this session. Favorites are kept.`, confirmLabel: "Clear history" })) { c.history = []; renderObjects(); } } } : undefined));
   for (const h of list) {
+    const fav = findFavorite(pid, h.sql);
     frag.append(sideRow(oneLine(h.sql), `${ago(h.at)} · ${h.ok ? `${h.ms} ms` : "failed"}`, {
       tone: h.ok ? undefined : "bad",
       click: () => openQueryTab(c, h.sql),
+      star: { on: !!fav, fn: () => { if (fav) removeFavorite(pid, fav).then(() => renderObjects()); else { addFavorite(pid, h.sql); toast("Added to favorites", "ok"); renderObjects(); } } },
       menu: (x, y) => contextMenu(x, y, [
         { label: "Open in new tab", action: () => openQueryTab(c, h.sql) },
         { label: "Copy SQL", action: () => { navigator.clipboard?.writeText(h.sql); toast("Copied", "ok"); } },
-        { label: "Save as query…", action: async () => { const n = await promptName("Save query", "Saved queries are kept per connection.", "Save", oneLine(h.sql, 40)); if (n) { saveQuery(c.server.id, n, h.sql); toast(`Saved “${n}”`, "ok"); } } },
+        { label: fav ? "Remove from favorites…" : "Add to favorites", action: () => { if (fav) removeFavorite(pid, fav).then(() => renderObjects()); else { addFavorite(pid, h.sql); toast("Added to favorites", "ok"); renderObjects(); } } },
         { divider: true, label: "" },
-        { label: "Remove from history", action: () => { removeHistory(key, h.at); renderObjects(); } },
+        { label: "Remove from history", action: () => { c.history = (c.history ?? []).filter((x) => x !== h); renderObjects(); } },
       ]),
     }));
   }
-  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "Queries you run in a query tab show up here."; frag.append(e); }
+  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "Queries you run in a query tab show up here until you close the database."; frag.append(e); }
   host.replaceChildren(frag);
 }
 
@@ -1401,7 +1436,12 @@ async function addDatabase(s: Server, connId: number, db: string | null): Promis
   collapsed.delete("s:" + s.id); collapsed.delete("d:" + c.id);
   renderObjects();
   refreshDatabase(c);
-  if (s.conns.length === 1) makeTab("query", "Query", undefined, c); // first database of this connection
+  // Query tabs left open last time come back (not when the same database is already open in another workspace).
+  const drafts = s.conns.some((x) => x !== c && x.db === db) ? [] : loadDrafts(draftKey(c));
+  if (drafts.length) {
+    for (const d of drafts) openQueryTab(c, d.sql, d.title, d.id);
+    toast(`Restored ${drafts.length} query tab${drafts.length === 1 ? "" : "s"}`, "info");
+  } else if (s.conns.length === 1) makeTab("query", "Query", undefined, c); // first database of this connection
   else switchWorkspace(c); // every further database opens as its own workspace
   return c;
 }
@@ -1558,7 +1598,7 @@ function reloadTablesOf(c: Conn) {
 }
 
 function closeDatabase(c: Conn) {
-  for (const t of [...tabs]) if (t.conn === c) closeTab(t);
+  for (const t of [...tabs]) if (t.conn === c) closeTab(t, true);
   // The server's root connection also keeps its SSH tunnel alive, so it stays until the server is disconnected.
   if (c.id !== c.server.rootId) api.disconnect(c.id).catch(() => {});
   c.server.conns = c.server.conns.filter((x) => x !== c);
@@ -1572,7 +1612,7 @@ function closeDatabase(c: Conn) {
 }
 
 function disconnectServer(s: Server) {
-  for (const c of [...s.conns]) { for (const t of [...tabs]) if (t.conn === c) closeTab(t); if (c.id !== s.rootId) api.disconnect(c.id).catch(() => {}); }
+  for (const c of [...s.conns]) { for (const t of [...tabs]) if (t.conn === c) closeTab(t, true); if (c.id !== s.rootId) api.disconnect(c.id).catch(() => {}); }
   api.disconnect(s.rootId).catch(() => {});
   const wasActive = activeServer === s;
   servers.splice(servers.indexOf(s), 1);
@@ -1608,7 +1648,7 @@ function queryBar(tab: Tab): HTMLElement {
     b(`${icon("stop", 13)}<span>Stop</span>`, "Cancel the running query (⌘.)", () => { activate(tab); cancelActive(); }),
     sep(),
     b(`${icon("plan", 14)}<span>Explain</span>`, "Show the query plan and suggestions (⌘E)", () => { activate(tab); explainActive(false); }),
-    b(`${icon("archive", 14)}<span>Save</span>`, "Save this query to the Queries list (⌘⇧S)", () => { activate(tab); saveCurrentQuery(); }),
+    b(`${icon("star", 14)}<span>Favorite</span>`, "Add this query to your favorites (⌘⇧S)", () => { activate(tab); favoriteCurrentQuery(); }),
     b(`${icon("wand", 14)}<span>Format</span>`, "Format SQL (⌘I)", () => tab.editor && formatEditor(tab.editor, tab.conn)),
     b(`${icon("blocks", 14)}<span>Builder</span>`, "Visual query builder (⌘B)", () => { activate(tab); toggleBuilder(); }),
     pill,
@@ -1881,7 +1921,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "e") go(() => explainActive(e.shiftKey));
   else if (k === "b") go(toggleBuilder);
   else if (e.key === ".") go(cancelActive);
-  else if (k === "s" && e.shiftKey && active?.kind === "query") go(saveCurrentQuery);
+  else if (k === "s" && e.shiftKey && active?.kind === "query") go(favoriteCurrentQuery);
   else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
   else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
   else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => deleteRow(active!));

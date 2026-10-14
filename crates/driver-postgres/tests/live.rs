@@ -33,3 +33,19 @@ async fn live_roundtrip() {
     // A bad statement surfaces an error rather than panicking.
     assert!(c.query("SELEC 1").await.is_err());
 }
+
+#[tokio::test]
+#[ignore]
+async fn live_cancel() {
+    let port: u16 = std::env::var("LATTICE_PG_PORT").expect("LATTICE_PG_PORT").parse().unwrap();
+    let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("postgres".into()), password: Some("pw".into()), database: Some("app".into()), ..Default::default() };
+    let c = PostgresDriver.connect(&cfg).await.unwrap();
+    let c2 = c.clone();
+    let started = std::time::Instant::now();
+    let long = tokio::spawn(async move { c2.query("SELECT pg_sleep(30)").await });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    c.cancel().await.unwrap();
+    assert!(long.await.unwrap().is_err(), "sleep should have been cancelled");
+    assert!(started.elapsed().as_secs() < 10);
+    assert_eq!(c.query("SELECT 1").await.unwrap().rows.len(), 1);
+}

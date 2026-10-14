@@ -6,7 +6,7 @@ use std::time::Instant;
 
 pub struct SqliteDriver;
 
-struct SqliteConn(Arc<Mutex<rusqlite::Connection>>);
+struct SqliteConn(Arc<Mutex<rusqlite::Connection>>, rusqlite::InterruptHandle);
 
 #[async_trait]
 impl Driver for SqliteDriver {
@@ -16,7 +16,8 @@ impl Driver for SqliteDriver {
     async fn connect(&self, cfg: &ConnConfig) -> Result<Arc<dyn Connection>> {
         let path = cfg.path.clone().unwrap_or_else(|| ":memory:".into());
         let c = rusqlite::Connection::open(path).map_err(DbError::msg)?;
-        Ok(Arc::new(SqliteConn(Arc::new(Mutex::new(c)))))
+        let h = c.get_interrupt_handle();
+        Ok(Arc::new(SqliteConn(Arc::new(Mutex::new(c)), h)))
     }
 }
 
@@ -59,6 +60,10 @@ fn run(c: &rusqlite::Connection, sql: &str) -> Result<QueryResult> {
 impl Connection for SqliteConn {
     fn dialect(&self) -> &'static str {
         "sqlite"
+    }
+    async fn cancel(&self) -> Result<()> {
+        self.1.interrupt();
+        Ok(())
     }
     async fn ping(&self) -> Result<()> {
         self.query("SELECT 1").await.map(|_| ())
@@ -171,5 +176,22 @@ mod tests {
         assert!(c.execute_batch(&build_dml(c.as_ref(), None, "t", &bad)).await.is_err());
         let r = c.query("SELECT name FROM t WHERE id = 1").await.unwrap();
         assert_eq!(r.rows[0][0], Value::Text("it's".into()));
+    }
+
+    #[tokio::test]
+    async fn cancel_interrupts_long_query() {
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap();
+        let c2 = c.clone();
+        let started = std::time::Instant::now();
+        let long = tokio::spawn(async move {
+            c2.query("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r) SELECT count(*) FROM r").await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        c.cancel().await.unwrap();
+        let res = long.await.unwrap();
+        assert!(res.is_err(), "query should have been interrupted");
+        assert!(started.elapsed().as_secs() < 5);
+        // The connection stays usable afterwards.
+        assert_eq!(c.query("SELECT 1").await.unwrap().rows.len(), 1);
     }
 }

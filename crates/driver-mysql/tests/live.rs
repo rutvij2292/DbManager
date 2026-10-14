@@ -30,3 +30,20 @@ async fn live_roundtrip() {
     assert_eq!(c.query("SELECT name FROM t WHERE id = 1").await.unwrap().rows[0][0], Value::Text("it's \\ ok".into()));
     assert!(c.query("SELEC 1").await.is_err());
 }
+
+#[tokio::test]
+#[ignore]
+async fn live_cancel() {
+    let port: u16 = std::env::var("LATTICE_MYSQL_PORT").expect("LATTICE_MYSQL_PORT").parse().unwrap();
+    let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("root".into()), password: Some("pw".into()), database: Some("app".into()), ssl: Some("disable".into()), ..Default::default() };
+    let c = MysqlDriver.connect(&cfg).await.unwrap();
+    let c2 = c.clone();
+    let started = std::time::Instant::now();
+    // MySQL reports a killed SELECT SLEEP() as a normal row (1) or an error depending on version.
+    let long = tokio::spawn(async move { c2.query("SELECT SLEEP(30)").await });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    c.cancel().await.unwrap();
+    let _ = long.await.unwrap();
+    assert!(started.elapsed().as_secs() < 10, "query was not interrupted");
+    assert_eq!(c.query("SELECT 1").await.unwrap().rows.len(), 1);
+}

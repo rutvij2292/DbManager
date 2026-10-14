@@ -17,7 +17,7 @@ interface Conn { id: number; name: string; kind: string; objects: ObjectRef[]; s
 interface Tab {
   id: number; title: string; kind: "query" | "table";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; editor?: EditorView; status: HTMLElement;
 }
 
 let conn: Conn | null = null;
@@ -206,7 +206,9 @@ function renderTabs() {
 async function exec(t: Tab, sqlText: string) {
   if (!t.conn) { t.status.textContent = "Not connected — open a database first (⌘O)"; return; }
   if (t.panel && t.gridWrap) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
-  t.status.textContent = "Running…";
+  if (t.running) { t.status.textContent = "A query is already running — ⌘. to cancel"; return; }
+  t.running = true; t.cancelled = false;
+  t.status.textContent = "Running… (⌘. to cancel)";
   try {
     const s: Summary = await api.runQuery(t.conn.id, sqlText);
     await t.grid.setResult(s.columns.length ? s : null);
@@ -216,10 +218,12 @@ async function exec(t: Tab, sqlText: string) {
     if (/^\s*(create|drop|alter)\b/i.test(sqlText)) refreshObjects();
   } catch (e) {
     await t.grid.setResult(null);
-    t.status.textContent = "Error: " + e;
-    t.status.classList.add("text-red-400");
+    t.status.textContent = t.cancelled ? "Query cancelled" : "Error: " + e;
+    t.status.classList.toggle("text-red-400", !t.cancelled);
+    t.running = false;
     return;
   }
+  t.running = false;
   t.status.classList.remove("text-red-400");
 }
 
@@ -426,8 +430,17 @@ function palette() {
   draw();
 }
 
+async function cancelActive() {
+  const t = active;
+  if (!t?.running || !t.conn) return;
+  t.cancelled = true;
+  t.status.textContent = "Cancelling…";
+  try { await api.cancelQuery(t.conn.id); } catch (e) { t.status.textContent = "Cancel failed: " + e; }
+}
+
 // Keyboard shortcuts (TablePlus-style)
 window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && active?.running) { e.preventDefault(); cancelActive(); return; }
   if (!e.metaKey) return;
   const k = e.key.toLowerCase();
   const go = (f: () => void) => { e.preventDefault(); f(); };
@@ -439,6 +452,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "enter") go(runActive);
   else if (k === "e") go(() => explainActive(e.shiftKey));
   else if (k === "b") go(toggleBuilder);
+  else if (e.key === ".") go(cancelActive);
   else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
   else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
   else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => active!.grid.deleteSelected());

@@ -8,7 +8,7 @@ use postgres_native_tls::MakeTlsConnector;
 /// PostgreSQL-protocol driver (also used for CockroachDB, Redshift, Greenplum).
 pub struct PostgresDriver;
 
-struct PgConn(Client);
+struct PgConn(Client, Option<MakeTlsConnector>);
 
 #[async_trait]
 impl Driver for PostgresDriver {
@@ -36,22 +36,25 @@ impl Driver for PostgresDriver {
                 .map_err(DbError::msg)?;
             Ok(MakeTlsConnector::new(b))
         };
+        let mut used_tls: Option<MakeTlsConnector> = None;
         let client = match mode {
             "disable" => plain(&c).await?,
             "prefer" => match tls() {
-                Ok(t) => match c.connect(t).await {
-                    Ok((client, conn)) => { spawn_conn(conn); client }
+                Ok(t) => match c.connect(t.clone()).await {
+                    Ok((client, conn)) => { spawn_conn(conn); used_tls = Some(t); client }
                     Err(_) => plain(&c).await?, // server without TLS
                 },
                 Err(_) => plain(&c).await?,
             },
             _ => {
-                let (client, conn) = c.connect(tls()?).await.map_err(DbError::msg)?;
+                let t = tls()?;
+                let (client, conn) = c.connect(t.clone()).await.map_err(DbError::msg)?;
                 spawn_conn(conn);
+                used_tls = Some(t);
                 client
             }
         };
-        Ok(Arc::new(PgConn(client)))
+        Ok(Arc::new(PgConn(client, used_tls)))
     }
 }
 
@@ -89,6 +92,14 @@ fn convert(type_name: &str, v: Option<&str>) -> Value {
 impl Connection for PgConn {
     fn dialect(&self) -> &'static str {
         "postgres"
+    }
+    async fn cancel(&self) -> Result<()> {
+        let token = self.0.cancel_token();
+        match &self.1 {
+            Some(t) => token.cancel_query(t.clone()).await,
+            None => token.cancel_query(NoTls).await,
+        }
+        .map_err(DbError::msg)
     }
     async fn ping(&self) -> Result<()> {
         self.0.simple_query("SELECT 1").await.map(|_| ()).map_err(DbError::msg)

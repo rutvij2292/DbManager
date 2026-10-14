@@ -128,6 +128,10 @@ pub trait Connection: Send + Sync {
     async fn objects(&self) -> Result<Vec<ObjectRef>>;
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo>;
     async fn query(&self, sql: &str) -> Result<QueryResult>;
+    /// Abort whatever is currently running on this connection (best effort; no-op if idle).
+    async fn cancel(&self) -> Result<()> {
+        Err(DbError::msg("cancel is not supported for this driver"))
+    }
     /// Query plan for `sql`; `analyze` actually executes it where supported.
     async fn explain(&self, _sql: &str, _analyze: bool) -> Result<PlanNode> {
         Err(DbError::msg("EXPLAIN is not supported for this driver"))

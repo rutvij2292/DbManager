@@ -8,7 +8,11 @@ use std::time::Instant;
 /// MySQL-protocol driver (also used for MariaDB).
 pub struct MysqlDriver;
 
-struct MyConn(Pool);
+struct MyConn {
+    pool: Pool,
+    /// Server thread ids of queries currently running on this connection, for KILL QUERY.
+    running: std::sync::Mutex<Vec<u32>>,
+}
 
 #[async_trait]
 impl Driver for MysqlDriver {
@@ -29,7 +33,7 @@ impl Driver for MysqlDriver {
             .pass(cfg.password.clone())
             .db_name(cfg.database.clone())
             .into();
-        Ok(Arc::new(MyConn(Pool::new(opts))))
+        Ok(Arc::new(MyConn { pool: Pool::new(opts), running: Default::default() }))
     }
 }
 
@@ -78,6 +82,24 @@ fn convert(v: MyValue) -> Value {
     }
 }
 
+async fn run_on(conn: &mut mysql_async::Conn, sql: &str) -> Result<QueryResult> {
+    let mut result = conn.query_iter(sql).await.map_err(DbError::msg)?;
+    let mut out = QueryResult::default();
+    out.columns = result
+        .columns_ref()
+        .iter()
+        .map(|c| ColumnMeta { name: c.name_str().into_owned(), type_name: format!("{:?}", c.column_type()).trim_start_matches("MYSQL_TYPE_").to_lowercase() })
+        .collect();
+    if out.columns.is_empty() {
+        out.affected = Some(result.affected_rows());
+    } else {
+        let types: Vec<ColumnType> = result.columns_ref().iter().map(|c| c.column_type()).collect();
+        let rows: Vec<mysql_async::Row> = result.collect().await.map_err(DbError::msg)?;
+        out.rows = rows.into_iter().map(|r| r.unwrap().into_iter().zip(&types).map(|(v, t)| convert_col(v, *t)).collect()).collect();
+    }
+    Ok(out)
+}
+
 #[async_trait]
 impl Connection for MyConn {
     fn dialect(&self) -> &'static str {
@@ -98,7 +120,7 @@ impl Connection for MyConn {
     }
     async fn execute_batch(&self, stmts: &[(String, Option<u64>)]) -> Result<u64> {
         use mysql_async::TxOpts;
-        let mut conn = self.0.get_conn().await.map_err(DbError::msg)?;
+        let mut conn = self.pool.get_conn().await.map_err(DbError::msg)?;
         let mut tx = conn.start_transaction(TxOpts::default()).await.map_err(DbError::msg)?;
         let mut total = 0;
         for (sql, expect) in stmts {
@@ -140,19 +162,26 @@ impl Connection for MyConn {
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
         let start = Instant::now();
-        let mut conn = self.0.get_conn().await.map_err(DbError::msg)?;
-        let mut result = conn.query_iter(sql).await.map_err(DbError::msg)?;
-        let mut out = QueryResult::default();
-        out.columns = result.columns_ref().iter().map(|c| ColumnMeta { name: c.name_str().into_owned(), type_name: format!("{:?}", c.column_type()).trim_start_matches("MYSQL_TYPE_").to_lowercase() }).collect();
-        if out.columns.is_empty() {
-            out.affected = Some(result.affected_rows());
-        } else {
-            let types: Vec<ColumnType> = result.columns_ref().iter().map(|c| c.column_type()).collect();
-            let rows: Vec<mysql_async::Row> = result.collect().await.map_err(DbError::msg)?;
-            out.rows = rows.into_iter().map(|r| r.unwrap().into_iter().zip(&types).map(|(v, t)| convert_col(v, *t)).collect()).collect();
-        }
+        let mut conn = self.pool.get_conn().await.map_err(DbError::msg)?;
+        let tid = conn.id();
+        self.running.lock().unwrap().push(tid);
+        let res = run_on(&mut conn, sql).await;
+        self.running.lock().unwrap().retain(|t| *t != tid);
+        let mut out = res?;
         out.elapsed_ms = start.elapsed().as_millis();
         Ok(out)
+    }
+    async fn cancel(&self) -> Result<()> {
+        let ids: Vec<u32> = self.running.lock().unwrap().clone();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        // KILL QUERY must go over a different connection than the one running the query.
+        let mut side = self.pool.get_conn().await.map_err(DbError::msg)?;
+        for id in ids {
+            side.query_drop(format!("KILL QUERY {id}")).await.map_err(DbError::msg)?;
+        }
+        Ok(())
     }
     async fn explain(&self, sql: &str, _analyze: bool) -> Result<PlanNode> {
         let r = self.query(&format!("EXPLAIN {sql}")).await?;

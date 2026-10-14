@@ -30,6 +30,7 @@ export const api = {
   explain: (connId: number, sql: string, analyze: boolean) => invoke<PlanNode>("explain", { connId, sql, analyze }),
   applyChanges: (connId: number, schema: string | null, table: string, changes: Change[], preview: boolean) =>
     invoke<string[]>("apply_changes", { connId, schema, table, changes, preview }),
+  cancelQuery: (connId: number) => invoke<void>("cancel_query", { connId }),
   runQuery: (connId: number, sql: string) => invoke<Summary>("run_query", { connId, sql }),
   getRows: (queryId: number, offset: number, limit: number) => invoke<Val[][]>("get_rows", { queryId, offset, limit }),
   release: (queryId: number) => invoke<void>("release_query", { queryId }),

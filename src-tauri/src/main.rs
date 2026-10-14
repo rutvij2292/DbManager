@@ -245,6 +245,12 @@ async fn run_query(state: State<'_, AppState>, conn_id: u64, sql: String) -> Res
     Ok(summary)
 }
 
+/// Abort the query currently running on a connection.
+#[tauri::command]
+async fn cancel_query(state: State<'_, AppState>, conn_id: u64) -> Result<(), String> {
+    state.conn(conn_id)?.cancel().await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn explain(state: State<'_, AppState>, conn_id: u64, sql: String, analyze: bool) -> Result<PlanNode, String> {
     state.conn(conn_id)?.explain(&sql, analyze).await.map_err(|e| e.to_string())
@@ -294,7 +300,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

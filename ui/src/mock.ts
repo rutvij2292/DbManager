@@ -90,6 +90,8 @@ const handlers: Record<string, (a: any) => unknown> = {
   save_connection: (a) => a.profile,
   delete_connection: () => null,
   cancel_query: () => null,
+  backup_database: () => ({ tables: 4, rows: 12840, bytes: 2_400_000 }),
+  restore_database: () => ({ statements: 120, copied_rows: 0, failed: 0, errors: [] }),
 };
 
 export function installMock() {

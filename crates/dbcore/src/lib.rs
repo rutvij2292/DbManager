@@ -266,6 +266,38 @@ pub trait Connection: Send + Sync {
         relations.retain(|r| ids.contains(&r.from_table) && ids.contains(&r.to_table));
         Ok(ErSchema { truncated: focus.is_none() && total > tables.len(), total_tables: total, tables, relations })
     }
+    // ---- backup / restore -------------------------------------------------------------------
+    /// DDL to recreate a table. Drivers that can't dump return an error saying so.
+    async fn table_ddl(&self, _schema: Option<&str>, _table: &str) -> Result<TableDdl> {
+        Err(DbError::msg("backup is not supported for this kind of database yet"))
+    }
+    /// `CREATE VIEW` statements for the current database.
+    async fn view_ddls(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    /// Statements that must run before any table: schemas, enum types.
+    async fn dump_types(&self, _schemas: &[String]) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    /// Session settings at the top and bottom of a dump (foreign-key checks off/on, ...).
+    fn dump_prelude(&self) -> Vec<String> {
+        vec![]
+    }
+    fn dump_epilogue(&self) -> Vec<String> {
+        vec![]
+    }
+    /// Statements to run after all data is loaded to realign sequences with the data.
+    fn sequence_resets(&self, _schema: Option<&str>, _table: &str, _ddl: &TableDdl) -> Vec<String> {
+        vec![]
+    }
+    /// A stateful session for running a script, when `query()` can't keep session state.
+    async fn open_session(&self) -> Result<Option<Box<dyn Session>>> {
+        Ok(None)
+    }
+    /// Run `COPY … FROM STDIN` with the given text data (Postgres only).
+    async fn copy_from_stdin(&self, _statement: &str, _data: Vec<u8>) -> Result<u64> {
+        Err(DbError::msg("COPY ... FROM stdin is only supported on PostgreSQL"))
+    }
     /// Fast bulk insert (Postgres `COPY`, SQLite prepared statements). Returns the rows inserted, or
     /// `Ok(None)` when the driver has no faster path than ordinary INSERT statements. Each call is
     /// its own transaction.
@@ -363,6 +395,63 @@ pub trait Driver: Send + Sync {
     async fn connect(&self, cfg: &ConnConfig) -> Result<Arc<dyn Connection>>;
 }
 
+
+/// What a dump needs to recreate one table.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TableDdl {
+    /// Run before the table exists (sequences it depends on).
+    pub pre: Vec<String>,
+    pub create: String,
+    /// Run after the data is loaded: indexes, foreign keys, sequence ownership.
+    pub post: Vec<String>,
+    /// Columns whose values the database computes (generated columns); a dump must not write them.
+    pub skip_columns: Vec<String>,
+}
+
+/// One database session that keeps state between statements (`SET FOREIGN_KEY_CHECKS`, ...).
+/// Needed where `query()` borrows a different pooled connection each time (MySQL).
+#[async_trait]
+pub trait Session: Send {
+    async fn execute(&mut self, sql: &str) -> Result<u64>;
+}
+
+/// `COPY` text format for one row: tab-separated, `\N` for NULL, backslash escapes.
+pub fn copy_text_row(row: &[Value], out: &mut String) {
+    use std::fmt::Write as _;
+    for (i, v) in row.iter().enumerate() {
+        if i > 0 {
+            out.push('\t');
+        }
+        match v {
+            Value::Null => out.push_str("\\N"),
+            Value::Bool(b) => out.push(if *b { 't' } else { 'f' }),
+            Value::I64(n) => {
+                let _ = write!(out, "{n}");
+            }
+            Value::F64(f) => {
+                let _ = write!(out, "{f}");
+            }
+            Value::Text(s) => {
+                for ch in s.chars() {
+                    match ch {
+                        '\\' => out.push_str("\\\\"),
+                        '\t' => out.push_str("\\t"),
+                        '\n' => out.push_str("\\n"),
+                        '\r' => out.push_str("\\r"),
+                        c => out.push(c),
+                    }
+                }
+            }
+            Value::Bytes(b) => {
+                out.push_str("\\\\x");
+                for x in b {
+                    let _ = write!(out, "{x:02x}");
+                }
+            }
+        }
+    }
+    out.push('\n');
+}
 
 /// A staged edit to one row, identified by its primary-key values.
 #[derive(Debug, Clone, Serialize, Deserialize)]

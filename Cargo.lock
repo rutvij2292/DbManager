@@ -974,6 +974,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbbackup"
+version = "0.1.0"
+dependencies = [
+ "dbcore",
+ "driver-mysql",
+ "driver-postgres",
+ "driver-sqlite",
+ "flate2",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "dbcore"
 version = "0.1.0"
 dependencies = [
@@ -2515,9 +2528,10 @@ dependencies = [
 
 [[package]]
 name = "lattice"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "dataio",
+ "dbbackup",
  "dbcore",
  "driver-mongo",
  "driver-mssql",

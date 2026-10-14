@@ -51,6 +51,8 @@ export const api = {
   listDatabases: (connId: number) => invoke<string[]>("list_databases", { connId }),
   switchDatabase: (connId: number, database: string) => invoke<void>("switch_database", { connId, database }),
   erSchema: (connId: number, focus?: string, limit?: number) => invoke<ErSchema>("er_schema", { connId, focus, limit }),
+  backupDatabase: (connId: number, path: string, options: BackupOptions, job: number) => invoke<BackupReport>("backup_database", { connId, path, options, job }),
+  restoreDatabase: (connId: number, path: string, options: { stop_on_error: boolean }, job: number) => invoke<RestoreReport>("restore_database", { connId, path, options, job }),
   runQuery: (connId: number, sql: string) => invoke<Summary>("run_query", { connId, sql }),
   getRows: (queryId: number, offset: number, limit: number) => invoke<Val[][]>("get_rows", { queryId, offset, limit }),
   release: (queryId: number) => invoke<void>("release_query", { queryId }),
@@ -75,3 +77,7 @@ export interface ErColumn { name: string; type_name: string; primary_key: boolea
 export interface ErTable { id: string; schema: string | null; name: string; columns: ErColumn[] }
 export interface ErRelation { name: string; from_table: string; from_columns: string[]; to_table: string; to_columns: string[] }
 export interface ErSchema { tables: ErTable[]; relations: ErRelation[]; truncated: boolean; total_tables: number }
+
+export interface BackupOptions { tables: { schema: string | null; name: string }[] | null; structure: boolean; data: boolean; views: boolean; gzip: boolean; add_drop: boolean }
+export interface BackupReport { tables: number; rows: number; bytes: number }
+export interface RestoreReport { statements: number; copied_rows: number; failed: number; errors: [string, string][] }

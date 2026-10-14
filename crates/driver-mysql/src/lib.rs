@@ -83,6 +83,17 @@ fn convert(v: MyValue) -> Value {
     }
 }
 
+/// One pooled connection held for a whole script so `SET` statements persist.
+struct MySession(mysql_async::Conn);
+
+#[async_trait]
+impl Session for MySession {
+    async fn execute(&mut self, sql: &str) -> Result<u64> {
+        self.0.query_drop(sql).await.map_err(DbError::msg)?;
+        Ok(self.0.affected_rows())
+    }
+}
+
 async fn run_on(conn: &mut mysql_async::Conn, sql: &str) -> Result<QueryResult> {
     let mut result = conn.query_iter(sql).await.map_err(DbError::msg)?;
     let mut out = QueryResult::default();
@@ -179,6 +190,33 @@ impl Connection for MyConn {
         let mut out = res?;
         out.elapsed_ms = start.elapsed().as_millis();
         Ok(out)
+    }
+    async fn table_ddl(&self, _schema: Option<&str>, table: &str) -> Result<TableDdl> {
+        let r = self.query(&format!("SHOW CREATE TABLE {}", self.quote(table))).await?;
+        let create = r.rows.first().and_then(|row| row.get(1)).map(Value::display).ok_or_else(|| DbError::msg(format!("table {table} not found")))?;
+        // MySQL's definition already contains keys and foreign keys; checks are switched off by the prelude.
+        Ok(TableDdl { create: format!("{create};"), ..Default::default() })
+    }
+    async fn view_ddls(&self) -> Result<Vec<String>> {
+        let views = self.query("SELECT table_name FROM information_schema.views WHERE table_schema = DATABASE() ORDER BY table_name").await?;
+        let mut out = Vec::new();
+        for v in views.rows {
+            let r = self.query(&format!("SHOW CREATE VIEW {}", self.quote(&v[0].display()))).await?;
+            if let Some(def) = r.rows.first().and_then(|row| row.get(1)) {
+                out.push(format!("{};", def.display()));
+            }
+        }
+        Ok(out)
+    }
+    fn dump_prelude(&self) -> Vec<String> {
+        vec!["SET NAMES utf8mb4;".into(), "SET FOREIGN_KEY_CHECKS = 0;".into(), "SET UNIQUE_CHECKS = 0;".into(), "SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';".into()]
+    }
+    fn dump_epilogue(&self) -> Vec<String> {
+        vec!["SET UNIQUE_CHECKS = 1;".into(), "SET FOREIGN_KEY_CHECKS = 1;".into()]
+    }
+    async fn open_session(&self) -> Result<Option<Box<dyn Session>>> {
+        let conn = self.pool.get_conn().await.map_err(DbError::msg)?;
+        Ok(Some(Box::new(MySession(conn))))
     }
     async fn query_batches(&self, sql: &str, batch_rows: usize, sink: &mut RowSink) -> Result<u64> {
         let mut conn = self.pool.get_conn().await.map_err(DbError::msg)?;

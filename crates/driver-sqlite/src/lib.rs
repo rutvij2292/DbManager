@@ -110,6 +110,25 @@ impl Connection for SqliteConn {
         let _ = producer.await;
         Ok(total)
     }
+    async fn table_ddl(&self, _schema: Option<&str>, table: &str) -> Result<TableDdl> {
+        let lit = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        let create = self.query(&format!("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = {}", lit(table))).await?
+            .rows.first().map(|r| r[0].display()).ok_or_else(|| DbError::msg(format!("table {table} not found")))?;
+        // Indexes created implicitly by constraints have NULL sql and come back with the table itself.
+        let post = self.query(&format!("SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND tbl_name = {} AND sql IS NOT NULL ORDER BY type DESC, name", lit(table))).await?
+            .rows.iter().map(|r| format!("{};", r[0].display().trim_end_matches(';'))).collect();
+        Ok(TableDdl { create: format!("{};", create.trim_end_matches(';')), post, ..Default::default() })
+    }
+    async fn view_ddls(&self) -> Result<Vec<String>> {
+        let r = self.query("SELECT sql FROM sqlite_master WHERE type = 'view' AND sql IS NOT NULL ORDER BY name").await?;
+        Ok(r.rows.iter().map(|r| format!("{};", r[0].display().trim_end_matches(';'))).collect())
+    }
+    fn dump_prelude(&self) -> Vec<String> {
+        vec!["PRAGMA foreign_keys = OFF;".into()]
+    }
+    fn dump_epilogue(&self) -> Vec<String> {
+        vec!["PRAGMA foreign_keys = ON;".into()]
+    }
     async fn bulk_insert(&self, schema: Option<&str>, table: &str, columns: &[String], rows: &[Vec<Value>]) -> Result<Option<u64>> {
         let t = match schema.filter(|s| !s.is_empty()) {
             Some(sc) => format!("{}.{}", quote_ident(sc), quote_ident(table)),

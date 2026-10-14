@@ -345,6 +345,42 @@ async fn export_data(app: tauri::AppHandle, state: State<'_, AppState>, conn_id:
     res.map_err(|e| e.to_string())
 }
 
+#[derive(Serialize, Clone)]
+struct BackupEvent {
+    job: u64,
+    #[serde(flatten)]
+    p: dbbackup::BackupProgress,
+}
+
+#[derive(Serialize, Clone)]
+struct RestoreEvent {
+    job: u64,
+    #[serde(flatten)]
+    p: dbbackup::RestoreProgress,
+}
+
+/// Write a SQL backup of the connected database to `path`.
+#[tauri::command]
+async fn backup_database(app: tauri::AppHandle, state: State<'_, AppState>, conn_id: u64, path: String, options: dbbackup::BackupOptions, job: u64) -> Result<dbbackup::BackupReport, String> {
+    let conn = state.conn(conn_id)?;
+    let flag = start_job(&state, job);
+    let a = app.clone();
+    let res = dbbackup::backup(conn.as_ref(), std::path::Path::new(&path), &options, &move |p| { let _ = a.emit("backup-progress", BackupEvent { job, p }); }, &flag).await;
+    state.jobs.lock().unwrap().remove(&job);
+    res.map_err(|e| e.to_string())
+}
+
+/// Run a SQL script (plain or gzip) against the connected database.
+#[tauri::command]
+async fn restore_database(app: tauri::AppHandle, state: State<'_, AppState>, conn_id: u64, path: String, options: dbbackup::RestoreOptions, job: u64) -> Result<dbbackup::RestoreReport, String> {
+    let conn = state.conn(conn_id)?;
+    let flag = start_job(&state, job);
+    let a = app.clone();
+    let res = dbbackup::restore(conn.as_ref(), std::path::Path::new(&path), &options, &move |p| { let _ = a.emit("restore-progress", RestoreEvent { job, p }); }, &flag).await;
+    state.jobs.lock().unwrap().remove(&job);
+    res.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn import_preview(path: String, has_header: bool, delimiter: Option<char>) -> Result<dataio::Preview, String> {
     dataio::preview(std::path::Path::new(&path), has_header, delimiter).map_err(|e| e.to_string())
@@ -481,7 +517,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

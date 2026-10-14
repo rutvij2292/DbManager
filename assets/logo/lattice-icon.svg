@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#4C74FF"/>
+      <stop offset="1" stop-color="#1F37C9"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0B1B6B" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <!-- macOS-style tile: 824px with ~100px margin -->
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#tile)" filter="url(#drop)"/>
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#sheen)"/>
+  <g transform="translate(512 512) scale(1.3) translate(-512 -512)">
+  <!-- the lattice: every neighbouring pair of nodes is connected, faintly -->
+  <g stroke="#fff" stroke-opacity="0.2" stroke-width="12" stroke-linecap="round">
+    <path d="M362 362H662M362 512H662M362 662H662M362 362V662M512 362V662M662 362V662"/>
+  </g>
+  <!-- unused nodes -->
+  <g fill="#fff" fill-opacity="0.42">
+    <circle cx="512" cy="362" r="26"/><circle cx="662" cy="362" r="26"/>
+    <circle cx="512" cy="512" r="26"/><circle cx="662" cy="512" r="26"/>
+  </g>
+  <!-- the L: one path through the lattice -->
+  <path d="M362 362V662H662" fill="none" stroke="#fff" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#fff"><circle cx="362" cy="362" r="46"/><circle cx="362" cy="512" r="46"/><circle cx="512" cy="662" r="46"/><circle cx="662" cy="662" r="46"/></g>
+  <!-- the corner is the one highlighted node -->
+  <circle cx="362" cy="662" r="58" fill="#FFC53D"/>
+  <circle cx="362" cy="662" r="58" fill="none" stroke="#fff" stroke-width="10"/>
+  </g>
+</svg>

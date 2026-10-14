@@ -24,6 +24,7 @@ import { applyTheme, currentTheme, esc, toast } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { pickDatabase } from "./dbpicker";
 import { createDiagram } from "./diagram";
+import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
 
 interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[] }
@@ -96,6 +97,7 @@ app.innerHTML = `
       <div class="titlebar h-11 shrink-0 bg-canvas border-b border-line flex items-end px-2 gap-2">
         <div id="tabs" class="flex items-end overflow-x-auto flex-1 min-w-0 h-full"></div>
         <div class="flex items-center gap-0.5 pb-1.5">
+          ${iconBtn("backup", "archive", "Back up this database… (⌘⌥B)")}${iconBtn("restore", "restore", "Restore a backup… (⌘⌥R)")}<span class="w-px h-4 bg-line-strong mx-1"></span>
           ${iconBtn("import", "upload", "Import a file… (⌘⌥I)")}${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
         </div>
       </div>
@@ -658,8 +660,11 @@ async function showLauncher() {
   if (active || $("main").firstChild !== wrap) return; // user moved on while we were loading
   const importable = tp.filter((e) => e.kind && !e.already_imported);
   wrap.innerHTML = `<div class="mx-auto px-8 pt-14 pb-10" style="max-width:720px">
-    <h1 class="text-[24px] font-semibold tracking-[-0.01em]">Connections</h1>
-    <p class="text-soft mt-1">Open a database, or add a new one.</p>
+    <div class="flex items-center gap-3.5">
+      <img src="/lattice-logo.svg" alt="" width="46" height="46" style="border-radius:11px;box-shadow:0 1px 2px rgb(20 28 46 / .18), 0 6px 16px rgb(31 55 201 / .22)"/>
+      <div><h1 class="text-[24px] font-semibold tracking-[-0.01em] leading-tight">Lattice</h1>
+      <p class="text-soft">Open a database, or add a new connection.</p></div>
+    </div>
     ${importable.length ? `<div id="tpbanner" class="mt-6 flex items-center gap-4 rounded-xl px-4 py-3 bg-accent-soft" style="box-shadow: inset 3px 0 0 var(--accent)">
         <div class="flex-1"><div class="font-medium">${importable.length} connection${importable.length === 1 ? "" : "s"} found in TablePlus</div>
         <div class="text-soft text-[12.5px]">Bring them over instead of typing hosts and users again.</div></div>
@@ -767,6 +772,24 @@ async function importActive() {
     });
 }
 
+/** ⌘⌥B: back up the connected database to a SQL file. */
+function backupActive() {
+  if (!conn) { toast("Connect to a database first.", "info"); return; }
+  if (!BACKUP_KINDS.includes(conn.kind)) { toast(`Backup isn't available for ${ENGINE_NAMES[conn.kind] ?? conn.kind} yet.`, "info"); return; }
+  if (!conn.db && conn.kind !== "sqlite" && conn.dbs?.length) { toast("Choose a database first (⌘K).", "info"); return; }
+  const c = conn;
+  showBackup(c.id, c.name, c.db ?? c.name, c.objects, (m) => { toast(m, m.startsWith("Backup failed") ? "error" : "ok"); });
+}
+
+/** ⌘⌥R: run a SQL backup file against the connected database. */
+function restoreActive() {
+  if (!conn) { toast("Connect to a database first.", "info"); return; }
+  if (!BACKUP_KINDS.includes(conn.kind)) { toast(`Restore isn't available for ${ENGINE_NAMES[conn.kind] ?? conn.kind} yet.`, "info"); return; }
+  if (!conn.db && conn.kind !== "sqlite" && conn.dbs?.length) { toast("Choose a database first (⌘K).", "info"); return; }
+  const c = conn;
+  showRestore(c.id, c.name, c.db ?? "", c.env, async (m) => { toast(m, /failed|stopped|error/i.test(m) ? "error" : "ok"); await refreshObjects(); });
+}
+
 async function cancelActive() {
   const t = active;
   if (!t?.running || !t.conn) return;
@@ -784,6 +807,8 @@ window.addEventListener("keydown", (e) => {
   // ⌥ changes e.key on macOS, so match the physical key for the ⌘⌥ combos.
   if (e.altKey && e.code === "KeyE") return go(exportActive);
   if (e.altKey && e.code === "KeyI") return go(importActive);
+  if (e.altKey && e.code === "KeyB") return go(backupActive);
+  if (e.altKey && e.code === "KeyR") return go(restoreActive);
   if (k === "t") go(() => makeTab("query", "Query"));
   else if (k === "w") go(() => active && closeTab(active));
   else if (k === "o" || k === "n") go(openConnections);
@@ -811,6 +836,8 @@ function cycle(d: number) {
   activate(tabs[(tabs.indexOf(active) + d + tabs.length) % tabs.length]);
 }
 
+$("backup").onclick = backupActive;
+$("restore").onclick = restoreActive;
 $("import").onclick = importActive;
 $("export").onclick = exportActive;
 $("newtab").onclick = () => makeTab("query", "Query");

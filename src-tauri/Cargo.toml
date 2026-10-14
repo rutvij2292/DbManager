@@ -1,6 +1,6 @@
 [package]
 name = "lattice"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 
 [build-dependencies]
@@ -23,3 +23,4 @@ driver-redis = { path = "../crates/driver-redis" }
 driver-mongo = { path = "../crates/driver-mongo" }
 dataio = { path = "../crates/dataio" }
 tableplus-import = { path = "../crates/tableplus-import" }
+dbbackup = { path = "../crates/dbbackup" }

@@ -2,8 +2,8 @@ import "./style.css";
 import { open } from "@tauri-apps/plugin-dialog";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
-import { autocompletion, completionKeymap } from "@codemirror/autocomplete";
-import { format as formatSql } from "sql-formatter";
+import { autocompletion, completionKeymap, pickedCompletion } from "@codemirror/autocomplete";
+import { makeCompletionSource, recordAccepted } from "./complete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { sql, SQLite, PostgreSQL, MySQL } from "@codemirror/lang-sql";
 import { api, type ObjectRef, type Summary, type Profile, type SchemaTable } from "./api";
@@ -25,15 +25,12 @@ const sqlLang = new Compartment();
 
 function langFor(c: Conn | null) {
   const dialect = c?.kind === "sqlite" ? SQLite : c && ["mysql", "mariadb"].includes(c.kind) ? MySQL : PostgreSQL;
-  const schema: Record<string, string[]> = {};
-  for (const t of c?.schema ?? []) {
-    schema[t.name] = t.columns;
-    if (t.schema) schema[`${t.schema}.${t.name}`] = t.columns;
-  }
-  return sql({ dialect, schema, upperCaseKeywords: true });
+  return sql({ dialect, upperCaseKeywords: true });
 }
 
-function formatEditor(view: EditorView, c: Conn | null) {
+async function formatEditor(view: EditorView, c: Conn | null) {
+  // Loaded on first use to keep startup memory small.
+  const { format: formatSql } = await import("sql-formatter");
   const language = c?.kind === "sqlite" ? "sqlite" : c && ["mysql", "mariadb"].includes(c.kind) ? "mysql" : "postgresql";
   const sel = view.state.selection.main;
   const [from, to] = sel.empty ? [0, view.state.doc.length] : [sel.from, sel.to];
@@ -83,7 +80,9 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
       state: EditorState.create({
         doc: "",
         extensions: [
-          lineNumbers(), history(), sqlLang.of(langFor(conn)), autocompletion(),
+          lineNumbers(), history(), sqlLang.of(langFor(conn)),
+          autocompletion({ override: [makeCompletionSource(() => tab.conn?.schema ?? [])], activateOnTyping: true, icons: false }),
+          EditorView.updateListener.of((u) => { for (const tr of u.transactions) { const c = tr.annotation(pickedCompletion); if (c) recordAccepted(c.label); } }),
           keymap.of([
             { key: "Mod-Enter", run: () => (runActive(), true) },
             { key: "Mod-i", run: (v) => (formatEditor(v, tab.conn), true) },

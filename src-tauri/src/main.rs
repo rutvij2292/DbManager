@@ -193,6 +193,15 @@ fn release_query(state: State<'_, AppState>, query_id: u64) {
 }
 
 fn main() {
+    // Two async workers are plenty for a desktop client and keep idle memory low.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(8)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    tauri::async_runtime::set(rt.handle().clone());
+    std::mem::forget(rt);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())

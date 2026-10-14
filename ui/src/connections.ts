@@ -19,7 +19,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50 select-none";
   overlay.innerHTML = `
-    <div class="w-[720px] h-[460px] bg-zinc-800 rounded-lg shadow-2xl border border-zinc-700 flex overflow-hidden">
+    <div class="w-[760px] h-[560px] bg-zinc-800 rounded-lg shadow-2xl border border-zinc-700 flex overflow-hidden">
       <div class="w-56 bg-zinc-900 border-r border-zinc-700 flex flex-col">
         <div id="list" class="flex-1 overflow-auto p-1"></div>
         <button id="new" class="m-2 bg-zinc-800 hover:bg-zinc-700 rounded py-1">+ New connection</button>
@@ -27,12 +27,20 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
       <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[12.5px]">
         <label>Name <input name="name" class="${field}" placeholder="Local Postgres"/></label>
         <label>Type <select name="kind" class="${field}">${KINDS.map((k) => `<option value="${k.id}">${k.label}</option>`).join("")}</select></label>
-        <div id="net" class="flex flex-col gap-2">
+        <div id="net" class="flex flex-col gap-2 overflow-auto">
           <div class="flex gap-2"><label class="flex-1">Host <input name="host" class="${field}" value="127.0.0.1"/></label>
           <label class="w-24">Port <input name="port" type="number" class="${field}"/></label></div>
           <div class="flex gap-2"><label class="flex-1">User <input name="user" class="${field}"/></label>
           <label class="flex-1">Password <input name="password" type="password" class="${field}" placeholder="(stored in Keychain)"/></label></div>
-          <label>Database <input name="database" class="${field}"/></label>
+          <div class="flex gap-2"><label class="flex-1">Database <input name="database" class="${field}"/></label>
+          <label class="w-44">SSL <select name="ssl" class="${field}"><option value="prefer">Prefer</option><option value="disable">Off</option><option value="require">Require</option><option value="verify">Verify certificate</option></select></label></div>
+          <label class="flex items-center gap-2 mt-1"><input type="checkbox" name="usessh"/> Connect over SSH (uses your ssh keys / agent)</label>
+          <div id="ssh" class="hidden flex flex-col gap-2">
+            <div class="flex gap-2"><label class="flex-1">SSH host <input name="ssh_host" class="${field}"/></label>
+            <label class="w-20">Port <input name="ssh_port" type="number" class="${field}" placeholder="22"/></label>
+            <label class="w-32">User <input name="ssh_user" class="${field}"/></label></div>
+            <label>Private key (optional) <input name="ssh_key" class="${field}" placeholder="~/.ssh/id_ed25519"/></label>
+          </div>
         </div>
         <div id="file" class="hidden flex gap-2 items-end"><label class="flex-1">File <input name="path" class="${field}"/></label>
           <button type="button" id="browse" class="bg-zinc-700 hover:bg-zinc-600 rounded px-3 py-1">Browse…</button></div>
@@ -58,6 +66,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     const k = kindOf();
     q("#net").classList.toggle("hidden", !!k.file);
     q("#file").classList.toggle("hidden", !k.file);
+    q("#ssh").classList.toggle("hidden", !el("usessh").checked);
     if (k.port && (!el("port").value || KINDS.some((x) => String(x.port) === el("port").value))) el("port").value = String(k.port);
   };
   const toConfig = (): ConnConfig => ({
@@ -68,7 +77,18 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     password: el("password").value || undefined,
     database: el("database").value || undefined,
     path: el("path").value || undefined,
+    ...sshAndSsl(),
   });
+  const sshAndSsl = () => {
+    const on = el("usessh").checked;
+    return {
+      ssl: el("ssl").value,
+      ssh_host: on ? el("ssh_host").value || undefined : undefined,
+      ssh_port: on && el("ssh_port").value ? +el("ssh_port").value : undefined,
+      ssh_user: on ? el("ssh_user").value || undefined : undefined,
+      ssh_key: on ? el("ssh_key").value || undefined : undefined,
+    };
+  };
   const toProfile = (): Profile => ({
     id: current?.id ?? "",
     name: el("name").value || kindOf().label,
@@ -78,6 +98,11 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     user: el("user").value || null,
     database: el("database").value || null,
     path: el("path").value || null,
+    ssl: el("ssl").value,
+    ssh_host: el("usessh").checked ? el("ssh_host").value || null : null,
+    ssh_port: el("usessh").checked && el("ssh_port").value ? +el("ssh_port").value : null,
+    ssh_user: el("usessh").checked ? el("ssh_user").value || null : null,
+    ssh_key: el("usessh").checked ? el("ssh_key").value || null : null,
   });
   const fill = (p: Profile | null) => {
     current = p;
@@ -89,6 +114,12 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     el("password").value = "";
     el("database").value = p?.database ?? "";
     el("path").value = p?.path ?? "";
+    el("ssl").value = p?.ssl ?? "prefer";
+    el("usessh").checked = !!p?.ssh_host;
+    el("ssh_host").value = p?.ssh_host ?? "";
+    el("ssh_port").value = p?.ssh_port ? String(p.ssh_port) : "";
+    el("ssh_user").value = p?.ssh_user ?? "";
+    el("ssh_key").value = p?.ssh_key ?? "";
     syncKind();
     msg("");
   };
@@ -108,6 +139,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   window.addEventListener("keydown", onKey, true);
 
   el("kind").onchange = syncKind;
+  el("usessh").onchange = syncKind;
   q("#new").onclick = () => { fill(null); refresh(); };
   q("#close").onclick = close;
   q("#browse").onclick = async () => { const p = await open({ multiple: false }); if (typeof p === "string") el("path").value = p; };

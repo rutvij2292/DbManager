@@ -124,7 +124,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn roundtrip() {
-        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), path: None, host: None, port: None, user: None, password: None, database: None }).await.unwrap();
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap();
         c.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT NOT NULL)").await.unwrap();
         let r = c.query("INSERT INTO t(name) VALUES ('a'),('b')").await.unwrap();
         assert_eq!(r.affected, Some(2));
@@ -137,7 +137,7 @@ mod tests {
 
     #[tokio::test]
     async fn explain_shows_scan_vs_index() {
-        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), path: None, host: None, port: None, user: None, password: None, database: None }).await.unwrap();
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap();
         c.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)").await.unwrap();
         let scan = c.explain("SELECT * FROM t WHERE name = 'a'", false).await.unwrap();
         assert!(scan.children[0].detail.starts_with("SCAN"), "{:?}", scan.children[0].detail);
@@ -148,7 +148,7 @@ mod tests {
 
     #[tokio::test]
     async fn staged_changes_apply_atomically() {
-        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), path: None, host: None, port: None, user: None, password: None, database: None }).await.unwrap();
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap();
         c.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)").await.unwrap();
         c.query("INSERT INTO t VALUES (1,'a'),(2,'b')").await.unwrap();
         let key = |i| vec![("id".to_string(), Value::I64(i))];

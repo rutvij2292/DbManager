@@ -99,7 +99,7 @@ pub struct ObjectInfo {
     pub ddl: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConnConfig {
     pub kind: String,
     pub path: Option<String>,
@@ -108,6 +108,17 @@ pub struct ConnConfig {
     pub user: Option<String>,
     pub password: Option<String>,
     pub database: Option<String>,
+    /// "disable" | "prefer" | "require" (encrypt, don't verify) | "verify" (verify against system roots)
+    #[serde(default)]
+    pub ssl: Option<String>,
+    #[serde(default)]
+    pub ssh_host: Option<String>,
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub ssh_key: Option<String>,
 }
 
 #[async_trait]

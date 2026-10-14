@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use dbcore::*;
-use mysql_async::{prelude::*, Opts, OptsBuilder, Pool, Value as MyValue};
+use mysql_async::consts::ColumnType;
+use mysql_async::{prelude::*, Opts, OptsBuilder, Pool, SslOpts, Value as MyValue};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,7 +16,13 @@ impl Driver for MysqlDriver {
         "mysql"
     }
     async fn connect(&self, cfg: &ConnConfig) -> Result<Arc<dyn Connection>> {
+        let ssl = match cfg.ssl.as_deref().unwrap_or("prefer") {
+            "disable" | "prefer" => None, // MySQL has no cheap "try TLS then fall back"; opt in with require/verify
+            "verify" => Some(SslOpts::default()),
+            _ => Some(SslOpts::default().with_danger_accept_invalid_certs(true).with_danger_skip_domain_validation(true)),
+        };
         let opts: Opts = OptsBuilder::default()
+            .ssl_opts(ssl)
             .ip_or_hostname(cfg.host.clone().unwrap_or_else(|| "127.0.0.1".into()))
             .tcp_port(cfg.port.unwrap_or(3306))
             .user(cfg.user.clone().or(Some("root".into())))
@@ -28,6 +35,25 @@ impl Driver for MysqlDriver {
 
 fn lit(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
+}
+
+/// The text protocol sends numbers as bytes; use the column type to recover them.
+fn convert_col(v: MyValue, ty: ColumnType) -> Value {
+    use ColumnType::*;
+    match (&v, ty) {
+        (MyValue::Bytes(b), MYSQL_TYPE_TINY | MYSQL_TYPE_SHORT | MYSQL_TYPE_LONG | MYSQL_TYPE_LONGLONG | MYSQL_TYPE_INT24 | MYSQL_TYPE_YEAR) => {
+            if let Some(n) = std::str::from_utf8(b).ok().and_then(|s| s.parse::<i64>().ok()) {
+                return Value::I64(n);
+            }
+        }
+        (MyValue::Bytes(b), MYSQL_TYPE_FLOAT | MYSQL_TYPE_DOUBLE) => {
+            if let Some(n) = std::str::from_utf8(b).ok().and_then(|s| s.parse::<f64>().ok()) {
+                return Value::F64(n);
+            }
+        }
+        _ => {}
+    }
+    convert(v)
 }
 
 fn convert(v: MyValue) -> Value {
@@ -121,8 +147,9 @@ impl Connection for MyConn {
         if out.columns.is_empty() {
             out.affected = Some(result.affected_rows());
         } else {
+            let types: Vec<ColumnType> = result.columns_ref().iter().map(|c| c.column_type()).collect();
             let rows: Vec<mysql_async::Row> = result.collect().await.map_err(DbError::msg)?;
-            out.rows = rows.into_iter().map(|r| r.unwrap().into_iter().map(convert).collect()).collect();
+            out.rows = rows.into_iter().map(|r| r.unwrap().into_iter().zip(&types).map(|(v, t)| convert_col(v, *t)).collect()).collect();
         }
         out.elapsed_ms = start.elapsed().as_millis();
         Ok(out)

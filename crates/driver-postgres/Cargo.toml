@@ -9,3 +9,5 @@ async-trait.workspace = true
 tokio.workspace = true
 tokio-postgres = "0.7"
 serde_json.workspace = true
+native-tls = "0.2"
+postgres-native-tls = "0.5"

@@ -3,6 +3,7 @@ use dbcore::*;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
+use postgres_native_tls::MakeTlsConnector;
 
 /// PostgreSQL-protocol driver (also used for CockroachDB, Redshift, Greenplum).
 pub struct PostgresDriver;
@@ -26,12 +27,48 @@ impl Driver for PostgresDriver {
             c.dbname(d);
         }
         c.connect_timeout(std::time::Duration::from_secs(10));
-        let (client, connection) = c.connect(NoTls).await.map_err(DbError::msg)?;
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        let mode = cfg.ssl.as_deref().unwrap_or("prefer");
+        let tls = || -> Result<MakeTlsConnector> {
+            let b = native_tls::TlsConnector::builder()
+                .danger_accept_invalid_certs(mode != "verify")
+                .danger_accept_invalid_hostnames(mode != "verify")
+                .build()
+                .map_err(DbError::msg)?;
+            Ok(MakeTlsConnector::new(b))
+        };
+        let client = match mode {
+            "disable" => plain(&c).await?,
+            "prefer" => match tls() {
+                Ok(t) => match c.connect(t).await {
+                    Ok((client, conn)) => { spawn_conn(conn); client }
+                    Err(_) => plain(&c).await?, // server without TLS
+                },
+                Err(_) => plain(&c).await?,
+            },
+            _ => {
+                let (client, conn) = c.connect(tls()?).await.map_err(DbError::msg)?;
+                spawn_conn(conn);
+                client
+            }
+        };
         Ok(Arc::new(PgConn(client)))
     }
+}
+
+fn spawn_conn<S, T>(conn: tokio_postgres::Connection<S, T>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+}
+
+async fn plain(c: &tokio_postgres::Config) -> Result<Client> {
+    let (client, conn) = c.connect(NoTls).await.map_err(DbError::msg)?;
+    spawn_conn(conn);
+    Ok(client)
 }
 
 fn lit(s: &str) -> String {

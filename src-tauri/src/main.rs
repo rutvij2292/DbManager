@@ -20,6 +20,8 @@ struct AppState {
     next_id: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<dyn Connection>>>,
     results: Mutex<HashMap<u64, QueryResult>>,
+    /// ssh processes keeping tunnels open, keyed by connection id (killed on drop).
+    tunnels: Mutex<HashMap<u64, tokio::process::Child>>,
 }
 
 impl AppState {
@@ -41,6 +43,43 @@ struct QuerySummary {
     elapsed_ms: u128,
 }
 
+/// Start `ssh -N -L` (using the user's keys / ssh-agent) and point the config at the local end.
+async fn open_tunnel(config: &mut ConnConfig) -> Result<Option<tokio::process::Child>, String> {
+    let Some(ssh_host) = config.ssh_host.clone().filter(|h| !h.is_empty()) else { return Ok(None) };
+    let db_host = config.host.clone().unwrap_or_else(|| "127.0.0.1".into());
+    let db_port = config.port.ok_or("a port is required for SSH tunnels")?;
+    let local = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?.local_addr().map_err(|e| e.to_string())?.port();
+    let target = match config.ssh_user.as_deref().filter(|u| !u.is_empty()) {
+        Some(u) => format!("{u}@{ssh_host}"),
+        None => ssh_host,
+    };
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.args(["-N", "-L", &format!("127.0.0.1:{local}:{db_host}:{db_port}")])
+        .args(["-p", &config.ssh_port.unwrap_or(22).to_string()])
+        .args(["-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=30"]);
+    if let Some(k) = config.ssh_key.as_deref().filter(|k| !k.is_empty()) {
+        cmd.args(["-i", k]);
+    }
+    let mut child = cmd.arg(target).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).kill_on_drop(true).spawn().map_err(|e| format!("could not start ssh: {e}"))?;
+    for _ in 0..100 {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            let mut err = String::new();
+            if let Some(mut se) = child.stderr.take() {
+                use tokio::io::AsyncReadExt;
+                let _ = se.read_to_string(&mut err).await;
+            }
+            return Err(format!("SSH tunnel failed ({status}): {}", err.trim()));
+        }
+        if tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_ok() {
+            config.host = Some("127.0.0.1".into());
+            config.port = Some(local);
+            return Ok(Some(child));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err("SSH tunnel timed out after 10 s".into())
+}
+
 async fn open_conn(config: &ConnConfig) -> Result<Arc<dyn Connection>, String> {
     let conn = match config.kind.as_str() {
         "sqlite" => SqliteDriver.connect(config).await,
@@ -55,6 +94,13 @@ async fn open_conn(config: &ConnConfig) -> Result<Arc<dyn Connection>, String> {
     Ok(conn)
 }
 
+/// Connect, going through an SSH tunnel when configured. The tunnel handle must be kept alive.
+async fn open_conn_tunneled(mut config: ConnConfig) -> Result<(Arc<dyn Connection>, Option<tokio::process::Child>), String> {
+    let tunnel = open_tunnel(&mut config).await?;
+    let conn = open_conn(&config).await?;
+    Ok((conn, tunnel))
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct Profile {
     id: String,
@@ -65,6 +111,16 @@ struct Profile {
     user: Option<String>,
     database: Option<String>,
     path: Option<String>,
+    #[serde(default)]
+    ssl: Option<String>,
+    #[serde(default)]
+    ssh_host: Option<String>,
+    #[serde(default)]
+    ssh_port: Option<u16>,
+    #[serde(default)]
+    ssh_user: Option<String>,
+    #[serde(default)]
+    ssh_key: Option<String>,
 }
 
 fn profiles_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -114,17 +170,23 @@ fn delete_connection(app: tauri::AppHandle, id: String) -> Result<(), String> {
 /// Connect without saving, to verify credentials.
 #[tauri::command]
 async fn test_connection(config: ConnConfig) -> Result<(), String> {
-    open_conn(&config).await.map(|_| ())
+    open_conn_tunneled(config).await.map(|_| ())
 }
 
 #[tauri::command]
 async fn connect_saved(app: tauri::AppHandle, state: State<'_, AppState>, id: String) -> Result<u64, String> {
     let p = read_profiles(&app)?.into_iter().find(|p| p.id == id).ok_or("connection not found")?;
     let password = keychain(&id).ok().and_then(|e| e.get_password().ok());
-    let config = ConnConfig { kind: p.kind, path: p.path, host: p.host, port: p.port, user: p.user, password, database: p.database };
-    let conn = open_conn(&config).await?;
+    let config = ConnConfig {
+        kind: p.kind, path: p.path, host: p.host, port: p.port, user: p.user, password, database: p.database,
+        ssl: p.ssl, ssh_host: p.ssh_host, ssh_port: p.ssh_port, ssh_user: p.ssh_user, ssh_key: p.ssh_key,
+    };
+    let (conn, tunnel) = open_conn_tunneled(config).await?;
     let cid = state.id();
     state.conns.lock().unwrap().insert(cid, conn);
+    if let Some(t) = tunnel {
+        state.tunnels.lock().unwrap().insert(cid, t);
+    }
     Ok(cid)
 }
 
@@ -140,15 +202,19 @@ fn select_all_sql(state: State<'_, AppState>, conn_id: u64, schema: Option<Strin
 
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, config: ConnConfig) -> Result<u64, String> {
-    let conn = open_conn(&config).await?;
+    let (conn, tunnel) = open_conn_tunneled(config).await?;
     let id = state.id();
     state.conns.lock().unwrap().insert(id, conn);
+    if let Some(t) = tunnel {
+        state.tunnels.lock().unwrap().insert(id, t);
+    }
     Ok(id)
 }
 
 #[tauri::command]
 fn disconnect(state: State<'_, AppState>, conn_id: u64) {
     state.conns.lock().unwrap().remove(&conn_id);
+    state.tunnels.lock().unwrap().remove(&conn_id); // kill_on_drop closes the tunnel
 }
 
 #[tauri::command]

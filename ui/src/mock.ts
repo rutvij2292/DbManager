@@ -25,7 +25,19 @@ const names = ["Ada Lovelace", "Grace Hopper", "Linus Torvalds", "Margaret Hamil
 const status = ["paid", "pending", "shipped", "refunded"];
 const rows = Array.from({ length: 5000 }, (_, i) => [I(i + 1), I(1 + (i * 7) % 8), T(status[i % 4]), F(Math.round((20 + ((i * 37) % 480)) * 100) / 100), T(`2026-0${1 + (i % 9)}-${10 + (i % 18)} 1${i % 10}:2${i % 6}:00`), i % 3 === 0 ? N : { t: "Bool", v: i % 2 === 0 }]);
 
-let currentDb: string | null = null;
+// Several connections at once: each backend id remembers its profile and database.
+let nextId = 1;
+const dbOf = new Map<number, string | null>();
+const profOf = new Map<number, string>();
+const dbTables: Record<string, string[]> = {
+  shop: ["customers", "order_items", "orders", "products", "revenue_by_month"],
+  shop_staging: ["customers", "orders", "products"],
+  analytics: ["events", "sessions", "page_views"],
+  warehouse: ["fact_sales", "dim_customer", "dim_product", "dim_date"],
+  billing: ["invoices", "payments", "subscriptions", "plans"],
+  "notes.sqlite": ["notes", "tags"],
+};
+const objectsOf = (db: string | null) => (db && dbTables[db] ? dbTables[db] : []).map((name) => ({ schema: null, name, kind: name === "revenue_by_month" ? "view" : "table" }));
 const col = (name: string, type: string, pk = false, fk = false, nullable = true) => ({ name, type_name: type, primary_key: pk, foreign_key: fk, nullable });
 const er = {
   tables: [
@@ -56,13 +68,14 @@ const handlers: Record<string, (a: any) => unknown> = {
     return { ...er, tables: er.tables.filter((t) => keep.has(t.id)), relations: er.relations.filter((r) => keep.has(r.from_table) && keep.has(r.to_table)) };
   },
   list_connections: () => profiles,
-  connect_saved: (a) => { currentDb = profiles.find((p) => p.id === a.id)?.database ?? null; return 1; },
-  list_databases: () => ["analytics", "information_schema", "mysql", "performance_schema", "shop", "shop_staging", "sys"],
-  switch_database: (a) => { currentDb = a.database; return null; },
+  connect_saved: (a) => { const id = nextId++; dbOf.set(id, profiles.find((p) => p.id === a.id)?.database ?? null); profOf.set(id, a.id); return id; },
+  open_database: (a) => { const id = nextId++; dbOf.set(id, a.database); profOf.set(id, profOf.get(a.connId) ?? ""); return id; },
+  list_databases: (a) => { const k = profiles.find((p) => p.id === profOf.get(a.connId))?.kind; return k === "mysql" ? ["analytics", "information_schema", "mysql", "performance_schema", "shop", "shop_staging", "sys"] : k === "postgres" ? ["billing", "postgres", "warehouse"] : []; },
+  switch_database: () => null,
   connect: () => 1,
   test_connection: () => null,
-  list_objects: () => (currentDb === "shop" ? tables.map(({ schema, name, kind }) => ({ schema, name, kind })) : []),
-  schema_map: () => (currentDb !== "shop" ? [] : tables).map(({ schema, name, columns }) => ({ schema, name, columns })),
+  list_objects: (a) => objectsOf(dbOf.get(a.connId) ?? (profiles.find((p) => p.id === profOf.get(a.connId))?.kind === "sqlite" ? "notes.sqlite" : null)),
+  schema_map: (a) => objectsOf(dbOf.get(a.connId) ?? null).map((o) => ({ schema: null, name: o.name, columns: tables.find((t) => t.name === o.name)?.columns ?? ["id", "name"] })),
   describe: (a) => {
     const t = tables.find((x) => x.name === a.name) ?? tables[0];
     return {

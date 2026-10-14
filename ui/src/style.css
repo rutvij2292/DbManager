@@ -1,9 +1,4 @@
 @import "tailwindcss";
-@import "@fontsource/ibm-plex-sans/latin-400.css";
-@import "@fontsource/ibm-plex-sans/latin-500.css";
-@import "@fontsource/ibm-plex-sans/latin-600.css";
-@import "@fontsource/ibm-plex-mono/latin-400.css";
-@import "@fontsource/ibm-plex-mono/latin-500.css";
 
 /* Light is the default; `.dark` on <html> swaps every token. */
 :root {
@@ -41,8 +36,8 @@
 }
 
 @theme inline {
-  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
   --color-canvas: var(--canvas); --color-panel: var(--panel); --color-raised: var(--raised); --color-raised2: var(--raised2);
   --color-line: var(--line); --color-line-strong: var(--line-strong);
   --color-ink: var(--ink); --color-soft: var(--soft); --color-muted: var(--muted);
@@ -53,7 +48,7 @@
   --shadow-pop: var(--shadow);
 }
 
-html, body { background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 13px; -webkit-font-smoothing: antialiased; }
+html, body { background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; font-feature-settings: "tnum" 0; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 input, select, textarea { font: inherit; }
@@ -67,7 +62,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .cm-gutters { background: var(--panel) !important; border: none !important; color: var(--muted) !important; }
 .cm-activeLineGutter { background: transparent !important; color: var(--soft) !important; }
 .cm-activeLine { background: color-mix(in srgb, var(--accent) 5%, transparent) !important; }
-.cm-content, .cm-scroller { font-family: var(--font-mono); font-size: 13px; line-height: 1.6; }
+.cm-content, .cm-scroller { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65; }
 .cm-cursor { border-left-color: var(--accent) !important; }
 .cm-selectionBackground, .cm-editor .cm-selectionBackground { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }
 .cm-tooltip { background: var(--panel) !important; border: 1px solid var(--line-strong) !important; border-radius: 8px !important; box-shadow: var(--shadow); overflow: hidden; }

@@ -49,6 +49,7 @@ export const api = {
   tableplusScan: () => invoke<TpEntry[]>("tableplus_scan"),
   tableplusImport: (ids: string[], passwords: boolean) => invoke<{ imported: number; passwords_copied: number; passwords_missing: number }>("tableplus_import", { ids, passwords }),
   listDatabases: (connId: number) => invoke<string[]>("list_databases", { connId }),
+  openDatabase: (connId: number, database: string) => invoke<number>("open_database", { connId, database }),
   switchDatabase: (connId: number, database: string) => invoke<void>("switch_database", { connId, database }),
   erSchema: (connId: number, focus?: string, limit?: number) => invoke<ErSchema>("er_schema", { connId, focus, limit }),
   backupDatabase: (connId: number, path: string, options: BackupOptions, job: number) => invoke<BackupReport>("backup_database", { connId, path, options, job }),

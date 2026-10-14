@@ -300,6 +300,19 @@ async fn er_schema(state: State<'_, AppState>, conn_id: u64, focus: Option<Strin
     state.conn(conn_id)?.er_schema(focus.as_deref(), limit.unwrap_or(60)).await.map_err(|e| e.to_string())
 }
 
+/// Open another database on the same server as its own connection (a new id). The server's SSH
+/// tunnel is shared, so the original connection must outlive the ones opened from it.
+#[tauri::command]
+async fn open_database(state: State<'_, AppState>, conn_id: u64, database: String) -> Result<u64, String> {
+    let mut config = state.configs.lock().unwrap().get(&conn_id).cloned().ok_or("not connected")?;
+    config.database = Some(database);
+    let conn = open_conn(&config).await?;
+    let id = state.id();
+    state.conns.lock().unwrap().insert(id, conn);
+    state.configs.lock().unwrap().insert(id, config);
+    Ok(id)
+}
+
 #[tauri::command]
 async fn schema_map(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<SchemaTable>, String> {
     state.conn(conn_id)?.schema_map().await.map_err(|e| e.to_string())
@@ -517,7 +530,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

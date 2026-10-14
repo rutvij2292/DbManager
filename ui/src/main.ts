@@ -20,21 +20,26 @@ import { sql, SQLite, PostgreSQL, MySQL, MSSQL } from "@codemirror/lang-sql";
 import { api, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, envColor, ENGINE_NAMES } from "./icons";
-import { applyTheme, currentTheme, esc, toast } from "./ui";
+import { applyTheme, currentTheme, esc, toast, contextMenu } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { pickDatabase } from "./dbpicker";
 import { createDiagram } from "./diagram";
 import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
 
-interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[] }
+/** One open database: its own backend connection, tables and completion schema. */
+interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean }
+/** A saved connection that is currently connected, with the databases opened on it. */
+interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[] }
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
   root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement;
 }
 
+/** The current workspace: the database the sidebar last selected or the active tab belongs to. */
 let conn: Conn | null = null;
+const servers: Server[] = [];
 const tabs: Tab[] = [];
 let active: Tab | null = null;
 let tabSeq = 0;
@@ -73,15 +78,11 @@ app.innerHTML = `
   <div class="h-full flex">
     <aside class="w-[252px] shrink-0 bg-canvas border-r border-line flex flex-col">
       <div class="titlebar h-11 shrink-0"></div>
-      <button id="switch" class="mx-2.5 mb-2.5 flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-raised" title="Switch connection (⌘O)">
-        <span id="sw-badge"></span>
-        <span class="min-w-0 flex-1"><span id="sw-name" class="block font-medium truncate">Not connected</span><span id="sw-sub" class="block text-[11px] text-muted truncate">Choose a connection</span></span>
-        <span class="text-muted">${icon("chevronDown", 14)}</span>
-      </button>
-      <button id="dbpick" class="hidden mx-2.5 mb-2 items-center gap-2 rounded-lg px-2.5 h-8 text-left bg-raised hover:bg-raised2" title="Switch database (⌘K)">
-        <span class="text-soft">${icon("database", 14)}</span><span id="dbname" class="flex-1 truncate font-medium"></span><span class="kbd">⌘K</span>
-      </button>
-      <div class="px-2.5 mb-2 relative">
+      <div class="px-3 mb-1.5 flex items-center">
+        <span class="text-[11.5px] font-semibold text-muted">Connections</span><span class="flex-1"></span>
+        <button id="addconn" class="btn btn-ghost" style="width:24px;height:22px;padding:0;justify-content:center" title="Connect to a database (⌘N)" aria-label="Connect to a database">${icon("plus", 14)}</button>
+      </div>
+      <div class="px-2.5 mb-1.5 relative">
         <span class="absolute left-5 top-[7px] text-muted pointer-events-none">${icon("search", 14)}</span>
         <input id="filter" placeholder="Search tables" class="field w-full" style="padding-left:28px" />
         <span class="kbd absolute right-5 top-[5px] pointer-events-none">⌘P</span>
@@ -112,13 +113,13 @@ app.innerHTML = `
   </div>`;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
+function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | null = conn): Tab {
   const root = document.createElement("div");
   root.className = "h-full flex flex-col min-h-0";
   const grid = new Grid();
   const status = document.createElement("div");
   status.className = "h-7 shrink-0 px-4 text-[11.5px] leading-7 text-soft bg-canvas border-t border-line truncate";
-  const tab: Tab = { id: ++tabSeq, title, kind, conn, table, root, grid, status };
+  const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status };
   if (kind === "query") {
     root.append(queryBar(tab));
     const ed = document.createElement("div");
@@ -128,7 +129,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
       state: EditorState.create({
         doc: "",
         extensions: [
-          lineNumbers(), history(), syntaxHighlighting(sqlHighlight), sqlLang.of(langFor(conn)),
+          lineNumbers(), history(), syntaxHighlighting(sqlHighlight), sqlLang.of(langFor(c)),
           autocompletion({ override: [makeCompletionSource(() => tab.conn?.schema ?? [])], activateOnTyping: true, icons: false }),
           EditorView.updateListener.of((u) => { for (const tr of u.transactions) { const c = tr.annotation(pickedCompletion); if (c) recordAccepted(c.label); } }),
           keymap.of([
@@ -171,7 +172,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
     segWrap.append(seg("Data", "data", "table"), seg("Structure", "structure", "structure"));
     const sep = document.createElement("span");
     sep.className = "hint w-px h-4 bg-line-strong mx-1";
-    const sqlLike = !!conn && !["redis", "mongo"].includes(conn.kind);
+    const sqlLike = !!c && !["redis", "mongo"].includes(c.kind);
     const filterBtn = btn("Filter", "Filter rows (⌘F)", () => tab.filterBar?.toggle(), "filter", "btn btn-ghost");
     filterBtn.dataset.label = "Filter";
     tab.filterBtn = filterBtn;
@@ -238,6 +239,7 @@ function toggleBuilder() {
 
 function activate(t: Tab) {
   active = t;
+  if (t.conn) conn = t.conn; // the sidebar and dialogs follow the tab you are working in
   const main = $("main");
   main.replaceChildren(t.root);
   renderTabs();
@@ -252,7 +254,7 @@ function closeTab(t: Tab) {
   if (active === t) {
     const next = tabs[Math.min(i, tabs.length - 1)];
     if (next) activate(next);
-    else { active = null; renderTabs(); showLauncher(); }
+    else { active = null; renderTabs(); showHome(); }
   } else renderTabs();
 }
 
@@ -265,8 +267,12 @@ function renderTabs() {
       d.className = "group flex items-center gap-2 pl-3 pr-2 h-[34px] mb-[-1px] rounded-t-lg cursor-default text-[12.5px] max-w-52 shrink-0 border border-b-0 " +
         (on ? "bg-panel text-ink border-line" : "text-soft border-transparent hover:bg-raised");
       if (on) d.style.boxShadow = "inset 0 2px 0 var(--accent)";
-      d.title = `${t.title}${i < 9 ? `  (⌘${i + 1})` : ""}`;
-      d.innerHTML = `<span class="${on ? "text-accent" : "text-muted"}">${icon(t.kind === "table" ? "table" : t.kind === "diagram" ? "diagram" : "plan", 14)}</span><span class="truncate">${esc(t.title)}</span>`;
+      d.title = `${t.title}${t.conn?.db ? ` · ${t.conn.db}` : ""}${t.conn ? ` · ${t.conn.name}` : ""}${i < 9 ? `  (⌘${i + 1})` : ""}`;
+      const multi = servers.length > 1 || servers.some((sv) => sv.conns.length > 1);
+      const risky = t.conn?.env && t.conn.env !== "local";
+      d.innerHTML = `<span class="${on ? "text-accent" : "text-muted"}">${icon(t.kind === "table" ? "table" : t.kind === "diagram" ? "diagram" : "plan", 14)}</span><span class="truncate">${esc(t.title)}</span>` +
+        (multi && t.conn?.db ? `<span class="text-muted text-[11px] shrink-0 truncate" style="max-width:84px">${esc(t.conn.db)}</span>` : "") +
+        (risky ? `<span class="shrink-0" style="width:6px;height:6px;border-radius:3px;background:${envColor(t.conn!.env)}" title="${esc(t.conn!.env!)}"></span>` : "");
       const x = document.createElement("button");
       x.innerHTML = icon("close", 12);
       x.setAttribute("aria-label", "Close tab");
@@ -412,8 +418,7 @@ function setMode(t: Tab, mode: "data" | "structure") {
 
 /** Re-read table/column names for completion and the sidebar after DDL. */
 function refreshSchema(c: Conn) {
-  api.listObjects(c.id).then((o) => { c.objects = o; if (conn === c) renderObjects(); });
-  api.schemaMap(c.id).then((m) => { c.schema = m; }).catch(() => {});
+  refreshDatabase(c);
 }
 
 /** Highlight the Filter button while a filter is active. */
@@ -517,112 +522,251 @@ function reload(t: Tab) {
   } else runActive();
 }
 
-function openTable(name: string) {
-  const existing = tabs.find((t) => t.kind === "table" && t.table === name && t.conn === conn);
+function openTable(name: string, c: Conn | null = conn) {
+  if (!c) return;
+  conn = c;
+  const existing = tabs.find((t) => t.kind === "table" && t.table === name && t.conn === c);
   if (existing) return activate(existing);
-  const t = makeTab("table", name, name);
+  const t = makeTab("table", name, name, c);
   reload(t);
 }
 
-async function refreshObjects() {
-  if (!conn) return;
-  conn.objects = await api.listObjects(conn.id);
+async function refreshObjects(c: Conn | null = conn) {
+  if (!c) return;
+  c.loading = true; renderObjects();
+  try { c.objects = await api.listObjects(c.id); } finally { c.loading = false; }
   renderObjects();
 }
 
-const collapsed = new Set<string>();
-function renderObjects() {
-  const host = $("objects");
-  if (!conn) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">Connect to a database to see its tables.</div>`; return; }
-  if (!conn.db && conn.dbs?.length) {
-    host.innerHTML = `<div class="px-4 py-8 text-center"><div class="text-soft mb-3">This connection isn’t tied to a database yet.</div><button id="pickempty" class="btn btn-primary">Choose a database</button></div>`;
-    (host.querySelector("#pickempty") as HTMLElement).onclick = () => openDatabasePicker();
-    return;
-  }
-  const q = $<HTMLInputElement>("filter").value.toLowerCase();
-  const items = conn.objects.filter((o) => o.name.toLowerCase().includes(q));
-  const groups: [string, string, string][] = [["table", "Tables", "table"], ["view", "Views", "view"], ["collection", "Collections", "collection"], ["key", "Keys", "key"]];
-  const open = active?.kind === "table" && active.conn === conn ? active.table : undefined;
-  const frag = document.createDocumentFragment();
-  for (const [kind, label, ic] of groups) {
-    const list = items.filter((o) => o.kind === kind);
-    if (!list.length) continue;
-    const head = document.createElement("div");
-    const shut = collapsed.has(kind) && !q;
-    head.className = "flex items-center gap-1 px-2 pt-2 pb-1 text-[11.5px] font-medium text-muted cursor-default select-none";
-    head.innerHTML = `<span style="display:inline-block;transition:transform .12s;transform:rotate(${shut ? 0 : 90}deg)">${icon("chevron", 11)}</span><span>${label}</span><span class="ml-auto">${list.length}</span>`;
-    head.onclick = () => { shut ? collapsed.delete(kind) : collapsed.add(kind); renderObjects(); };
-    frag.append(head);
-    if (shut) continue;
-    for (const o of list.slice(0, 2000)) {
-      const d = document.createElement("div");
-      const on = o.name === open;
-      d.className = "flex items-center gap-2 pl-5 pr-2 h-[26px] rounded-md cursor-default " + (on ? "bg-accent-soft text-ink font-medium" : "hover:bg-raised text-ink");
-      d.innerHTML = `<span class="${on ? "text-accent" : "text-muted"}">${icon(ic, 14)}</span><span class="truncate">${esc((o.schema && o.schema !== "public" ? o.schema + "." : "") + o.name)}</span>`;
-      d.title = "Double-click to open";
-      d.ondblclick = () => openTable(o.name);
-      frag.append(d);
-    }
-  }
-  if (!frag.childNodes.length) host.innerHTML = `<div class="px-3 py-6 text-muted text-center">${q ? "No matches." : "This database has no tables yet."}</div>`;
-  else host.replaceChildren(frag);
-}
-
-function paintSwitcher() {
-  $("sw-badge").innerHTML = conn ? engineBadge(conn.kind, 30) : `<span class="inline-flex items-center justify-center rounded-lg bg-raised text-muted" style="width:30px;height:30px">${icon("database", 16)}</span>`;
-  $("sw-name").textContent = conn?.name ?? "Not connected";
-  $("sw-sub").textContent = conn ? (conn.sub || ENGINE_NAMES[conn.kind] || conn.kind) : "Choose a connection";
-  $("sw-sub").style.color = conn?.env === "production" ? "var(--env-production)" : "";
-  $("switch").style.boxShadow = conn ? `inset 3px 0 0 ${envColor(conn.env)}` : "none";
-  const row = $("dbpick");
-  const show = !!conn?.dbs?.length;
-  row.style.display = show ? "flex" : "none";
-  $("dbname").textContent = conn?.db ?? "Choose a database";
-  $("dbname").style.color = conn?.db ? "" : "var(--muted)";
-}
-
-/** Open the database list for the current connection; switching reopens it against the chosen database. */
-async function openDatabasePicker() {
-  const c = conn;
-  if (!c?.dbs?.length) return;
-  const chosen = await pickDatabase(c.dbs, c.db);
-  if (!chosen || chosen === c.db) return;
-  try {
-    await api.switchDatabase(c.id, chosen);
-    c.db = chosen;
-    c.schema = [];
-    paintSwitcher();
-    await refreshObjects();
-    api.schemaMap(c.id).then((m) => {
-      c.schema = m;
-      for (const t of tabs) if (t.editor && t.conn === c) t.editor.dispatch({ effects: sqlLang.reconfigure(langFor(c)) });
-    }).catch(() => {});
-    if (!tabs.length) makeTab("query", "Query"); else if (!active) activate(tabs[0]);
-    toast(`Now using ${chosen}`, "ok");
-  } catch (e) {
-    toast(`Couldn't open ${chosen}: ${e}`, "error");
-  }
-}
-
-async function useConnection(id: number, p: { name: string; kind: string; environment?: string | null; host?: string | null; port?: number | null; database?: string | null; path?: string | null }) {
-  const where = p.path ?? [p.host, p.port && `:${p.port}`].filter(Boolean).join("");
-  const c: Conn = { id, name: p.name, kind: p.kind, db: p.database || null, env: p.environment, sub: [ENGINE_NAMES[p.kind] ?? p.kind, p.environment === "production" ? "production" : ""].filter(Boolean).join(" · ") || where, objects: [], schema: [] };
-  conn = c;
-  c.dbs = await api.listDatabases(id).catch(() => []);
-  paintSwitcher();
-  await refreshObjects();
-  api.schemaMap(id).then((m) => {
+/** Reload one database's tables and the completion schema (after DDL, imports, restores). */
+async function refreshDatabase(c: Conn) {
+  await refreshObjects(c);
+  api.schemaMap(c.id).then((m) => {
     c.schema = m;
-    // Re-point every open query editor of this connection at the new schema.
     for (const t of tabs) {
       if (!t.editor || t.conn !== c) continue;
       t.editor.dispatch({ effects: sqlLang.reconfigure(langFor(c)) });
       (t.builder as (HTMLElement & { refresh?: () => void }) | undefined)?.refresh?.();
     }
   }).catch(() => {});
-  if (!tabs.length) makeTab("query", "Query"); else if (!active) activate(tabs[0]);
-  // No database in the profile (common for imported connections): let the user pick one now.
-  if (!c.db && c.dbs?.length) openDatabasePicker();
+}
+
+// ---------- sidebar tree: servers -> databases -> tables ----------
+const collapsed = new Set<string>();
+interface RowOpts { level: number; ic: string; label: string; sub?: string; badge?: string; stripe?: string; chevron?: "open" | "shut"; count?: number; active?: boolean; strong?: boolean; muted?: boolean; actions?: { ic: string; title: string; fn: () => void }[]; click?: () => void; dbl?: () => void; menu?: (x: number, y: number) => void; title?: string }
+function treeRow(o: RowOpts): HTMLElement {
+  const d = document.createElement("div");
+  d.className = "group flex items-center gap-1.5 pr-1.5 rounded-md cursor-default select-none " + (o.active ? "bg-accent-soft " : "hover:bg-raised ") + (o.level === 0 ? "h-[34px] mb-0.5" : "h-[26px]");
+  d.style.paddingLeft = 6 + o.level * 14 + "px";
+  if (o.stripe) d.style.boxShadow = `inset 3px 0 0 ${o.stripe}`;
+  if (o.title) d.title = o.title;
+  const chev = o.chevron ? `<span class="text-muted shrink-0" style="width:12px;transition:transform .12s;transform:rotate(${o.chevron === "open" ? 90 : 0}deg)">${icon("chevron", 11)}</span>` : `<span style="width:12px" class="shrink-0"></span>`;
+  d.innerHTML = chev + (o.badge ?? `<span class="${o.active ? "text-accent" : "text-muted"} shrink-0">${icon(o.ic, 14)}</span>`) +
+    `<span class="min-w-0 flex-1 truncate ${o.strong || o.active ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}${o.sub ? `<span class="text-muted font-normal text-[11px]"> ${esc(o.sub)}</span>` : ""}</span>` +
+    (o.count !== undefined ? `<span class="text-muted text-[11px] shrink-0 group-hover:hidden">${o.count}</span>` : "");
+  if (o.actions?.length) {
+    const box = document.createElement("span");
+    box.className = "hidden group-hover:flex items-center shrink-0";
+    for (const a of o.actions) {
+      const b = document.createElement("button");
+      b.className = "rounded p-1 text-muted hover:text-ink hover:bg-raised2";
+      b.title = a.title; b.setAttribute("aria-label", a.title); b.innerHTML = icon(a.ic, 13);
+      b.onclick = (e) => { e.stopPropagation(); a.fn(); };
+      b.ondblclick = (e) => e.stopPropagation();
+      box.append(b);
+    }
+    d.append(box);
+  }
+  if (o.click) d.onclick = o.click;
+  if (o.dbl) d.ondblclick = o.dbl;
+  d.oncontextmenu = (e) => { if (!o.menu) return; e.preventDefault(); o.menu(e.clientX, e.clientY); };
+  return d;
+}
+
+const KIND_GROUPS: [string, string, string][] = [["table", "Tables", "table"], ["view", "Views", "view"], ["collection", "Collections", "collection"], ["key", "Keys", "key"]];
+
+function renderObjects() {
+  const host = $("objects");
+  if (!servers.length) {
+    host.innerHTML = `<div class="px-4 py-10 text-center"><div class="inline-flex text-muted mb-2">${icon("database", 26)}</div><div class="font-medium">No connections open</div><div class="text-soft mt-0.5 mb-3">Connect to a database to browse its tables.</div><button id="emptyconn" class="btn btn-primary">${icon("plug", 14)}<span>Connect</span></button></div>`;
+    ($("emptyconn")).onclick = () => showLauncher();
+    return;
+  }
+  const q = $<HTMLInputElement>("filter").value.trim().toLowerCase();
+  const openTab = active?.kind === "table" ? active : null;
+  const frag = document.createDocumentFragment();
+  let any = false;
+  for (const s of servers) {
+    const sKey = "s:" + s.id, sOpen = q ? true : !collapsed.has(sKey);
+    const children: HTMLElement[] = [];
+    for (const c of s.conns) {
+      const items = c.objects.filter((o) => !q || o.name.toLowerCase().includes(q));
+      if (q && !items.length && !(c.db ?? "").toLowerCase().includes(q)) continue;
+      const dKey = "d:" + c.id, dOpen = q ? true : !collapsed.has(dKey);
+      const here = conn === c;
+      children.push(treeRow({
+        level: 1, ic: "database", label: c.db ?? "default", strong: true, active: here && !openTab, chevron: dOpen ? "open" : "shut", count: c.objects.length,
+        title: `${c.db ?? "default"} on ${s.name}`,
+        click: () => { conn = c; dOpen ? collapsed.add(dKey) : collapsed.delete(dKey); renderObjects(); },
+        dbl: () => { if (!tabs.some((t) => t.conn === c)) makeTab("query", "Query", undefined, c); },
+        menu: (x, y) => dbMenu(c, x, y),
+        actions: [{ ic: "plan", title: "New query", fn: () => { conn = c; makeTab("query", "Query", undefined, c); } }, { ic: "close", title: "Close this database", fn: () => closeDatabase(c) }],
+      }));
+      if (!dOpen) continue;
+      if (c.loading && !c.objects.length) { const l = document.createElement("div"); l.className = "pl-14 h-[26px] leading-[26px] text-muted"; l.textContent = "Reading tables…"; children.push(l); continue; }
+      for (const [kind, label, ic] of KIND_GROUPS) {
+        const list = items.filter((o) => o.kind === kind);
+        if (!list.length) continue;
+        const gKey = `g:${c.id}:${kind}`, gOpen = q ? true : !collapsed.has(gKey);
+        children.push(treeRow({ level: 2, ic, label, muted: true, chevron: gOpen ? "open" : "shut", count: list.length, click: () => { gOpen ? collapsed.add(gKey) : collapsed.delete(gKey); renderObjects(); } }));
+        if (!gOpen) continue;
+        for (const o of list.slice(0, 2000)) {
+          const on = !!openTab && openTab.conn === c && openTab.table === o.name;
+          children.push(treeRow({
+            level: 3, ic, label: (o.schema && o.schema !== "public" ? o.schema + "." : "") + o.name, active: on, title: "Double-click to open",
+            click: () => { conn = c; renderObjects(); }, dbl: () => openTable(o.name, c), menu: (x, y) => tableMenu(c, o, x, y),
+          }));
+        }
+      }
+      if (!items.length && !q) { const l = document.createElement("div"); l.className = "pl-14 h-[26px] leading-[26px] text-muted"; l.textContent = c.loading ? "Reading tables…" : "No tables yet"; children.push(l); }
+    }
+    const remaining = s.dbs.filter((d) => !s.conns.some((c) => c.db === d)).length;
+    if (!q && sOpen && remaining > 0 && s.dbs.length) {
+      children.push(treeRow({ level: 1, ic: "plus", label: s.conns.length ? "Open another database…" : "Open a database…", muted: !!s.conns.length, strong: !s.conns.length, click: () => pickAndOpen(s) }));
+    }
+    if (q && !children.length) continue;
+    any = true;
+    const first = s.conns[0];
+    frag.append(treeRow({
+      level: 0, ic: "plug", label: s.name, sub: s.conns.length > 1 ? `${s.conns.length} databases` : undefined, strong: true, stripe: envColor(s.env),
+      badge: engineBadge(s.kind, 20), chevron: sOpen ? "open" : "shut", title: `${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}`,
+      click: () => { if (first) conn = first; sOpen ? collapsed.add(sKey) : collapsed.delete(sKey); renderObjects(); },
+      menu: (x, y) => serverMenu(s, x, y),
+      actions: [{ ic: "plus", title: s.dbs.length ? "Open a database" : "New query", fn: () => (s.dbs.length ? pickAndOpen(s) : makeTab("query", "Query", undefined, s.conns[0] ?? null)) }, { ic: "close", title: "Disconnect", fn: () => disconnectServer(s) }],
+    }));
+    for (const el of children) frag.append(el);
+  }
+  if (!any) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">${q ? "No matches." : "Nothing to show yet."}</div>`; return; }
+  host.replaceChildren(frag);
+}
+
+function tableMenu(c: Conn, o: ObjectRef, x: number, y: number) {
+  contextMenu(x, y, [
+    { label: "Open", action: () => openTable(o.name, c) },
+    { label: "Structure", action: () => { openTable(o.name, c); const t = tabs.find((k) => k.kind === "table" && k.table === o.name && k.conn === c); if (t) setTimeout(() => setMode(t, "structure"), 30); } },
+    { label: "Diagram", hint: "⌘⇧D", disabled: ["redis", "mongo"].includes(c.kind), action: () => { conn = c; openDiagram(o.name); } },
+    { divider: true, label: "" },
+    { label: "Export…", action: async () => { conn = c; showExport(c.id, await api.selectAllSql(c.id, o.schema, o.name, 2_000_000_000), o.name, (m) => toast(m, "ok")); } },
+    { label: "Copy name", action: () => { navigator.clipboard?.writeText(o.name); toast("Copied " + o.name, "ok"); } },
+    { divider: true, label: "" },
+    { label: "Refresh", action: () => refreshDatabase(c) },
+  ]);
+}
+
+function dbMenu(c: Conn, x: number, y: number) {
+  const canBackup = BACKUP_KINDS.includes(c.kind);
+  contextMenu(x, y, [
+    { label: "New query", hint: "⌘T", action: () => { conn = c; makeTab("query", "Query", undefined, c); } },
+    { label: "Diagram", hint: "⌘⇧D", disabled: ["redis", "mongo"].includes(c.kind), action: () => { conn = c; openDiagram(); } },
+    { divider: true, label: "" },
+    { label: "Back up…", hint: "⌘⌥B", disabled: !canBackup, action: () => { conn = c; backupActive(); } },
+    { label: "Restore…", hint: "⌘⌥R", disabled: !canBackup, action: () => { conn = c; restoreActive(); } },
+    { label: "Import a file…", hint: "⌘⌥I", action: () => { conn = c; importActive(); } },
+    { divider: true, label: "" },
+    { label: "Refresh", action: () => refreshDatabase(c) },
+    { label: "Close this database", danger: true, action: () => closeDatabase(c) },
+  ]);
+}
+
+function serverMenu(s: Server, x: number, y: number) {
+  contextMenu(x, y, [
+    { label: "New query", disabled: !s.conns.length, action: () => makeTab("query", "Query", undefined, s.conns[0]) },
+    { label: s.conns.length ? "Open another database…" : "Open a database…", disabled: !s.dbs.length, action: () => pickAndOpen(s) },
+    { label: "Refresh", action: () => s.conns.forEach(refreshDatabase) },
+    { divider: true, label: "" },
+    { label: "Disconnect", danger: true, action: () => disconnectServer(s) },
+  ]);
+}
+
+// ---------- connection lifecycle ----------
+function afterWorkspaceChange() {
+  renderTabs();
+  if (!tabs.length) showHome();
+}
+
+/** Register an open database under its server and load its tables. */
+async function addDatabase(s: Server, connId: number, db: string | null): Promise<Conn> {
+  const c: Conn = { id: connId, name: s.name, kind: s.kind, env: s.env, db, dbs: s.dbs, objects: [], schema: [], server: s, loading: true };
+  s.conns.push(c);
+  conn = c;
+  collapsed.delete("s:" + s.id); collapsed.delete("d:" + c.id);
+  renderObjects();
+  refreshDatabase(c);
+  if (!tabs.length || !active) makeTab("query", "Query", undefined, c);
+  else renderTabs();
+  return c;
+}
+
+/** Connect (or re-focus) a saved connection. */
+async function useConnection(id: number, p: Profile) {
+  const have = servers.find((sv) => sv.id === p.id);
+  if (have) { // already connected: drop the duplicate and just go to it
+    api.disconnect(id).catch(() => {});
+    conn = have.conns[0] ?? conn; renderObjects();
+    if (have.conns[0]) { const t = tabs.find((k) => k.conn === have.conns[0]); t ? activate(t) : makeTab("query", "Query", undefined, have.conns[0]); } else pickAndOpen(have);
+    return;
+  }
+  const dbs = await api.listDatabases(id).catch(() => [] as string[]);
+  const s: Server = { id: p.id, name: p.name, kind: p.kind, env: p.environment, profile: p, rootId: id, dbs, conns: [] };
+  servers.push(s);
+  // With a database in the profile, or an engine that has no database list (SQLite, Redis), open it straight away.
+  if (p.database || !dbs.length) await addDatabase(s, id, p.database || (p.kind === "sqlite" ? (p.path ?? "").split("/").pop() || "main" : null));
+  else { renderObjects(); await pickAndOpen(s); }
+}
+
+/** Choose a database on a server and open it next to the ones already open. */
+async function pickAndOpen(s: Server) {
+  const free = s.dbs.filter((d) => !s.conns.some((c) => c.db === d));
+  if (!free.length) { toast("Every database on this server is already open.", "info"); return; }
+  const chosen = await pickDatabase(free, null);
+  if (chosen) openDatabaseOn(s, chosen);
+}
+
+async function openDatabaseOn(s: Server, db: string) {
+  const have = s.conns.find((c) => c.db === db);
+  if (have) { conn = have; collapsed.delete("d:" + have.id); renderObjects(); return; }
+  try {
+    const id = await api.openDatabase(s.rootId, db);
+    await addDatabase(s, id, db);
+  } catch (e) { toast(`Couldn't open ${db}: ${e}`, "error"); }
+}
+
+function closeDatabase(c: Conn) {
+  for (const t of [...tabs]) if (t.conn === c) closeTab(t);
+  // The server's root connection also keeps its SSH tunnel alive, so it stays until the server is disconnected.
+  if (c.id !== c.server.rootId) api.disconnect(c.id).catch(() => {});
+  c.server.conns = c.server.conns.filter((x) => x !== c);
+  if (conn === c) conn = c.server.conns[0] ?? servers.flatMap((x) => x.conns)[0] ?? null;
+  renderObjects();
+  afterWorkspaceChange();
+}
+
+function disconnectServer(s: Server) {
+  for (const c of [...s.conns]) { for (const t of [...tabs]) if (t.conn === c) closeTab(t); if (c.id !== s.rootId) api.disconnect(c.id).catch(() => {}); }
+  api.disconnect(s.rootId).catch(() => {});
+  servers.splice(servers.indexOf(s), 1);
+  if (conn?.server === s) conn = servers.flatMap((x) => x.conns)[0] ?? null;
+  renderObjects();
+  toast(`Disconnected from ${s.name}`, "info");
+  afterWorkspaceChange();
+}
+
+/** ⌘K: open another database on the current server. */
+function openDatabasePicker() {
+  const s = conn?.server ?? servers[0];
+  if (!s) { toast("Connect to a database first.", "info"); return; }
+  if (!s.dbs.length) { toast(`${ENGINE_NAMES[s.kind] ?? s.kind} connections have a single database.`, "info"); return; }
+  pickAndOpen(s);
 }
 
 function queryBar(tab: Tab): HTMLElement {
@@ -636,7 +780,7 @@ function queryBar(tab: Tab): HTMLElement {
   const sep = () => { const x = document.createElement("span"); x.className = "w-px h-4 bg-line-strong mx-1.5"; return x; };
   const pill = document.createElement("span");
   pill.className = "pill ml-auto";
-  pill.innerHTML = tab.conn ? `<span style="width:7px;height:7px;border-radius:4px;background:${envColor(tab.conn.env)}"></span>${esc(tab.conn.name)}` : "No connection";
+  pill.innerHTML = tab.conn ? `<span style="width:7px;height:7px;border-radius:4px;background:${envColor(tab.conn.env)}"></span>${esc(tab.conn.name)}${tab.conn.db ? `<span class="text-muted"> / ${esc(tab.conn.db)}</span>` : ""}` : "No connection";
   bar.append(
     b(`${icon("play", 13)}<span>Run</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘↵</span>`, "Run the selection, or the whole editor (⌘Enter)", () => { activate(tab); runActive(); }, "btn btn-primary"),
     b(`${icon("stop", 13)}<span>Stop</span>`, "Cancel the running query (⌘.)", () => { activate(tab); cancelActive(); }),
@@ -688,12 +832,14 @@ async function showLauncher() {
     row.innerHTML = `${engineBadge(p.kind, 32)}
       <div class="min-w-0 flex-1"><div class="font-medium truncate">${esc(p.name)}</div><div class="mono text-[11.5px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div></div>
       <div class="relative shrink-0" style="width:104px;height:28px">
-        ${p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)}">${esc(p.environment)}</span>` : ""}
+        ${servers.some((sv) => sv.id === p.id) ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:var(--ok)"><span style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>connected</span>` : p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)}">${esc(p.environment)}</span>` : ""}
         <button class="btn btn-primary absolute right-0 top-0 opacity-0 group-hover:opacity-100 focus:opacity-100">Connect</button>
       </div>`;
+    const live = servers.find((sv) => sv.id === p.id);
+    if (live) row.querySelector("button")!.textContent = "Open";
     const go = async () => {
       const btn = row.querySelector("button")!;
-      btn.textContent = "Connecting…"; btn.setAttribute("disabled", "");
+      btn.textContent = live ? "Opening…" : "Connecting…"; btn.setAttribute("disabled", "");
       try { await connectProfile(p); } catch (e) { toast(`Couldn't connect to ${p.name}: ${e}`, "error"); btn.textContent = "Connect"; btn.removeAttribute("disabled"); }
     };
     row.ondblclick = go;
@@ -707,8 +853,26 @@ async function showLauncher() {
 }
 
 async function connectProfile(p: Profile) {
+  if (servers.some((sv) => sv.id === p.id)) return useConnection(-1, p); // already connected: just go there
   const id = await api.connectSaved(p.id);
   await useConnection(id, p);
+}
+
+/** What to show when no tab is open: the launcher if nothing is connected, otherwise a short workspace hint. */
+function showHome() {
+  if (!servers.length) { showLauncher(); return; }
+  active = null;
+  renderTabs();
+  const c = conn ?? servers[0].conns[0] ?? null;
+  const wrap = document.createElement("div");
+  wrap.className = "h-full flex items-center justify-center";
+  wrap.innerHTML = `<div class="text-center" style="max-width:360px"><img src="/lattice-logo.svg" alt="" width="52" height="52" class="mx-auto mb-4" style="border-radius:12px;box-shadow:0 1px 2px rgb(20 28 46 / .18), 0 6px 16px rgb(31 55 201 / .22)"/>
+    <div class="text-[15px] font-semibold">No tabs open</div>
+    <div class="text-soft mt-1 mb-4">Double-click a table in the sidebar, or start a query.</div>
+    <div class="flex justify-center gap-2"><button id="hq" class="btn btn-primary" ${c ? "" : "disabled"}>${icon("plan", 14)}<span>New query</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘T</span></button><button id="hc" class="btn">${icon("plug", 14)}<span>Connect another</span></button></div></div>`;
+  $("main").replaceChildren(wrap);
+  ($("hq")).onclick = () => makeTab("query", "Query", undefined, c);
+  ($("hc")).onclick = () => showLauncher();
 }
 
 function openConnections() {
@@ -766,7 +930,7 @@ async function importActive() {
     async (o) => (await api.describe(c.id, o.schema, o.name)).columns.map((x) => x.name),
     async (msg) => {
       if (t) t.status.textContent = msg;
-      await refreshObjects();
+      await refreshDatabase(c);
       // Reload an open table tab that was just imported into.
       for (const x of tabs) if (x.kind === "table" && x.conn === c && !x.grid.pendingCount) reload(x);
     });
@@ -776,7 +940,6 @@ async function importActive() {
 function backupActive() {
   if (!conn) { toast("Connect to a database first.", "info"); return; }
   if (!BACKUP_KINDS.includes(conn.kind)) { toast(`Backup isn't available for ${ENGINE_NAMES[conn.kind] ?? conn.kind} yet.`, "info"); return; }
-  if (!conn.db && conn.kind !== "sqlite" && conn.dbs?.length) { toast("Choose a database first (⌘K).", "info"); return; }
   const c = conn;
   showBackup(c.id, c.name, c.db ?? c.name, c.objects, (m) => { toast(m, m.startsWith("Backup failed") ? "error" : "ok"); });
 }
@@ -785,9 +948,8 @@ function backupActive() {
 function restoreActive() {
   if (!conn) { toast("Connect to a database first.", "info"); return; }
   if (!BACKUP_KINDS.includes(conn.kind)) { toast(`Restore isn't available for ${ENGINE_NAMES[conn.kind] ?? conn.kind} yet.`, "info"); return; }
-  if (!conn.db && conn.kind !== "sqlite" && conn.dbs?.length) { toast("Choose a database first (⌘K).", "info"); return; }
   const c = conn;
-  showRestore(c.id, c.name, c.db ?? "", c.env, async (m) => { toast(m, /failed|stopped|error/i.test(m) ? "error" : "ok"); await refreshObjects(); });
+  showRestore(c.id, c.name, c.db ?? "", c.env, async (m) => { toast(m, /failed|stopped|error/i.test(m) ? "error" : "ok"); await refreshDatabase(c); });
 }
 
 async function cancelActive() {
@@ -842,14 +1004,12 @@ $("import").onclick = importActive;
 $("export").onclick = exportActive;
 $("newtab").onclick = () => makeTab("query", "Query");
 $("open").onclick = openConnections;
-$("switch").onclick = () => { showLauncher(); };
-$("dbpick").onclick = () => openDatabasePicker();
+$("addconn").onclick = () => showLauncher();
 $("diagram").onclick = () => openDiagram();
 const paintTheme = () => { $("theme").innerHTML = icon(currentTheme() === "dark" ? "sun" : "moon", 15); };
 const toggleTheme = () => { applyTheme(currentTheme() === "dark" ? "light" : "dark"); paintTheme(); };
 $("theme").onclick = toggleTheme;
 paintTheme();
-paintSwitcher();
 renderObjects();
 showLauncher();
 $("filter").oninput = renderObjects;

@@ -39,3 +39,33 @@ export function applyTheme(t: Theme) {
   document.documentElement.classList.toggle("dark", t === "dark");
   localStorage.setItem("lattice.theme", t);
 }
+
+export interface MenuItem { label: string; hint?: string; danger?: boolean; disabled?: boolean; divider?: boolean; action?: () => void }
+
+/** Right-click menu at (x, y). Closes on outside click, Escape, scroll or window blur. */
+export function contextMenu(x: number, y: number, items: MenuItem[]) {
+  document.getElementById("ctx")?.remove();
+  const m = document.createElement("div");
+  m.id = "ctx";
+  m.className = "fixed z-[70] min-w-[200px] py-1 rounded-lg border border-line-strong bg-panel shadow-pop text-[12.5px] select-none";
+  m.innerHTML = items.map((it, i) => it.divider
+    ? `<div class="my-1 h-px bg-line"></div>`
+    : `<div data-i="${i}" class="flex items-center gap-3 mx-1 px-2.5 h-7 rounded-md ${it.disabled ? "opacity-40" : "hover:bg-accent hover:text-white cursor-default"} ${it.danger ? "text-danger" : ""}"><span class="flex-1 truncate">${esc(it.label)}</span>${it.hint ? `<span class="text-[11px] opacity-60">${esc(it.hint)}</span>` : ""}</div>`).join("");
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(x, innerWidth - r.width - 6)) + "px";
+  m.style.top = Math.max(6, Math.min(y, innerHeight - r.height - 6)) + "px";
+  const close = () => { m.remove(); window.removeEventListener("mousedown", away, true); window.removeEventListener("keydown", key, true); window.removeEventListener("blur", close); window.removeEventListener("wheel", close, true); };
+  const away = (e: MouseEvent) => { if (!m.contains(e.target as Node)) close(); };
+  const key = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  m.addEventListener("click", (e) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
+    const it = el && items[+el.dataset.i!];
+    if (it && !it.disabled) { close(); it.action?.(); }
+  });
+  m.addEventListener("contextmenu", (e) => e.preventDefault());
+  window.addEventListener("mousedown", away, true);
+  window.addEventListener("keydown", key, true);
+  window.addEventListener("blur", close);
+  window.addEventListener("wheel", close, { capture: true, passive: true });
+}

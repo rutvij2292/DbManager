@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Lattice",
+  "version": "0.1.0",
+  "identifier": "dev.rutvij.lattice",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../ui run dev",
+    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [
+      { "label": "main", "title": "Lattice", "width": 1280, "height": 800, "minWidth": 800, "minHeight": 500,
+        "titleBarStyle": "Overlay", "hiddenTitle": true }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": true, "targets": ["app", "dmg"], "icon": ["icons/icon.png", "icons/icon.icns"] }
+}

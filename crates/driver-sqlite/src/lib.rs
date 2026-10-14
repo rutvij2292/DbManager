@@ -65,9 +65,9 @@ impl Connection for SqliteConn {
     }
     async fn objects(&self) -> Result<Vec<ObjectRef>> {
         let r = self.query("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name").await?;
-        Ok(r.rows.iter().map(|row| ObjectRef { name: row[0].display(), kind: row[1].display() }).collect())
+        Ok(r.rows.iter().map(|row| ObjectRef { schema: None, name: row[0].display(), kind: row[1].display() }).collect())
     }
-    async fn describe(&self, name: &str) -> Result<ObjectInfo> {
+    async fn describe(&self, _schema: Option<&str>, name: &str) -> Result<ObjectInfo> {
         let cols = self.query(&format!("PRAGMA table_info({})", quote_ident(name))).await?;
         let columns = cols
             .rows
@@ -111,7 +111,7 @@ mod tests {
         let r = c.query("SELECT * FROM t ORDER BY id").await.unwrap();
         assert_eq!(r.rows.len(), 2);
         assert_eq!(c.objects().await.unwrap()[0].name, "t");
-        let d = c.describe("t").await.unwrap();
+        let d = c.describe(None, "t").await.unwrap();
         assert!(d.columns[0].primary_key && !d.columns[1].nullable);
     }
 }

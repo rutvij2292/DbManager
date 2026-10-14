@@ -67,8 +67,16 @@ pub struct ColumnInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectRef {
+    pub schema: Option<String>,
     pub name: String,
     pub kind: String, // table | view
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaTable {
+    pub schema: Option<String>,
+    pub name: String,
+    pub columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,8 +102,29 @@ pub trait Connection: Send + Sync {
     fn dialect(&self) -> &'static str;
     async fn ping(&self) -> Result<()>;
     async fn objects(&self) -> Result<Vec<ObjectRef>>;
-    async fn describe(&self, name: &str) -> Result<ObjectInfo>;
+    async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo>;
     async fn query(&self, sql: &str) -> Result<QueryResult>;
+    /// Quote an identifier for this dialect.
+    fn quote(&self, ident: &str) -> String {
+        format!("\"{}\"", ident.replace('"', "\"\""))
+    }
+    /// `SELECT * FROM <table> LIMIT n` in this dialect.
+    fn select_all(&self, schema: Option<&str>, name: &str, limit: usize) -> String {
+        let t = match schema {
+            Some(s) => format!("{}.{}", self.quote(s), self.quote(name)),
+            None => self.quote(name),
+        };
+        format!("SELECT * FROM {t} LIMIT {limit}")
+    }
+    /// All tables with their column names, for editor autocomplete.
+    async fn schema_map(&self) -> Result<Vec<SchemaTable>> {
+        let mut out = Vec::new();
+        for o in self.objects().await? {
+            let cols = self.describe(o.schema.as_deref(), &o.name).await?.columns.into_iter().map(|c| c.name).collect();
+            out.push(SchemaTable { schema: o.schema, name: o.name, columns: cols });
+        }
+        Ok(out)
+    }
 }
 
 #[async_trait]

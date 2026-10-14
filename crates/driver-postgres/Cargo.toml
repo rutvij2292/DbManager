@@ -1,0 +1,10 @@
+[package]
+name = "driver-postgres"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbcore = { path = "../dbcore" }
+async-trait.workspace = true
+tokio.workspace = true
+tokio-postgres = "0.7"

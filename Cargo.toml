@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dbcore", "crates/driver-sqlite"]
+members = ["src-tauri", "crates/dbcore", "crates/driver-sqlite", "crates/driver-postgres", "crates/driver-mysql"]
 
 [workspace.dependencies]
 async-trait = "0.1"

@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2021", "module": "ESNext", "moduleResolution": "bundler",
+    "strict": true, "lib": ["ES2021", "DOM"], "skipLibCheck": true, "noEmit": true,
+    "types": ["vite/client"]
+  },
+  "include": ["src"]
+}

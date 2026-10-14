@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-size: 13px; }
+.mono { font-family: "SF Mono", Menlo, monospace; }
+.cm-editor { height: 100%; background: #18181b; }
+.cm-editor.cm-focused { outline: none; }
+.cm-gutters { background: #18181b !important; border: none !important; color: #52525b !important; }
+.cm-content, .cm-scroller { font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+.titlebar { -webkit-app-region: drag; }
+.titlebar * { -webkit-app-region: no-drag; }
+.grid-cell { height: 24px; line-height: 24px; padding: 0 8px; border-right: 1px solid #27272a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.null { color: #71717a; font-style: italic; }

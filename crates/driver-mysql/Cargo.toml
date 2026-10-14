@@ -1,0 +1,10 @@
+[package]
+name = "driver-mysql"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbcore = { path = "../dbcore" }
+async-trait.workspace = true
+tokio.workspace = true
+mysql_async = { version = "0.34", default-features = false, features = ["default-rustls"] }

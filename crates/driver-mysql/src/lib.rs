@@ -60,6 +60,34 @@ impl Connection for MyConn {
     fn quote(&self, ident: &str) -> String {
         format!("`{}`", ident.replace('`', "``"))
     }
+    fn literal(&self, v: &Value) -> String {
+        match v {
+            Value::Text(t) => lit(t),
+            Value::Bool(b) => if *b { "1" } else { "0" }.into(),
+            Value::Null => "NULL".into(),
+            Value::I64(i) => i.to_string(),
+            Value::F64(f) => f.to_string(),
+            Value::Bytes(b) => format!("X'{}'", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
+        }
+    }
+    async fn execute_batch(&self, stmts: &[(String, Option<u64>)]) -> Result<u64> {
+        use mysql_async::TxOpts;
+        let mut conn = self.0.get_conn().await.map_err(DbError::msg)?;
+        let mut tx = conn.start_transaction(TxOpts::default()).await.map_err(DbError::msg)?;
+        let mut total = 0;
+        for (sql, expect) in stmts {
+            tx.query_drop(sql).await.map_err(DbError::msg)?; // dropping `tx` on error rolls back
+            let n = tx.affected_rows();
+            if let Some(want) = expect {
+                if n != *want {
+                    return Err(DbError::msg(format!("rolled back: expected {want} row(s) affected but got {n} for: {sql}")));
+                }
+            }
+            total += n;
+        }
+        tx.commit().await.map_err(DbError::msg)?;
+        Ok(total)
+    }
     async fn ping(&self) -> Result<()> {
         self.query("SELECT 1").await.map(|_| ())
     }

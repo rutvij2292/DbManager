@@ -145,4 +145,31 @@ mod tests {
         let idx = c.explain("SELECT * FROM t WHERE name = 'a'", false).await.unwrap();
         assert!(idx.children[0].detail.contains("USING"), "{:?}", idx.children[0].detail);
     }
+
+    #[tokio::test]
+    async fn staged_changes_apply_atomically() {
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), path: None, host: None, port: None, user: None, password: None, database: None }).await.unwrap();
+        c.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)").await.unwrap();
+        c.query("INSERT INTO t VALUES (1,'a'),(2,'b')").await.unwrap();
+        let key = |i| vec![("id".to_string(), Value::I64(i))];
+        let good = [
+            Change::Update { key: key(1), set: vec![("name".into(), Value::Text("it's".into()))] },
+            Change::Insert { set: vec![("name".into(), Value::Null)] },
+            Change::Delete { key: key(2) },
+        ];
+        let stmts = build_dml(c.as_ref(), None, "t", &good);
+        assert_eq!(stmts[0].0, "UPDATE \"t\" SET \"name\" = 'it''s' WHERE \"id\" = 1;");
+        c.execute_batch(&stmts).await.unwrap();
+        let r = c.query("SELECT id, name FROM t ORDER BY id").await.unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0][1], Value::Text("it's".into()));
+        // A change that matches no row must roll the whole batch back.
+        let bad = [
+            Change::Update { key: key(1), set: vec![("name".into(), Value::Text("zzz".into()))] },
+            Change::Delete { key: key(99) },
+        ];
+        assert!(c.execute_batch(&build_dml(c.as_ref(), None, "t", &bad)).await.is_err());
+        let r = c.query("SELECT name FROM t WHERE id = 1").await.unwrap();
+        assert_eq!(r.rows[0][0], Value::Text("it's".into()));
+    }
 }

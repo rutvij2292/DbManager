@@ -8,6 +8,10 @@ export interface SchemaTable { schema: string | null; name: string; columns: str
 export interface Profile { id: string; name: string; kind: string; host?: string | null; port?: number | null; user?: string | null; database?: string | null; path?: string | null }
 export interface ColumnInfo { name: string; type_name: string; nullable: boolean; primary_key: boolean; default: string | null }
 export interface PlanNode { op: string; detail: string; relation: string | null; est_rows: number | null; actual_rows: number | null; cost: number | null; time_ms: number | null; children: PlanNode[] }
+export type Change =
+  | { kind: "update"; key: [string, Val][]; set: [string, Val][] }
+  | { kind: "insert"; set: [string, Val][] }
+  | { kind: "delete"; key: [string, Val][] }
 export interface ObjectInfo { columns: ColumnInfo[]; indexes: string[]; ddl: string | null }
 export interface ConnConfig { kind: string; path?: string; host?: string; port?: number; user?: string; password?: string; database?: string }
 
@@ -24,6 +28,8 @@ export const api = {
   schemaMap: (connId: number) => invoke<SchemaTable[]>("schema_map", { connId }),
   selectAllSql: (connId: number, schema: string | null, name: string) => invoke<string>("select_all_sql", { connId, schema, name }),
   explain: (connId: number, sql: string, analyze: boolean) => invoke<PlanNode>("explain", { connId, sql, analyze }),
+  applyChanges: (connId: number, schema: string | null, table: string, changes: Change[], preview: boolean) =>
+    invoke<string[]>("apply_changes", { connId, schema, table, changes, preview }),
   runQuery: (connId: number, sql: string) => invoke<Summary>("run_query", { connId, sql }),
   getRows: (queryId: number, offset: number, limit: number) => invoke<Val[][]>("get_rows", { queryId, offset, limit }),
   release: (queryId: number) => invoke<void>("release_query", { queryId }),

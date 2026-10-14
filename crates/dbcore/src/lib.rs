@@ -121,6 +121,42 @@ pub trait Connection: Send + Sync {
     async fn explain(&self, _sql: &str, _analyze: bool) -> Result<PlanNode> {
         Err(DbError::msg("EXPLAIN is not supported for this driver"))
     }
+    /// SQL literal for a value in this dialect.
+    fn literal(&self, v: &Value) -> String {
+        match v {
+            Value::Null => "NULL".into(),
+            Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.into(),
+            Value::I64(i) => i.to_string(),
+            Value::F64(f) => f.to_string(),
+            Value::Text(t) => format!("'{}'", t.replace('\'', "''")),
+            Value::Bytes(b) => format!("X'{}'", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
+        }
+    }
+    /// Run statements in one transaction. Each carries the exact affected-row count it must produce
+    /// (`None` = don't check); any mismatch or error rolls everything back.
+    async fn execute_batch(&self, stmts: &[(String, Option<u64>)]) -> Result<u64> {
+        self.query("BEGIN").await?;
+        let mut total = 0;
+        for (sql, expect) in stmts {
+            let r = match self.query(sql).await {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = self.query("ROLLBACK").await;
+                    return Err(e);
+                }
+            };
+            let n = r.affected.unwrap_or(0);
+            if let Some(want) = expect {
+                if n != *want {
+                    let _ = self.query("ROLLBACK").await;
+                    return Err(DbError::msg(format!("rolled back: expected {want} row(s) affected but got {n} for: {sql}")));
+                }
+            }
+            total += n;
+        }
+        self.query("COMMIT").await?;
+        Ok(total)
+    }
     /// Quote an identifier for this dialect.
     fn quote(&self, ident: &str) -> String {
         format!("\"{}\"", ident.replace('"', "\"\""))
@@ -148,4 +184,44 @@ pub trait Connection: Send + Sync {
 pub trait Driver: Send + Sync {
     fn kind(&self) -> &'static str;
     async fn connect(&self, cfg: &ConnConfig) -> Result<Arc<dyn Connection>>;
+}
+
+
+/// A staged edit to one row, identified by its primary-key values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Change {
+    Update { key: Vec<(String, Value)>, set: Vec<(String, Value)> },
+    Insert { set: Vec<(String, Value)> },
+    Delete { key: Vec<(String, Value)> },
+}
+
+/// Turn staged changes into dialect SQL plus the affected-row count each statement must produce.
+pub fn build_dml(conn: &dyn Connection, schema: Option<&str>, table: &str, changes: &[Change]) -> Vec<(String, Option<u64>)> {
+    let t = match schema {
+        Some(s) => format!("{}.{}", conn.quote(s), conn.quote(table)),
+        None => conn.quote(table),
+    };
+    let wh = |key: &[(String, Value)]| {
+        key.iter()
+            .map(|(c, v)| if *v == Value::Null { format!("{} IS NULL", conn.quote(c)) } else { format!("{} = {}", conn.quote(c), conn.literal(v)) })
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    };
+    changes
+        .iter()
+        .map(|c| match c {
+            Change::Update { key, set } => {
+                let sets = set.iter().map(|(c, v)| format!("{} = {}", conn.quote(c), conn.literal(v))).collect::<Vec<_>>().join(", ");
+                (format!("UPDATE {t} SET {sets} WHERE {};", wh(key)), Some(1))
+            }
+            Change::Delete { key } => (format!("DELETE FROM {t} WHERE {};", wh(key)), Some(1)),
+            Change::Insert { set } if set.is_empty() => (format!("INSERT INTO {t} DEFAULT VALUES;"), Some(1)),
+            Change::Insert { set } => {
+                let cols = set.iter().map(|(c, _)| conn.quote(c)).collect::<Vec<_>>().join(", ");
+                let vals = set.iter().map(|(_, v)| conn.literal(v)).collect::<Vec<_>>().join(", ");
+                (format!("INSERT INTO {t} ({cols}) VALUES ({vals});"), Some(1))
+            }
+        })
+        .collect()
 }

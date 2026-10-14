@@ -8,7 +8,7 @@ import { renderPlan, hintsPanel } from "./planview";
 import { makeCompletionSource, recordAccepted } from "./complete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { sql, SQLite, PostgreSQL, MySQL } from "@codemirror/lang-sql";
-import { api, type ObjectRef, type Summary, type Profile, type SchemaTable } from "./api";
+import { api, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { Grid } from "./grid";
 
@@ -16,7 +16,7 @@ interface Conn { id: number; name: string; kind: string; objects: ObjectRef[]; s
 interface Tab {
   id: number; title: string; kind: "query" | "table";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; editor?: EditorView; status: HTMLElement;
 }
 
 let conn: Conn | null = null;
@@ -99,6 +99,33 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
   gridWrap.className = "flex-1 min-h-0";
   gridWrap.append(grid.el);
   tab.gridWrap = gridWrap;
+  if (kind === "table") {
+    const bar = document.createElement("div");
+    bar.className = "h-8 shrink-0 flex items-center gap-2 px-2 bg-zinc-950 border-b border-zinc-800 text-[12px]";
+    const btn = (label: string, title: string, f: () => void) => {
+      const b = document.createElement("button");
+      b.textContent = label; b.title = title;
+      b.className = "px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:hover:bg-zinc-800";
+      b.onclick = f;
+      return b;
+    };
+    const commit = btn("Commit", "Review & commit changes (⌘S)", () => commitChanges(tab));
+    const discard = btn("Discard", "Discard pending changes", () => grid.discard());
+    commit.id = "commit"; discard.id = "discard";
+    const info = document.createElement("span");
+    info.className = "text-zinc-500 ml-2";
+    bar.append(btn("+ Row", "Insert row (⌘I)", () => grid.addRow()), btn("− Row", "Delete selected row (⌘⌫)", () => grid.deleteSelected()), commit, discard, info);
+    const refreshBar = () => {
+      const n = grid.pendingCount;
+      commit.toggleAttribute("disabled", n === 0);
+      discard.toggleAttribute("disabled", n === 0);
+      info.textContent = !tab.cols ? "" : grid.editable ? (n ? `${n} pending change${n > 1 ? "s" : ""}` : "Double-click a cell to edit") : "Read-only (no primary key)";
+    };
+    grid.onChange = refreshBar;
+    refreshBar();
+    tab.bar = bar;
+    root.append(bar);
+  }
   root.append(gridWrap, status);
   tabs.push(tab);
   activate(tab);
@@ -169,6 +196,75 @@ async function exec(t: Tab, sqlText: string) {
   t.status.classList.remove("text-red-400");
 }
 
+const orig = (g: Grid, r: number, i: number): Val => g.original(r)?.[i] ?? { t: "Null" };
+
+function buildChanges(t: Tab): Change[] | string {
+  const g = t.grid, cols = t.cols!;
+  const pk = cols.map((c, i) => [c, i] as const).filter(([c]) => c.primary_key);
+  const colIdx = (name: string) => g.columns.findIndex((c) => c.name === name);
+  const numeric = (type: string) => /int|serial|numeric|decimal|real|float|double|number/i.test(type);
+  const typed = (name: string, v: Val): Val => {
+    const c = cols.find((x) => x.name === name);
+    if (v.t === "Text" && c && numeric(c.type_name) && v.v.trim() !== "" && !isNaN(Number(v.v))) {
+      return /^-?\d+$/.test(v.v.trim()) ? { t: "I64", v: Number(v.v) } : { t: "F64", v: Number(v.v) };
+    }
+    return v;
+  };
+  const key = (r: number): [string, Val][] => pk.map(([c]) => [c.name, orig(g, r, colIdx(c.name))] as [string, Val]);
+  const out: Change[] = [];
+  for (const [r, m] of g.edits) {
+    if (g.deleted.has(r)) continue;
+    if (!g.original(r)) return "Edited rows must be loaded; scroll to them and try again.";
+    out.push({ kind: "update", key: key(r), set: [...m].map(([i, v]) => [g.columns[i].name, typed(g.columns[i].name, v)] as [string, Val]) });
+  }
+  for (const r of g.deleted) {
+    if (!g.original(r)) return "Deleted rows must be loaded; scroll to them and try again.";
+    out.push({ kind: "delete", key: key(r) });
+  }
+  const n = g.columns.length;
+  g.inserted.forEach((row) => out.push({ kind: "insert", set: row.map((v, i) => [g.columns[i].name, typed(g.columns[i].name, v)] as [string, Val]).filter(([, v]) => v.t !== "Null") }));
+  void n;
+  return out;
+}
+
+/** Show the generated SQL and, on confirmation, run it in one transaction. */
+async function commitChanges(t: Tab) {
+  if (!t.conn || !t.table || !t.cols) return;
+  const changes = buildChanges(t);
+  if (typeof changes === "string") { t.status.textContent = changes; return; }
+  try {
+    const stmts = await api.applyChanges(t.conn.id, t.schemaName ?? null, t.table, changes, true);
+    if (!(await confirmSql(stmts))) return;
+    await api.applyChanges(t.conn.id, t.schemaName ?? null, t.table, changes, false);
+    t.grid.discard(); // staged changes are now in the database
+    reload(t);
+  } catch (e) {
+    t.status.textContent = "Commit failed: " + e;
+    t.status.classList.add("text-red-400");
+  }
+}
+
+function confirmSql(stmts: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const o = document.createElement("div");
+    o.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50";
+    o.innerHTML = `<div class="w-[640px] max-h-[70vh] bg-zinc-800 rounded-lg border border-zinc-700 shadow-2xl flex flex-col">
+      <div class="px-4 py-2 border-b border-zinc-700 font-semibold">Review changes (${stmts.length} statement${stmts.length > 1 ? "s" : ""}, one transaction)</div>
+      <pre class="mono text-[12px] p-4 overflow-auto flex-1 select-text whitespace-pre-wrap"></pre>
+      <div class="p-3 flex justify-end gap-2 border-t border-zinc-700">
+        <button id="no" class="px-3 py-1 rounded hover:bg-zinc-700">Cancel</button>
+        <button id="yes" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500">Commit</button></div></div>`;
+    o.querySelector("pre")!.textContent = stmts.join("\n");
+    const done = (v: boolean) => { o.remove(); window.removeEventListener("keydown", key, true); resolve(v); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") done(false); else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) done(true); };
+    window.addEventListener("keydown", key, true);
+    (o.querySelector("#no") as HTMLElement).onclick = () => done(false);
+    (o.querySelector("#yes") as HTMLElement).onclick = () => done(true);
+    document.body.append(o);
+    (o.querySelector("#yes") as HTMLElement).focus();
+  });
+}
+
 function currentSql(t: Tab): string {
   const view = t.editor!;
   const sel = view.state.selection.main;
@@ -217,7 +313,14 @@ function runActive() {
 function reload(t: Tab) {
   if (t.kind === "table" && t.table && t.conn) {
     const o = t.conn.objects.find((x) => x.name === t.table);
-    api.selectAllSql(t.conn.id, o?.schema ?? null, t.table).then((q) => exec(t, q));
+    t.schemaName = o?.schema ?? null;
+    if (t.grid.pendingCount) { t.status.textContent = "Commit (⌘S) or discard pending changes before reloading"; return; }
+    api.describe(t.conn.id, t.schemaName, t.table)
+      .then((d) => { t.cols = d.columns; t.grid.editable = o?.kind !== "view" && d.columns.some((c) => c.primary_key); })
+      .catch(() => { t.grid.editable = false; })
+      .then(() => api.selectAllSql(t.conn!.id, t.schemaName ?? null, t.table!))
+      .then((q) => exec(t, q))
+      .then(() => t.grid.onChange());
   } else runActive();
 }
 
@@ -304,6 +407,9 @@ window.addEventListener("keydown", (e) => {
   else if (k === "r") go(() => active && reload(active));
   else if (k === "enter") go(runActive);
   else if (k === "e") go(() => explainActive(e.shiftKey));
+  else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
+  else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
+  else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => active!.grid.deleteSelected());
   else if (/^[1-9]$/.test(k)) go(() => tabs[+k - 1] && activate(tabs[+k - 1]));
   else if (e.shiftKey && (e.key === "]" || e.key === "}")) go(() => cycle(1));
   else if (e.shiftKey && (e.key === "[" || e.key === "{")) go(() => cycle(-1));

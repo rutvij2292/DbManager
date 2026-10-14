@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { autocompletion, completionKeymap, pickedCompletion } from "@codemirror/autocomplete";
+import { createBuilder } from "./builder";
 import { lintSql, lintPlan } from "./lint";
 import { renderPlan, hintsPanel } from "./planview";
 import { makeCompletionSource, recordAccepted } from "./complete";
@@ -16,7 +17,7 @@ interface Conn { id: number; name: string; kind: string; objects: ObjectRef[]; s
 interface Tab {
   id: number; title: string; kind: "query" | "table";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; editor?: EditorView; status: HTMLElement;
 }
 
 let conn: Conn | null = null;
@@ -93,6 +94,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
         ],
       }),
     });
+    tab.edWrap = ed;
     root.append(ed);
   }
   const gridWrap = document.createElement("div");
@@ -131,6 +133,31 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
   activate(tab);
   tab.editor?.focus();
   return tab;
+}
+
+const quoteFor = (c: Conn | null) => (c && ["mysql", "mariadb"].includes(c.kind) ? (s: string) => "`" + s.replace(/`/g, "``") + "`" : (s: string) => '"' + s.replace(/"/g, '""') + '"');
+
+/** ⌘B: toggle the visual query builder above the editor. */
+function toggleBuilder() {
+  const t = active;
+  if (!t || t.kind !== "query" || !t.editor || !t.edWrap) return;
+  if (t.builder) {
+    t.builder.remove();
+    t.builder = undefined;
+    t.edWrap.className = "h-1/3 min-h-[80px] border-b border-zinc-700 overflow-hidden";
+    return;
+  }
+  t.builder = createBuilder(
+    () => t.conn?.schema ?? [],
+    () => quoteFor(t.conn),
+    (text) => {
+      if (!text) return;
+      t.editor!.dispatch({ changes: { from: 0, to: t.editor!.state.doc.length, insert: text } });
+    },
+  );
+  t.builder.className += " h-[45%] shrink-0";
+  t.root.insertBefore(t.builder, t.edWrap);
+  t.edWrap.className = "h-1/4 min-h-[70px] border-b border-zinc-700 overflow-hidden";
 }
 
 function activate(t: Tab) {
@@ -358,7 +385,11 @@ async function useConnection(id: number, p: { name: string; kind: string }) {
   api.schemaMap(id).then((m) => {
     c.schema = m;
     // Re-point every open query editor of this connection at the new schema.
-    for (const t of tabs) t.editor && t.conn === c && t.editor.dispatch({ effects: sqlLang.reconfigure(langFor(c)) });
+    for (const t of tabs) {
+      if (!t.editor || t.conn !== c) continue;
+      t.editor.dispatch({ effects: sqlLang.reconfigure(langFor(c)) });
+      (t.builder as (HTMLElement & { refresh?: () => void }) | undefined)?.refresh?.();
+    }
   }).catch(() => {});
   if (!tabs.length) makeTab("query", "Query");
 }
@@ -407,6 +438,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "r") go(() => active && reload(active));
   else if (k === "enter") go(runActive);
   else if (k === "e") go(() => explainActive(e.shiftKey));
+  else if (k === "b") go(toggleBuilder);
   else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
   else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
   else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => active!.grid.deleteSelected());

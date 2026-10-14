@@ -28,7 +28,9 @@ import { pickDatabase } from "./dbpicker";
 import { createDiagram } from "./diagram";
 import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
-import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
+import { formatRows, type CopyFormat } from "./copyfmt";
+import { loadHistory, addHistory, removeHistory, clearHistory, loadSaved, saveQuery, renameQuery, deleteQuery } from "./qstore";
+import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
 import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
 
 /**
@@ -51,7 +53,7 @@ interface Server { id: string; name: string; kind: string; env?: string | null; 
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; countBtn?: HTMLButtonElement; countSeq?: number;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; countSeq?: number;
 }
 
 /** The current workspace: the database the sidebar last selected or the active tab belongs to. */
@@ -111,6 +113,7 @@ app.innerHTML = `
     <aside id="sidebar" class="relative shrink-0 glass rounded-2xl flex flex-col min-h-0" style="width:272px">
       <div id="sb-grip" class="grip-col" title="Drag to resize the sidebar"></div>
       <div class="titlebar h-11 shrink-0"></div>
+      <div class="px-3 mb-2"><div id="sidetabs" class="seg w-full" style="display:flex"></div></div>
       <div class="px-3 mb-2 relative">
         <span class="absolute left-[22px] top-[9px] text-muted pointer-events-none">${icon("search", 15)}</span>
         <input id="filter" placeholder="Search tables" class="field w-full" style="padding-left:34px;background:color-mix(in srgb, var(--panel) 70%, transparent)" />
@@ -168,13 +171,16 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   statusBar.className = "h-8 shrink-0 px-4 flex items-center gap-3 text-[13px] text-soft bg-canvas";
   if (c) {
     const risky = c.env === "production" || c.env === "staging";
-    statusBar.innerHTML = `<span class="pill shrink-0" style="--hue:${engineVar(c.kind)};background:color-mix(in srgb, ${engineVar(c.kind)} 12%, transparent);color:var(--ink)"><span style="width:7px;height:7px;border-radius:4px;background:${engineVar(c.kind)}"></span>${esc(c.name)}${c.db ? `<span class="text-muted"> / ${esc(c.db)}</span>` : ""}</span>${risky ? `<span class="pill shrink-0" style="color:${envColor(c.env)};background:color-mix(in srgb, ${envColor(c.env)} 12%, transparent)">${esc(c.env!)}</span>` : ""}`;
+    statusBar.innerHTML = `<span class="pill shrink-0" style="--hue:${engineVar(c.kind)};background:color-mix(in srgb, ${engineVar(c.kind)} 12%, transparent);color:var(--ink)"><span style="width:7px;height:7px;border-radius:4px;background:${engineVar(c.kind)}"></span>${esc(c.name)}${c.db ? `<span class="text-muted"> / ${esc(c.db)}</span>` : ""}</span>${risky ? `<span class="pill shrink-0" style="color:${envColor(c.env)};background:color-mix(in srgb, ${envColor(c.env)} 12%, transparent)">${esc(c.env!)}</span>` : ""}${safetyLevel(c.server.profile) === "readonly" ? `<span class="pill shrink-0" title="Nothing can be changed on this connection">read-only</span>` : ""}`;
   }
   statusBar.append(status);
   const countBtn = document.createElement("button");
   countBtn.className = "btn btn-ghost shrink-0";
   countBtn.style.cssText = "height:24px;display:none";
   statusBar.append(countBtn);
+  const selInfo = document.createElement("span");
+  selInfo.className = "shrink-0 text-muted";
+  statusBar.append(selInfo);
   const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [], countBtn };
   grid.sortable = kind !== "diagram" && !["redis", "mongo"].includes(c?.kind ?? "");
   grid.onSort = (col, additive, x, y) => {
@@ -188,6 +194,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     ]);
   };
   grid.onCellMenu = (x, y, r, col) => cellMenu(tab, x, y, r, col);
+  grid.onSelect = () => { const n = grid.selectedCount; selInfo.textContent = n > 1 ? `${n.toLocaleString()} rows selected` : ""; };
   if (kind === "query") {
     root.append(queryBar(tab));
     const ed = document.createElement("div");
@@ -598,6 +605,7 @@ async function exec(t: Tab, sqlText: string) {
   try {
     const s: Summary = await api.runQuery(t.conn.id, sqlText);
     logSql(t.conn, sqlText, s.elapsed_ms);
+    t.lastMs = s.elapsed_ms; t.failed = false;
     await t.grid.setResult(s.columns.length ? s : null);
     t.status.textContent = s.columns.length
       ? `${s.row_count.toLocaleString()} rows${s.truncated ? " (truncated)" : ""} · ${s.elapsed_ms} ms`
@@ -605,6 +613,7 @@ async function exec(t: Tab, sqlText: string) {
     offerCount(t, s);
     if (/^\s*(create|drop|alter)\b/i.test(sqlText)) refreshObjects();
   } catch (e) {
+    t.failed = true;
     logSql(t.conn, sqlText, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0]);
     await t.grid.setResult(null);
     t.status.textContent = t.cancelled ? "Query cancelled" : "Error: " + String(e).split("\n")[0];
@@ -662,14 +671,28 @@ function buildChanges(t: Tab): Change[] | string {
 /** Delete (stage the deletion of) the selected row, after asking. Un-marking a row or dropping a new unsaved row needs no question. */
 async function deleteRow(t: Tab) {
   const g = t.grid;
-  if (g.selected < 0) return;
-  if (!g.rowIsPersisted(g.selected) || g.isMarkedDeleted(g.selected)) { g.deleteSelected(); return; }
+  const n = g.selectedCount;
+  if (!n) return;
+  if (!g.hasDeletableSelection) { g.deleteSelected(); return; }
   const ok = await confirmDanger({
-    title: `Delete row ${g.selected + 1}?`,
-    body: `Marks the row for deletion from <b>${esc(t.table ?? "this table")}</b>. It is removed from the database only when you commit (⌘S), after you review the SQL.`,
-    confirmLabel: "Delete row",
+    title: n === 1 ? `Delete row ${g.selected + 1}?` : `Delete ${n.toLocaleString()} rows?`,
+    body: `Marks ${n === 1 ? "the row" : `<b>${n.toLocaleString()} rows</b>`} for deletion from <b>${esc(t.table ?? "this table")}</b>. ${n === 1 ? "It is" : "They are"} removed from the database only when you commit (⌘S), after you review the SQL.`,
+    confirmLabel: n === 1 ? "Delete row" : `Delete ${n.toLocaleString()} rows`,
   });
   if (ok) g.deleteSelected();
+}
+
+/** Copy the selected rows to the clipboard in one of the formats. */
+async function copyRows(t: Tab, fmt: CopyFormat, header = false) {
+  const g = t.grid;
+  const rows = g.selectedRows();
+  if (!rows.length) return;
+  try {
+    const kind = t.conn?.kind === "mariadb" ? "mysql" : t.conn?.kind ?? "";
+    const text = formatRows(fmt, await g.rowValues(rows), { columns: g.columns.map((c) => c.name), table: t.table ?? "table_name", quote: quoteFor(t.conn), dialect: kind, header });
+    await navigator.clipboard?.writeText(text);
+    toast(`Copied ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"} as ${{ tsv: "text", csv: "CSV", json: "JSON", markdown: "Markdown", sql: "SQL INSERT" }[fmt]}`, "ok");
+  } catch (e) { toast("Couldn't copy: " + e, "error"); }
 }
 
 async function discardChanges(t: Tab) {
@@ -826,10 +849,16 @@ function cellMenu(t: Tab, x: number, y: number, r: number, c: number) {
     { label: isNull ? `Hide rows where ${col} is NULL` : `Hide rows where ${col} = ${short}`, disabled: !canFilter, action: () => t.filterBar?.addRule(isNull ? { col, op: "is not null", value: "" } : rule("<>")) },
     { divider: true, label: "" },
     { label: "Copy value", hint: "⌘C", action: () => { navigator.clipboard?.writeText(isNull ? "" : show(v)); toast("Copied", "ok"); } },
-    { label: "Copy row", action: () => { navigator.clipboard?.writeText(g.columns.map((_, i) => { const x2 = g.valueAt(r, i); return x2 && x2.t !== "Null" ? show(x2) : ""; }).join("\t")); toast("Copied the row", "ok"); } },
+    { label: g.selectedCount > 1 ? `Copy ${g.selectedCount.toLocaleString()} rows` : "Copy row", action: () => copyRows(t, "tsv") },
+    { label: "Copy as CSV", action: () => copyRows(t, "csv", true) },
+    { label: "Copy as JSON", action: () => copyRows(t, "json") },
+    { label: "Copy as Markdown", action: () => copyRows(t, "markdown") },
+    { label: "Copy as SQL INSERT", disabled: ["redis", "mongo"].includes(t.conn?.kind ?? ""), action: () => copyRows(t, "sql") },
+    { label: "Copy with column names", action: () => copyRows(t, "tsv", true) },
     { label: "Copy column name", action: () => { navigator.clipboard?.writeText(col); toast("Copied " + col, "ok"); } },
     { divider: true, label: "" },
     { label: "Set to NULL", disabled: !g.editable || isNull, action: () => g.stageEdit(r, c, { t: "Null" }) },
+    { label: g.selectedCount > 1 ? `Delete ${g.selectedCount.toLocaleString()} rows…` : "Delete row…", danger: true, disabled: !g.editable, action: () => deleteRow(t) },
   ]);
 }
 
@@ -876,8 +905,18 @@ function runActive() {
   const sel = view.state.selection.main;
   const text = sel.empty ? view.state.doc.toString() : view.state.sliceDoc(sel.from, sel.to);
   if (!text.trim()) return;
-  const run = () => { t.baseSql = text; t.sort = detectSort(text); t.grid.sort = t.sort; exec(t, text); };
+  const run = () => {
+    t.baseSql = text; t.sort = detectSort(text); t.grid.sort = t.sort;
+    const started = Date.now();
+    exec(t, text).then(() => { if (t.conn) { addHistory(histKey(t.conn), { sql: text, at: started, ms: t.lastMs ?? Date.now() - started, ok: !t.failed }); if (sideView === "history") renderObjects(); } });
+  };
+  const level = t.conn ? safetyOf(t.conn.server) : "off";
+  if (level === "readonly" && !isReadOnlySql(text)) { toast(`${t.conn!.server.name} is read-only: this statement would change data and was not run.`, "error"); return; }
   const d = destructiveKind(text);
+  if (!d && level === "protected" && !isReadOnlySql(text)) {
+    confirmDanger({ title: "Run this write on a protected connection?", body: `<b>${esc(t.conn!.server.name)}</b> is protected. This statement changes data or structure.`, confirmLabel: "Run statement", sql: [text.trim().slice(0, 600)] }).then((ok) => ok && run());
+    return;
+  }
   if (!d) return run();
   if (t.conn && (d.kind === "drop" || d.kind === "truncate") && blocked(t.conn.server, d.kind === "drop" ? "DROP statements" : "TRUNCATE")) return;
   const what = { drop: "drops an object", truncate: "empties a table", "delete-all": "deletes every row (no WHERE)", "update-all": "changes every row (no WHERE)" }[d.kind];
@@ -891,7 +930,7 @@ function reload(t: Tab) {
     t.schemaName = o?.schema ?? null;
     if (t.grid.pendingCount) { t.status.textContent = "Commit (⌘S) or discard pending changes before reloading"; return; }
     api.describe(t.conn.id, t.schemaName, t.table)
-      .then((d) => { t.cols = d.columns; t.grid.editable = o?.kind !== "view" && d.columns.some((c) => c.primary_key); })
+      .then((d) => { t.cols = d.columns; t.grid.editable = o?.kind !== "view" && safetyOf(t.conn!.server) !== "readonly" && d.columns.some((c) => c.primary_key); })
       .catch(() => { t.grid.editable = false; })
       .then(() => api.selectAllSql(t.conn!.id, t.schemaName ?? null, t.table!, undefined, t.filterWhere, buildOrder(t.sort, quoteFor(t.conn)) || undefined))
       .then((q) => exec(t, q))
@@ -983,6 +1022,120 @@ const ART_RESULTS = `<svg viewBox="0 0 120 80" width="120" height="80" fill="non
 const KIND_GROUPS: [string, string, string][] = [["table", "Tables", "table"], ["view", "Views", "view"], ["collection", "Collections", "collection"], ["key", "Keys", "key"], ["function", "Functions", "structure"], ["procedure", "Procedures", "play"], ["trigger", "Triggers", "wand"], ["event", "Events", "sun"]];
 const ROUTINE_KINDS = ["function", "procedure", "trigger", "event"];
 
+// ---------- sidebar views: Items (tables, …) | Queries (saved) | History ----------
+type SideView = "items" | "queries" | "history";
+let sideView: SideView = (localStorage.getItem("tabnix.sideView") as SideView) || "items";
+const SIDE_PLACEHOLDER: Record<SideView, string> = { items: "Search tables", queries: "Search saved queries", history: "Search history" };
+
+function renderSideTabs() {
+  const host = $("sidetabs");
+  host.replaceChildren(...(["items", "queries", "history"] as SideView[]).map((v) => {
+    const b = document.createElement("button");
+    b.textContent = { items: "Items", queries: "Queries", history: "History" }[v];
+    b.style.flex = "1";
+    b.setAttribute("aria-pressed", String(sideView === v));
+    b.onclick = () => { sideView = v; localStorage.setItem("tabnix.sideView", v); $<HTMLInputElement>("filter").placeholder = SIDE_PLACEHOLDER[v]; renderSideTabs(); renderObjects(); };
+    return b;
+  }));
+  $<HTMLInputElement>("filter").placeholder = SIDE_PLACEHOLDER[sideView];
+}
+
+const oneLine = (sql: string, n = 90) => { const t = sql.replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "…" : t; };
+const histKey = (c: Conn) => sessionKey(c.server.id, c.db);
+
+/** New query tab holding `sql` (nothing is run). */
+function openQueryTab(c: Conn, sql: string, title = "Query") {
+  const t = makeTab("query", title, undefined, c);
+  t.empty?.remove(); t.empty = undefined;
+  t.editor?.dispatch({ changes: { from: 0, to: t.editor.state.doc.length, insert: sql }, selection: { anchor: sql.length } });
+  return t;
+}
+
+function sideHeader(title: string, action?: { label: string; fn: () => void }): HTMLElement {
+  const h = document.createElement("div");
+  h.className = "flex items-center px-3 h-8 text-[12px] uppercase tracking-wide text-muted";
+  h.innerHTML = `<span class="flex-1">${esc(title)}</span>`;
+  if (action) { const b = document.createElement("button"); b.className = "normal-case tracking-normal text-accent hover:underline"; b.textContent = action.label; b.onclick = action.fn; h.append(b); }
+  return h;
+}
+
+function sideRow(title: string, sub: string, o: { click: () => void; menu: (x: number, y: number) => void; tone?: "bad" }): HTMLElement {
+  const d = document.createElement("div");
+  d.className = "px-3 py-1.5 rounded-lg cursor-default hover:bg-raised";
+  d.innerHTML = `<div class="truncate ${o.tone === "bad" ? "text-danger" : ""}"></div><div class="text-[12px] text-muted truncate"></div>`;
+  (d.children[0] as HTMLElement).textContent = title;
+  (d.children[1] as HTMLElement).textContent = sub;
+  d.title = title;
+  d.onclick = o.click;
+  d.oncontextmenu = (e) => { e.preventDefault(); o.menu(e.clientX, e.clientY); };
+  return d;
+}
+
+function renderSavedQueries() {
+  const host = $("objects");
+  const c = conn ?? activeServer?.conns[0] ?? null;
+  const q = $<HTMLInputElement>("filter").value.trim().toLowerCase();
+  const pid = activeServer?.id;
+  if (!pid) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">Connect to a database to use saved queries.</div>`; return; }
+  const list = loadSaved(pid).filter((s) => !q || s.name.toLowerCase().includes(q) || s.sql.toLowerCase().includes(q));
+  const frag = document.createDocumentFragment();
+  frag.append(sideHeader(`Saved on ${activeServer!.name}`, { label: "+ Save current", fn: () => saveCurrentQuery() }));
+  for (const s of list) {
+    frag.append(sideRow(s.name, oneLine(s.sql), {
+      click: () => c && openQueryTab(c, s.sql, s.name),
+      menu: (x, y) => contextMenu(x, y, [
+        { label: "Open in new tab", action: () => c && openQueryTab(c, s.sql, s.name) },
+        { label: "Copy SQL", action: () => { navigator.clipboard?.writeText(s.sql); toast("Copied", "ok"); } },
+        { label: "Rename…", action: async () => { const n = await promptName("Rename query", s.name, "Rename", s.name); if (n) { renameQuery(pid, s.id, n); renderObjects(); } } },
+        { divider: true, label: "" },
+        { label: "Delete…", danger: true, action: async () => { if (await confirmDanger({ title: `Delete “${s.name}”?`, body: "The saved query is removed.", confirmLabel: "Delete" })) { deleteQuery(pid, s.id); renderObjects(); } } },
+      ]),
+    }));
+  }
+  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "No saved queries yet. Write a query and press ⌘⇧S to keep it here."; frag.append(e); }
+  host.replaceChildren(frag);
+}
+
+/** ⌘⇧S: save the editor text of the active query tab under a name. */
+async function saveCurrentQuery() {
+  const t = active;
+  const pid = t?.conn?.server.id ?? activeServer?.id;
+  if (!pid) return;
+  const sql = t?.kind === "query" && t.editor ? t.editor.state.doc.toString().trim() : "";
+  if (!sql) { toast("Open a query tab with some SQL first.", "info"); return; }
+  const name = await promptName("Save query", "Saved queries are kept per connection.", "Save", oneLine(sql, 40));
+  if (!name) return;
+  saveQuery(pid, name, sql);
+  toast(`Saved “${name}”`, "ok");
+  if (sideView === "queries") renderObjects();
+}
+
+function renderHistory() {
+  const host = $("objects");
+  const c = conn;
+  const q = $<HTMLInputElement>("filter").value.trim().toLowerCase();
+  if (!c) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">Open a database to see its history.</div>`; return; }
+  const key = histKey(c);
+  const list = loadHistory(key).filter((h) => !q || h.sql.toLowerCase().includes(q));
+  const frag = document.createDocumentFragment();
+  frag.append(sideHeader(`Run on ${c.db ?? c.name}`, loadHistory(key).length ? { label: "Clear", fn: async () => { if (await confirmDanger({ title: "Clear history?", body: `Forgets the queries run on <b>${esc(c.db ?? c.name)}</b>.`, confirmLabel: "Clear history" })) { clearHistory(key); renderObjects(); } } } : undefined));
+  for (const h of list) {
+    frag.append(sideRow(oneLine(h.sql), `${ago(h.at)} · ${h.ok ? `${h.ms} ms` : "failed"}`, {
+      tone: h.ok ? undefined : "bad",
+      click: () => openQueryTab(c, h.sql),
+      menu: (x, y) => contextMenu(x, y, [
+        { label: "Open in new tab", action: () => openQueryTab(c, h.sql) },
+        { label: "Copy SQL", action: () => { navigator.clipboard?.writeText(h.sql); toast("Copied", "ok"); } },
+        { label: "Save as query…", action: async () => { const n = await promptName("Save query", "Saved queries are kept per connection.", "Save", oneLine(h.sql, 40)); if (n) { saveQuery(c.server.id, n, h.sql); toast(`Saved “${n}”`, "ok"); } } },
+        { divider: true, label: "" },
+        { label: "Remove from history", action: () => { removeHistory(key, h.at); renderObjects(); } },
+      ]),
+    }));
+  }
+  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "Queries you run in a query tab show up here."; frag.append(e); }
+  host.replaceChildren(frag);
+}
+
 function renderObjects() {
   const host = $("objects");
   if (!activeServer) {
@@ -991,6 +1144,8 @@ function renderObjects() {
     ($("emptyconn")).onclick = () => showLauncher();
     return;
   }
+  if (sideView === "queries") return renderSavedQueries();
+  if (sideView === "history") return renderHistory();
   const q = $<HTMLInputElement>("filter").value.trim().toLowerCase();
   const openTab = active?.kind === "table" ? active : null;
   const frag = document.createDocumentFragment();
@@ -1065,9 +1220,7 @@ function routineMenu(c: Conn, o: ObjectRef, x: number, y: number) {
 async function showDefinition(c: Conn, o: ObjectRef) {
   try {
     const text = await api.objectDefinition(c.id, o.kind, o.schema, o.name);
-    const t = makeTab("query", o.name, undefined, c);
-    t.empty?.remove(); t.empty = undefined;
-    t.editor?.dispatch({ changes: { from: 0, to: t.editor.state.doc.length, insert: text } });
+    openQueryTab(c, text, o.name);
   } catch (e) { toast(`Couldn't read the definition of ${o.name}: ${e}`, "error"); }
 }
 
@@ -1129,6 +1282,7 @@ function afterWorkspaceChange() {
 async function addDatabase(s: Server, connId: number, db: string | null): Promise<Conn> {
   const c: Conn = { id: connId, name: s.name, kind: s.kind, env: s.env, db, dbs: s.dbs, objects: [], schema: [], server: s, loading: true };
   s.conns.push(c);
+  if (safetyOf(s) === "readonly") api.setReadOnly(connId, true).catch(() => {}); // the backend refuses every write on it
   conn = c;
   activeServer = s; launcherOpen = false;
   collapsed.delete("s:" + s.id); collapsed.delete("d:" + c.id);
@@ -1176,10 +1330,11 @@ async function openDatabaseOn(s: Server, db: string, again = false) {
 
 // ---------- administration: new / drop database, truncate ----------
 /** Connections can be protected (the default for production): truncate and drop are refused outright. */
-const isProtected = (s: Server) => s.profile.protect ?? s.env === "production";
+const safetyOf = (s: Server) => safetyLevel(s.profile);
+const isProtected = (s: Server) => safetyOf(s) !== "off";
 function blocked(s: Server, what: string): boolean {
   if (!isProtected(s)) return false;
-  toast(`${s.name} is protected: ${what} is blocked. Turn off “Protect” in the connection settings to allow it.`, "error");
+  toast(`${s.name} is protected: ${what} is blocked. Change “Safety” in the connection settings to allow it.`, "error");
   return true;
 }
 
@@ -1340,6 +1495,7 @@ function queryBar(tab: Tab): HTMLElement {
     b(`${icon("stop", 13)}<span>Stop</span>`, "Cancel the running query (⌘.)", () => { activate(tab); cancelActive(); }),
     sep(),
     b(`${icon("plan", 14)}<span>Explain</span>`, "Show the query plan and suggestions (⌘E)", () => { activate(tab); explainActive(false); }),
+    b(`${icon("archive", 14)}<span>Save</span>`, "Save this query to the Queries list (⌘⇧S)", () => { activate(tab); saveCurrentQuery(); }),
     b(`${icon("wand", 14)}<span>Format</span>`, "Format SQL (⌘I)", () => tab.editor && formatEditor(tab.editor, tab.conn)),
     b(`${icon("blocks", 14)}<span>Builder</span>`, "Visual query builder (⌘B)", () => { activate(tab); toggleBuilder(); }),
     pill,
@@ -1589,6 +1745,11 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && active?.running) { e.preventDefault(); cancelActive(); return; }
   if (!e.metaKey) return;
   const k = e.key.toLowerCase();
+  const inText = e.target instanceof HTMLElement && !!e.target.closest("input, textarea, .cm-editor, [contenteditable]");
+  if (!inText && !e.altKey && !e.shiftKey && active && active.kind !== "diagram") {
+    if (k === "c" && active.grid.selectedCount > 0) { e.preventDefault(); copyRows(active, "tsv"); return; }
+    if (k === "a" && active.grid.columns.length) { e.preventDefault(); active.grid.selectAll(); return; }
+  }
   const go = (f: () => void) => { e.preventDefault(); f(); };
   // ⌥ changes e.key on macOS, so match the physical key for the ⌘⌥ combos.
   if (e.altKey && e.code === "KeyE") return go(exportActive);
@@ -1607,6 +1768,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "e") go(() => explainActive(e.shiftKey));
   else if (k === "b") go(toggleBuilder);
   else if (e.key === ".") go(cancelActive);
+  else if (k === "s" && e.shiftKey && active?.kind === "query") go(saveCurrentQuery);
   else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
   else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
   else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => deleteRow(active!));
@@ -1647,6 +1809,7 @@ paintTheme();
 renderObjects();
 showLauncher();
 $("filter").oninput = renderObjects;
+renderSideTabs();
 
 // Memory profiling (scripts/memprofile.sh): this branch is removed from builds without VITE_PROFILE.
 if (import.meta.env.VITE_PROFILE) {

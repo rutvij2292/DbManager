@@ -1,6 +1,7 @@
 import { api, show, type Summary, type Val } from "./api";
 import type { SortKey } from "./builder-sql";
 import { PageCache } from "./pagecache";
+import { nextSelection } from "./copyfmt";
 
 const ROW_H = 30, PAGE = 200, MIN_W = 80, GUTTER = 52;
 /** Pages kept in memory (~2,400 rows); older ones are dropped and fetched again from Rust if scrolled back to. */
@@ -33,7 +34,10 @@ export class Grid {
   private suspended = false;
   private inflight = new Set<Promise<void>>();
   private widths: number[] = [];
-  private sel = -1;
+  /** Selected rows (click, ⌘-click toggles, Shift-click ranges, ⌘A all). `anchor` is the row ranges grow from. */
+  private rows = new Set<number>();
+  private anchor = -1;
+  private allRows = false;
   private summary: Summary | null = null;
 
   // Row editing (table tabs): staged client-side until committed.
@@ -71,7 +75,44 @@ export class Grid {
   }
 
   get columns() { return this.summary?.columns ?? []; }
-  get selected() { return this.sel; }
+  /** The primary selected row (the anchor), or -1. */
+  get selected() { return this.anchor; }
+  isSelected(r: number) { return this.allRows ? r < this.total() : this.rows.has(r); }
+  get selectedCount() { return this.allRows ? this.total() : this.rows.size; }
+  /** Selected row numbers, ascending. */
+  selectedRows(): number[] {
+    if (this.allRows) return Array.from({ length: this.total() }, (_, i) => i);
+    return [...this.rows].sort((a, b) => a - b);
+  }
+  /** Called whenever the selection changes. */
+  onSelect: () => void = () => {};
+  private setSelection(rows: Set<number>, anchor: number, all = false) {
+    this.rows = rows; this.anchor = anchor; this.allRows = all;
+    this.render();
+    this.onSelect();
+  }
+  pick(r: number, mode: "single" | "toggle" | "range") {
+    const cur = this.allRows ? new Set(this.selectedRows()) : this.rows;
+    const n = nextSelection(cur, this.anchor, r, mode);
+    this.setSelection(n.rows, n.anchor);
+  }
+  selectAll() { if (this.total()) this.setSelection(new Set(), 0, true); }
+  clearSelection() { if (this.anchor >= 0 || this.rows.size || this.allRows) this.setSelection(new Set(), -1); }
+  /** Current values (staged edits included) of the given rows. Pages that aren't cached are fetched without caching them. */
+  async rowValues(rows: number[]): Promise<Val[][]> {
+    const s = this.summary;
+    if (!s) return [];
+    const fetched = new Map<number, Val[][]>();
+    for (const p of new Set(rows.filter((r) => r < s.row_count).map((r) => Math.floor(r / PAGE)))) {
+      if (!this.cache.has(p)) fetched.set(p, await api.getRows(s.query_id, p * PAGE, PAGE));
+    }
+    return rows.map((r) => {
+      if (r >= s.row_count) return this.inserted[r - s.row_count] ?? [];
+      const base = this.cache.peek(Math.floor(r / PAGE))?.[r % PAGE] ?? fetched.get(Math.floor(r / PAGE))?.[r % PAGE] ?? [];
+      const e = this.edits.get(r);
+      return e ? base.map((v, i) => e.get(i) ?? v) : base;
+    });
+  }
   get pendingCount() { return this.edits.size + this.deleted.size + this.inserted.length; }
   private total() { return (this.summary?.row_count ?? 0) + this.inserted.length; }
 
@@ -107,7 +148,7 @@ export class Grid {
   addRow() {
     if (!this.summary) return;
     this.inserted.push(this.summary.columns.map(() => ({ t: "Null" }) as Val));
-    this.sel = this.total() - 1;
+    this.rows = new Set([this.total() - 1]); this.anchor = this.total() - 1; this.allRows = false;
     this.resize();
     this.body.scrollTop = this.body.scrollHeight;
     this.onChange();
@@ -115,13 +156,27 @@ export class Grid {
   /** Is this a row that exists in the database (not a new, unsaved one)? */
   rowIsPersisted(r: number) { return r < (this.summary?.row_count ?? 0); }
   isMarkedDeleted(r: number) { return this.deleted.has(r); }
+  /** Do the selected rows include any that still exist in the database and aren't marked yet? */
+  get hasDeletableSelection() { return this.selectedRows().some((r) => this.rowIsPersisted(r) && !this.deleted.has(r)); }
+  /** Stage deletion of every selected row; if they are all marked already, un-mark them. New unsaved rows are simply removed. */
   deleteSelected() {
     const n = this.summary?.row_count ?? 0;
-    if (this.sel < 0) return;
-    if (this.sel >= n) this.inserted.splice(this.sel - n, 1), (this.sel = -1), this.resize();
-    else this.deleted.has(this.sel) ? this.deleted.delete(this.sel) : this.deleted.add(this.sel);
+    const picked = this.selectedRows();
+    if (!picked.length) return;
+    const saved = picked.filter((r) => r < n);
+    const fresh = picked.filter((r) => r >= n);
+    if (saved.length) {
+      if (saved.every((r) => this.deleted.has(r))) saved.forEach((r) => this.deleted.delete(r));
+      else saved.forEach((r) => this.deleted.add(r));
+    }
+    if (fresh.length) {
+      for (const r of fresh.sort((a, b) => b - a)) this.inserted.splice(r - n, 1);
+      this.rows = new Set(saved); this.anchor = saved[0] ?? -1; this.allRows = false;
+      this.resize();
+    }
     this.render();
     this.onChange();
+    this.onSelect();
   }
   discard() {
     this.edits.clear(); this.deleted.clear(); this.inserted = [];
@@ -165,7 +220,7 @@ export class Grid {
     this.summary = s;
     this.cache.clear();
     this.loading.clear();
-    this.sel = -1;
+    this.rows = new Set(); this.anchor = -1; this.allRows = false;
     this.head.innerHTML = "";
     this.rowsLayer.innerHTML = "";
     this.body.scrollTop = 0;
@@ -258,12 +313,12 @@ export class Grid {
       const row = isNew ? this.inserted[r - s.row_count] : this.cache.peek(Math.floor(r / PAGE))?.[r % PAGE];
       const div = document.createElement("div");
       const gone = this.deleted.has(r);
-      const selected = r === this.sel;
+      const selected = this.isSelected(r);
       div.className = "flex " + (gone ? "line-through " : "");
       div.style.height = ROW_H + "px";
       div.style.background = gone ? "var(--del-soft)" : isNew ? "var(--new-soft)" : selected ? "var(--sel)" : r % 2 ? "var(--stripe)" : "";
       if (!gone && !isNew && !selected) { div.onmouseenter = () => (div.style.background = "var(--row-hover)"); div.onmouseleave = () => (div.style.background = r % 2 ? "var(--stripe)" : ""); }
-      div.onclick = () => { this.sel = r; this.render(); };
+      div.onclick = (e) => this.pick(r, e.shiftKey ? "range" : e.metaKey || e.ctrlKey ? "toggle" : "single");
       const g = document.createElement("div");
       g.className = "grid-cell gutter shrink-0";
       g.style.fontVariantNumeric = "tabular-nums";
@@ -279,7 +334,7 @@ export class Grid {
         const v = edited ?? row?.[i];
         if (edited) { c.style.background = "var(--edit-soft)"; c.style.boxShadow = "inset 2px 0 0 var(--warn)"; }
         c.ondblclick = () => this.startEdit(r, i, c);
-        c.oncontextmenu = (e) => { e.preventDefault(); this.sel = r; this.render(); this.onCellMenu(e.clientX, e.clientY, r, i); };
+        c.oncontextmenu = (e) => { e.preventDefault(); if (!this.isSelected(r)) this.pick(r, "single"); this.onCellMenu(e.clientX, e.clientY, r, i); };
         if (v) {
           const k = kindOf(col.type_name);
           if (v.t === "Null") c.innerHTML = '<span class="v-null">null</span>';

@@ -30,11 +30,21 @@ struct AppState {
     tunnels: Mutex<HashMap<u64, tokio::process::Child>>,
     /// Cancel flags of running import/export jobs.
     jobs: Mutex<HashMap<u64, Arc<std::sync::atomic::AtomicBool>>>,
+    /// Connections in read-only mode: every command that could write refuses to run (enforced here, not just in the UI).
+    read_only: Mutex<std::collections::HashSet<u64>>,
 }
 
 impl AppState {
     fn id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    /// Fails when the connection is read-only. `what` names the refused action.
+    fn writable(&self, id: u64, what: &str) -> Result<(), String> {
+        if self.read_only.lock().unwrap().contains(&id) {
+            Err(format!("This connection is read-only: {what} is blocked. Change “Safety” in the connection settings to allow writes."))
+        } else {
+            Ok(())
+        }
     }
     fn conn(&self, id: u64) -> Result<Arc<dyn Connection>, String> {
         self.conns.lock().unwrap().get(&id).cloned().ok_or_else(|| "not connected".to_string())
@@ -137,9 +147,12 @@ struct Profile {
     /// local / staging / production — shown as a badge.
     #[serde(default)]
     environment: Option<String>,
-    /// Block truncate / drop on this connection. Unset means "on for production connections".
+    /// Legacy "protect" flag, read only to migrate old profiles to `safety`.
     #[serde(default)]
     protect: Option<bool>,
+    /// off | protected (blocks truncate/drop, asks before writes) | readonly. Unset: protected for production, off otherwise.
+    #[serde(default)]
+    safety: Option<String>,
     /// Accent colour (hex) shown on the connection.
     #[serde(default)]
     color: Option<String>,
@@ -226,7 +239,7 @@ async fn tableplus_import(app: tauri::AppHandle, ids: Vec<String>, passwords: bo
         profiles.push(Profile {
             id: c.id.clone(), name: c.name.clone(), kind, host: c.host, port: c.port, user: c.user, database: c.database, path: c.path,
             ssl: c.ssl, ssh_host: c.ssh_host, ssh_port: c.ssh_port, ssh_user: c.ssh_user, ssh_key: c.ssh_key,
-            socket: c.socket, environment: c.environment, protect: None, color: c.color, tags: vec![],
+            socket: c.socket, environment: c.environment, protect: None, safety: None, color: c.color, tags: vec![],
         });
         sum.imported += 1;
         if passwords {
@@ -395,6 +408,7 @@ async fn backup_database(app: tauri::AppHandle, state: State<'_, AppState>, conn
 /// Run a SQL script (plain, .gz or .zip) against the connected database.
 #[tauri::command]
 async fn restore_database(app: tauri::AppHandle, state: State<'_, AppState>, conn_id: u64, path: String, options: dbbackup::RestoreOptions, job: u64) -> Result<dbbackup::RestoreReport, String> {
+    state.writable(conn_id, "restoring a backup")?;
     let conn = state.conn(conn_id)?;
     let flag = start_job(&state, job);
     let a = app.clone();
@@ -410,6 +424,7 @@ fn import_preview(path: String, has_header: bool, delimiter: Option<char>) -> Re
 
 #[tauri::command]
 async fn import_data(app: tauri::AppHandle, state: State<'_, AppState>, conn_id: u64, path: String, options: dataio::ImportOptions, job: u64) -> Result<dataio::ImportReport, String> {
+    state.writable(conn_id, "importing data")?;
     let conn = state.conn(conn_id)?;
     let flag = start_job(&state, job);
     let a = app.clone();
@@ -434,6 +449,7 @@ async fn connect(state: State<'_, AppState>, config: ConnConfig) -> Result<u64, 
 fn disconnect(state: State<'_, AppState>, conn_id: u64) {
     state.conns.lock().unwrap().remove(&conn_id);
     state.configs.lock().unwrap().remove(&conn_id);
+    state.read_only.lock().unwrap().remove(&conn_id);
     state.tunnels.lock().unwrap().remove(&conn_id); // kill_on_drop closes the tunnel
 }
 
@@ -457,8 +473,18 @@ async fn describe(state: State<'_, AppState>, conn_id: u64, schema: Option<Strin
     state.conn(conn_id)?.describe(schema.as_deref(), &name).await.map_err(|e| e.to_string())
 }
 
+/// Switch a connection in or out of read-only mode.
+#[tauri::command]
+fn set_read_only(state: State<'_, AppState>, conn_id: u64, on: bool) {
+    let mut set = state.read_only.lock().unwrap();
+    if on { set.insert(conn_id); } else { set.remove(&conn_id); }
+}
+
 #[tauri::command]
 async fn run_query(state: State<'_, AppState>, conn_id: u64, sql: String) -> Result<QuerySummary, String> {
+    if !dbcore::is_read_only_sql(&sql) {
+        state.writable(conn_id, "this statement")?;
+    }
     let mut r = state.conn(conn_id)?.query(&sql).await.map_err(|e| e.to_string())?;
     let truncated = r.rows.len() > MAX_ROWS;
     r.rows.truncate(MAX_ROWS);
@@ -479,6 +505,7 @@ async fn run_query(state: State<'_, AppState>, conn_id: u64, sql: String) -> Res
 /// Used for administration: truncating every table, dropping a database.
 #[tauri::command]
 async fn run_statements(state: State<'_, AppState>, conn_id: u64, sqls: Vec<String>) -> Result<(), String> {
+    state.writable(conn_id, "this operation")?;
     let conn = state.conn(conn_id)?;
     match conn.open_session().await.map_err(|e| e.to_string())? {
         Some(mut session) => {
@@ -516,6 +543,7 @@ async fn apply_changes(
     changes: Vec<Change>,
     preview: bool,
 ) -> Result<Vec<String>, String> {
+    if !preview { state.writable(conn_id, "saving changes")?; }
     let conn = state.conn(conn_id)?;
     let stmts = build_dml(conn.as_ref(), schema.as_deref(), &table, &changes);
     if !preview {
@@ -534,6 +562,7 @@ async fn apply_structure(
     changes: Vec<StructChange>,
     preview: bool,
 ) -> Result<Vec<String>, String> {
+    if !preview { state.writable(conn_id, "changing the structure")?; }
     let conn = state.conn(conn_id)?;
     let ddl = build_ddl(conn.as_ref(), schema.as_deref(), &table, &changes).map_err(|e| e.to_string())?;
     if !preview {
@@ -603,7 +632,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, list_routines, object_definition, run_query, run_statements, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, list_routines, object_definition, set_read_only, run_query, run_statements, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Tabnix");
 }

@@ -70,11 +70,11 @@ export function ignoreFkLabel(kind: string, op: "truncate" | "drop"): string {
 export const isForeignKeyError = (msg: string) => /foreign key|\b(1701|1451|1217|3730)\b|referenced in a foreign|REFERENCE constraint/i.test(msg);
 
 /** Ask for a name (new database). Resolves null when dismissed. */
-export function promptName(title: string, hint: string, confirmLabel: string): Promise<string | null> {
+export function promptName(title: string, hint: string, confirmLabel: string, initial = ""): Promise<string | null> {
   return new Promise((resolve) => {
     const m = modal(`
       <div class="px-5 pt-4 pb-2"><div class="text-[16px] font-semibold">${esc(title)}</div><div class="text-soft mt-0.5">${esc(hint)}</div></div>
-      <div class="px-5 pb-3"><input id="n" class="field w-full" autocomplete="off" placeholder="name"/><div id="msg" class="text-danger text-[12.5px] mt-1.5 h-4"></div></div>
+      <div class="px-5 pb-3"><input id="n" class="field w-full" autocomplete="off" placeholder="name" value="${esc(initial)}"/><div id="msg" class="text-danger text-[12.5px] mt-1.5 h-4"></div></div>
       <div class="px-5 py-3 border-t border-line flex justify-end gap-2"><button id="no" class="btn">Cancel</button><button id="yes" class="btn btn-primary">${esc(confirmLabel)}</button></div>`, 440);
     let done = false;
     const finish = (v: string | null) => { if (done) return; done = true; m.close(); resolve(v); };
@@ -89,7 +89,7 @@ export function promptName(title: string, hint: string, confirmLabel: string): P
     m.q("#no").onclick = () => finish(null);
     m.q("#yes").onclick = go;
     n.onkeydown = (e) => { if (e.key === "Enter") go(); };
-    n.focus();
+    n.focus(); n.select();
   });
 }
 
@@ -136,4 +136,32 @@ export function destructiveKind(sql: string): Destructive | null {
     if (/^update\b/.test(l) && !/\bwhere\b/.test(l)) return { kind: "update-all", statement: st };
   }
   return null;
+}
+
+// ---------- read-only check (mirror of dbcore::is_read_only_sql; the backend enforces it, this only gives early, friendly feedback) ----------
+function scrub(sql: string): string {
+  return sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(--|#)[^\n]*/g, " ").replace(/'(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.|"")*"|`[^`]*`/g, " _ ");
+}
+const WRITE_WORDS = new Set(["insert", "update", "delete", "replace", "merge", "drop", "create", "alter", "truncate", "grant", "revoke", "rename", "call", "exec", "execute", "into", "copy", "load", "lock", "vacuum", "reindex", "attach", "detach", "set", "do", "handler"]);
+const wordsOf = (s: string) => s.toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean);
+function statementIsRead(st: string): boolean {
+  const w = wordsOf(st);
+  if (!w.length) return true;
+  const first = w[0];
+  if (["show", "describe", "desc", "use", "values", "table", "begin", "commit", "rollback"].includes(first)) return true;
+  if (first === "start") return w[1] === "transaction";
+  if (["select", "with", "explain"].includes(first)) return !w.slice(1).some((x) => WRITE_WORDS.has(x) && !(x === "set" && first === "explain"));
+  if (first === "pragma") return !st.includes("=") && !st.includes("(");
+  return false;
+}
+/** True when every statement in `sql` only reads. */
+export const isReadOnlySql = (sql: string) => scrub(sql).split(";").every((st) => statementIsRead(st.trim()));
+
+export type Safety = "off" | "protected" | "readonly";
+/** The safety level of a saved connection (older profiles only had a `protect` flag). */
+export function safetyLevel(p: { safety?: string | null; protect?: boolean | null; environment?: string | null }): Safety {
+  if (p.safety === "off" || p.safety === "protected" || p.safety === "readonly") return p.safety;
+  if (p.protect === true) return "protected";
+  if (p.protect === false) return "off";
+  return p.environment === "production" ? "protected" : "off";
 }

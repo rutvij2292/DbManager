@@ -1,4 +1,7 @@
 //! Core types and driver traits for Tabnix.
+pub mod readonly;
+pub use readonly::is_read_only_sql;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

@@ -1,4 +1,4 @@
-import { confirmDanger } from "./dbadmin";
+import { confirmDanger, safetyLevel } from "./dbadmin";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type ConnConfig, type Profile } from "./api";
 import { esc, tagChip, STARTER_TAGS } from "./ui";
@@ -41,7 +41,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
         </div>
         <div class="flex gap-2 items-end">
           <label class="w-44">Environment <select name="environment" class="${field}"><option value="local">Local</option><option value="staging">Staging</option><option value="production">Production</option></select></label>
-          <label class="flex items-center gap-2 pb-1.5"><input type="checkbox" name="protect"/> Protect: block truncate and drop</label>
+          <label class="w-60" title="Protected: truncate/drop are blocked and every write asks first. Read-only: nothing can be changed.">Safety <select name="safety" class="${field}"><option value="off">Off</option><option value="protected">Protected</option><option value="readonly">Read-only</option></select></label>
         </div>
         <label>Type <select name="kind" class="${field}">${KINDS.map((k) => `<option value="${k.id}">${k.label}</option>`).join("")}</select></label>
         <div id="net" class="flex flex-col gap-2 overflow-auto">
@@ -142,14 +142,14 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     path: el("path").value || null,
     ssl: el("ssl").value,
     environment: el("environment").value,
-    protect: el("protect").checked,
+    safety: el("safety").value as Profile["safety"],
     color: current?.color ?? null,
     ssh_host: el("usessh").checked ? el("ssh_host").value || null : null,
     ssh_port: el("usessh").checked && el("ssh_port").value ? +el("ssh_port").value : null,
     ssh_user: el("usessh").checked ? el("ssh_user").value || null : null,
     ssh_key: el("usessh").checked ? el("ssh_key").value || null : null,
   });
-  el("environment").onchange = () => { el("protect").checked = el("environment").value === "production"; };
+  el("environment").onchange = () => { el("safety").value = el("environment").value === "production" ? "protected" : "off"; };
   const fill = (p: Profile | null) => {
     current = p;
     tags = [...(p?.tags ?? [])];
@@ -164,7 +164,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     el("path").value = p?.path ?? "";
     el("ssl").value = p?.ssl ?? "prefer";
     el("environment").value = p?.environment ?? "local";
-    el("protect").checked = p?.protect ?? p?.environment === "production";
+    el("safety").value = safetyLevel(p ?? { environment: "local" });
     el("usessh").checked = !!p?.ssh_host;
     el("ssh_host").value = p?.ssh_host ?? "";
     el("ssh_port").value = p?.ssh_port ? String(p.ssh_port) : "";

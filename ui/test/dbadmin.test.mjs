@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, isForeignKeyError, destructiveKind } from "../.test-build/dbadmin.mjs";
+import { createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, isForeignKeyError, destructiveKind, isReadOnlySql, safetyLevel } from "../.test-build/dbadmin.mjs";
 
 test("create / drop database per engine", () => {
   assert.equal(createDatabaseSql("mysql", "my`db"), "CREATE DATABASE `my``db`");
@@ -47,4 +47,17 @@ test("destructive statements are spotted, safe ones are not", () => {
   assert.equal(destructiveKind("update t set a = 1 where id = 2"), null);
   assert.equal(destructiveKind("-- drop table x\nselect * from t"), null);
   assert.equal(destructiveKind("SELECT * FROM t"), null);
+});
+
+test("read-only check agrees with the backend's", () => {
+  for (const q of ["SELECT * FROM t", "show tables", "select 'insert into x'", "-- drop\nselect 1", "with x as (select 1) select * from x", "EXPLAIN SELECT 1", ""]) assert.ok(isReadOnlySql(q), q);
+  for (const q of ["insert into t values (1)", "select 1; delete from t", "select * into n from t", "explain analyze delete from t", "SET x = 1", "with d as (delete from t returning *) select * from d", "pragma journal_mode = off", "drop table t"]) assert.ok(!isReadOnlySql(q), q);
+});
+
+test("safety level falls back to the legacy flag, then the environment", () => {
+  assert.equal(safetyLevel({ safety: "readonly" }), "readonly");
+  assert.equal(safetyLevel({ protect: true }), "protected");
+  assert.equal(safetyLevel({ protect: false, environment: "production" }), "off");
+  assert.equal(safetyLevel({ environment: "production" }), "protected");
+  assert.equal(safetyLevel({ environment: "local" }), "off");
 });

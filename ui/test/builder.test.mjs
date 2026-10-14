@@ -70,3 +70,40 @@ test("row filter: operators, escaping, AND/OR, blanks skipped", () => {
   // The first rule's AND/OR is irrelevant; a leading OR must not leak into the SQL.
   assert.equal(buildWhere([{ col: "a", op: "begins with", value: "x", or: true }], q), `"a" LIKE 'x%' ESCAPE '!'`);
 });
+
+import { buildOrder, nextSort, wrapForSort } from "../.test-build/builder-sql.mjs";
+
+test("sorting: ORDER BY body, quoting", () => {
+  const q = (s) => `"${s}"`;
+  assert.equal(buildOrder([], q), "");
+  assert.equal(buildOrder([{ col: "total", desc: true }, { col: "na\"me", desc: false }], (s) => `"${s.replace(/"/g, '""')}"`), `"total" DESC, "na""me" ASC`);
+});
+
+test("sorting: a plain click cycles asc → desc → off on one column", () => {
+  let s = [];
+  s = nextSort(s, "a", false); assert.deepEqual(s, [{ col: "a", desc: false }]);
+  s = nextSort(s, "a", false); assert.deepEqual(s, [{ col: "a", desc: true }]);
+  s = nextSort(s, "a", false); assert.deepEqual(s, []);
+  // Clicking another column replaces the sort instead of stacking.
+  s = nextSort([{ col: "a", desc: true }], "b", false); assert.deepEqual(s, [{ col: "b", desc: false }]);
+  // A multi-column sort collapses to the clicked column.
+  s = nextSort([{ col: "a", desc: false }, { col: "b", desc: false }], "a", false); assert.deepEqual(s, [{ col: "a", desc: false }]);
+});
+
+test("sorting: shift-click adds keys, flips them, then drops them", () => {
+  let s = nextSort([{ col: "a", desc: false }], "b", true);
+  assert.deepEqual(s, [{ col: "a", desc: false }, { col: "b", desc: false }]);
+  s = nextSort(s, "b", true); assert.deepEqual(s, [{ col: "a", desc: false }, { col: "b", desc: true }]);
+  s = nextSort(s, "b", true); assert.deepEqual(s, [{ col: "a", desc: false }]);
+});
+
+test("sorting a query result wraps it, and refuses what it can't wrap safely", () => {
+  const q = (s) => `\`${s}\``;
+  const sort = [{ col: "total", desc: true }];
+  assert.equal(wrapForSort("SELECT id, total FROM orders WHERE x = 1;  ", sort, q), "SELECT * FROM (SELECT id, total FROM orders WHERE x = 1) AS lattice_sorted ORDER BY `total` DESC");
+  assert.ok(wrapForSort("WITH t AS (SELECT 1 AS a) SELECT * FROM t", sort, q));
+  assert.equal(wrapForSort("UPDATE t SET a = 1", sort, q), null, "not a SELECT");
+  assert.equal(wrapForSort("SELECT 1; SELECT 2", sort, q), null, "two statements");
+  assert.equal(wrapForSort("SELECT 1", [], q), null, "nothing to sort by");
+  assert.equal(wrapForSort("  ;; ", sort, q), null);
+});

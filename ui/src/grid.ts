@@ -1,4 +1,5 @@
 import { api, show, type Summary, type Val } from "./api";
+import type { SortKey } from "./builder-sql";
 
 const ROW_H = 30, PAGE = 200, MIN_W = 80, GUTTER = 52;
 
@@ -32,6 +33,15 @@ export class Grid {
   // Row editing (table tabs): staged client-side until committed.
   editable = false;
   onChange: () => void = () => {};
+  /** Header click-to-sort; set `sortable` to show the affordance. `additive` = shift-click. */
+  sortable = false;
+  sort: SortKey[] = [];
+  onSort: (col: string, additive: boolean) => void = () => {};
+  /** Right-click on a cell (row index, column index) — the owner builds the menu. */
+  onCellMenu: (x: number, y: number, row: number, col: number) => void = () => {};
+  /** Column widths the user dragged, remembered by column name across re-sorts and reloads. */
+  private userWidths = new Map<string, number>();
+  private headCells: HTMLElement[] = [];
   edits = new Map<number, Map<number, Val>>();
   deleted = new Set<number>();
   inserted: Val[][] = [];
@@ -64,6 +74,27 @@ export class Grid {
     const n = this.summary?.row_count ?? 0;
     return r < n ? this.cache.get(Math.floor(r / PAGE))?.[r % PAGE] : undefined;
   }
+  /** The value currently shown in a cell (staged edit if any). */
+  valueAt(r: number, c: number): Val | undefined {
+    const n = this.summary?.row_count ?? 0;
+    if (r >= n) return this.inserted[r - n]?.[c];
+    return this.edits.get(r)?.get(c) ?? this.original(r)?.[c];
+  }
+  /** Stage a value for a cell exactly as the inline editor would. */
+  stageEdit(r: number, c: number, v: Val) {
+    if (!this.editable || this.deleted.has(r)) return;
+    const n = this.summary!.row_count;
+    if (r >= n) this.inserted[r - n][c] = v;
+    else {
+      const m = this.edits.get(r) ?? new Map<number, Val>();
+      const orig = this.original(r)?.[c];
+      if (orig && show(orig) === show(v) && (orig.t === "Null") === (v.t === "Null")) m.delete(c); else m.set(c, v);
+      m.size ? this.edits.set(r, m) : this.edits.delete(r);
+    }
+    this.render();
+    this.onChange();
+  }
+  columnName(c: number): string { return this.summary?.columns[c]?.name ?? ""; }
   editsOf(r: number) { return this.edits.get(r); }
   insertedRow(r: number) { return this.inserted[r - (this.summary?.row_count ?? 0)]; }
 
@@ -130,7 +161,8 @@ export class Grid {
     this.rowsLayer.innerHTML = "";
     this.body.scrollTop = 0;
     if (!s) return;
-    this.widths = s.columns.map((c) => Math.max(MIN_W, WIDTH[kindOf(c.type_name)], Math.min(260, c.name.length * 8 + 54)));
+    this.widths = s.columns.map((c) => this.userWidths.get(c.name) ?? Math.max(MIN_W, WIDTH[kindOf(c.type_name)], Math.min(260, c.name.length * 8 + 70)));
+    this.headCells = [];
     const corner = document.createElement("div");
     corner.className = "grid-cell gutter shrink-0";
     corner.style.height = "34px";
@@ -139,13 +171,38 @@ export class Grid {
     s.columns.forEach((c, i) => {
       const k = kindOf(c.type_name);
       const h = document.createElement("div");
-      h.className = "grid-cell shrink-0 flex items-center gap-1.5";
+      h.className = "grid-cell shrink-0 flex items-center gap-1.5 relative group";
       h.style.cssText = "height:34px;line-height:34px;font-weight:600;font-size:13px;color:var(--soft)";
       h.style.width = this.widths[i] + "px";
       h.style.justifyContent = k === "num" ? "flex-end" : "flex-start";
-      h.title = `${c.name}  ${c.type_name}`;
-      h.innerHTML = `<span style="font-size:11px;font-weight:500;font-family:var(--font-mono);color:${GLYPH_COLOR[k]}">${GLYPH[k]}</span><span class="truncate"></span>`;
-      (h.lastElementChild as HTMLElement).textContent = c.name;
+      const rank = this.sort.findIndex((x) => x.col === c.name);
+      const key = rank >= 0 ? this.sort[rank] : null;
+      if (key) h.style.color = "var(--ink)";
+      h.title = `${c.name}  ${c.type_name}${this.sortable ? "\nClick to sort · Shift-click to add a second sort" : ""}`;
+      h.innerHTML = `<span style="font-size:11px;font-weight:500;font-family:var(--font-mono);color:${GLYPH_COLOR[k]}">${GLYPH[k]}</span><span class="truncate"></span>` +
+        (key ? `<span class="shrink-0 inline-flex items-center gap-0.5" style="color:var(--accent);font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" style="transform:rotate(${key.desc ? 180 : 0}deg)"><path d="M5 1.5 9 8H1z"/></svg>${this.sort.length > 1 ? rank + 1 : ""}</span>` : "");
+      (h.children[1] as HTMLElement).textContent = c.name;
+      if (this.sortable) {
+        h.style.cursor = "pointer";
+        h.onclick = (e) => this.onSort(c.name, e.shiftKey);
+        if (!key) h.onmouseenter = () => (h.style.background = "color-mix(in srgb, var(--accent) 7%, var(--grid-head))");
+        if (!key) h.onmouseleave = () => (h.style.background = "");
+      }
+      // drag the right edge to resize; double-click it to fit the content
+      const grip = document.createElement("span");
+      grip.style.cssText = "position:absolute;right:-3px;top:0;bottom:0;width:7px;cursor:col-resize;z-index:2";
+      grip.onclick = (e) => e.stopPropagation();
+      grip.ondblclick = (e) => { e.stopPropagation(); this.fitColumn(i); };
+      grip.onpointerdown = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const startX = e.clientX, startW = this.widths[i];
+        grip.setPointerCapture(e.pointerId);
+        grip.style.background = "var(--accent)";
+        grip.onpointermove = (ev) => this.setWidth(i, Math.max(48, Math.min(900, startW + ev.clientX - startX)));
+        grip.onpointerup = () => { grip.onpointermove = grip.onpointerup = null; grip.style.background = ""; };
+      };
+      h.append(grip);
+      this.headCells.push(h);
       this.head.append(h);
     });
     const fill = document.createElement("div");
@@ -157,6 +214,25 @@ export class Grid {
     this.spacer.style.width = "100%"; this.spacer.style.minWidth = total + "px";
     this.rowsLayer.style.width = "100%"; this.rowsLayer.style.minWidth = total + "px";
     this.render();
+  }
+
+  private setWidth(i: number, w: number) {
+    const name = this.summary?.columns[i]?.name;
+    this.widths[i] = w;
+    if (name) this.userWidths.set(name, w);
+    if (this.headCells[i]) this.headCells[i].style.width = w + "px";
+    const total = this.widths.reduce((a, b) => a + b, 0) + GUTTER;
+    this.spacer.style.minWidth = total + "px";
+    this.rowsLayer.style.minWidth = total + "px";
+    this.render();
+  }
+  /** Fit a column to its content (header and the rows loaded so far). */
+  private fitColumn(i: number) {
+    const s = this.summary;
+    if (!s) return;
+    let chars = s.columns[i].name.length + 6;
+    for (const page of this.cache.values()) for (const row of page) chars = Math.max(chars, show(row[i] ?? { t: "Null" }).length);
+    this.setWidth(i, Math.max(64, Math.min(640, Math.round(chars * 7.6 + 28))));
   }
 
   private render() {
@@ -193,6 +269,7 @@ export class Grid {
         const v = edited ?? row?.[i];
         if (edited) { c.style.background = "var(--edit-soft)"; c.style.boxShadow = "inset 2px 0 0 var(--warn)"; }
         c.ondblclick = () => this.startEdit(r, i, c);
+        c.oncontextmenu = (e) => { e.preventDefault(); this.sel = r; this.render(); this.onCellMenu(e.clientX, e.clientY, r, i); };
         if (v) {
           const k = kindOf(col.type_name);
           if (v.t === "Null") c.innerHTML = '<span class="v-null">null</span>';

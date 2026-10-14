@@ -378,6 +378,22 @@ pub trait Connection: Send + Sync {
         };
         format!("SELECT * FROM {t} WHERE {filter} LIMIT {limit}")
     }
+    /// `SELECT * FROM <table> [WHERE …] [ORDER BY …] LIMIT n` in this dialect. `filter` and `order`
+    /// are trusted, user-built fragments (the same text they could type in the editor).
+    fn select_rows(&self, schema: Option<&str>, name: &str, filter: Option<&str>, order: Option<&str>, limit: usize) -> String {
+        let t = match schema {
+            Some(s) => format!("{}.{}", self.quote(s), self.quote(name)),
+            None => self.quote(name),
+        };
+        let mut sql = format!("SELECT * FROM {t}");
+        if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
+            sql.push_str(&format!(" WHERE {f}"));
+        }
+        if let Some(o) = order.map(str::trim).filter(|o| !o.is_empty()) {
+            sql.push_str(&format!(" ORDER BY {o}"));
+        }
+        format!("{sql} LIMIT {limit}")
+    }
     /// All tables with their column names, for editor autocomplete.
     async fn schema_map(&self) -> Result<Vec<SchemaTable>> {
         let mut out = Vec::new();
@@ -648,6 +664,14 @@ mod select_tests {
         async fn describe(&self, _: Option<&str>, _: &str) -> Result<ObjectInfo> { Ok(ObjectInfo::default()) }
         async fn query(&self, _: &str) -> Result<QueryResult> { Ok(QueryResult::default()) }
     }
+    #[test]
+    fn select_rows_builds_filter_and_order() {
+        let c = Fake("postgres");
+        assert_eq!(c.select_rows(None, "t", None, None, 10), "SELECT * FROM \"t\" LIMIT 10");
+        assert_eq!(c.select_rows(Some("s"), "t", Some("a > 1"), Some("\"a\" DESC, \"b\" ASC"), 10), "SELECT * FROM \"s\".\"t\" WHERE a > 1 ORDER BY \"a\" DESC, \"b\" ASC LIMIT 10");
+        assert_eq!(c.select_rows(None, "t", Some("  "), Some(""), 5), "SELECT * FROM \"t\" LIMIT 5", "blank fragments are ignored");
+    }
+
     #[test]
     fn select_where_uses_the_dialect_quoting() {
         assert_eq!(Fake("postgres").select_where(Some("s"), "t", "a = 1", 50), "SELECT * FROM \"s\".\"t\" WHERE a = 1 LIMIT 50");

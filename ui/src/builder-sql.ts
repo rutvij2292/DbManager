@@ -117,3 +117,38 @@ export function buildWhere(rules: FilterRule[], q: Quote): string {
   }
   return parts.join(" ");
 }
+
+/** Column sorting (shared by table tabs and query results). */
+export interface SortKey { col: string; desc: boolean }
+
+/** `"a" DESC, "b" ASC` — the body of an ORDER BY. */
+export function buildOrder(sort: SortKey[], q: Quote): string {
+  return sort.map((s) => `${q(s.col)} ${s.desc ? "DESC" : "ASC"}`).join(", ");
+}
+
+/**
+ * Sort state after a header click. A plain click cycles that column alone: ascending, descending,
+ * off. Shift-click adds the column as a further sort key (or cycles it within the existing keys).
+ */
+export function nextSort(sort: SortKey[], col: string, additive: boolean): SortKey[] {
+  const i = sort.findIndex((s) => s.col === col);
+  if (additive) {
+    if (i < 0) return [...sort, { col, desc: false }];
+    if (!sort[i].desc) return sort.map((s, k) => (k === i ? { ...s, desc: true } : s));
+    return sort.filter((_, k) => k !== i);
+  }
+  if (sort.length === 1 && i === 0) return sort[0].desc ? [] : [{ col, desc: true }];
+  return [{ col, desc: false }];
+}
+
+/**
+ * Wrap a query so its rows come back sorted: `SELECT * FROM (<query>) AS lattice_sorted ORDER BY …`.
+ * Returns null when the text can't safely be wrapped (not a single SELECT/WITH/VALUES statement).
+ */
+export function wrapForSort(sql: string, sort: SortKey[], q: Quote): string | null {
+  const base = sql.replace(/[\s;]+$/g, "").trim();
+  if (!base || !sort.length) return null;
+  if (!/^(select|with|values|\()/i.test(base)) return null;
+  if (base.includes(";")) return null; // several statements (or a ';' inside a literal): don't guess
+  return `SELECT * FROM (${base}) AS lattice_sorted ORDER BY ${buildOrder(sort, q)}`;
+}

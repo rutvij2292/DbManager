@@ -70,6 +70,8 @@ async function fakeJob(job: number, total: number, steps = 24, ms = 110) {
   for (let i = 1; i <= steps; i++) { await sleep(ms); emit("io-progress", { job, rows: Math.round((total * i) / steps) }); }
   return total;
 }
+let currentRows = rows;
+const base_run = () => ({ query_id: 1, columns: cols.map((name) => ({ name, type_name: name === "id" || name === "customer_id" ? "int" : name === "total" ? "decimal" : name === "placed_at" ? "datetime" : name === "shipped" ? "tinyint(1)" : "varchar" })), row_count: rows.length, truncated: false, affected: null, elapsed_ms: 4 });
 const handlers: Record<string, (a: any) => unknown> = {
   "plugin:dialog|open": () => "/Users/dev/Downloads/customers_2026.csv",
   "plugin:dialog|save": () => "/Users/dev/Documents/orders_2026-10-14.csv",
@@ -101,9 +103,19 @@ const handlers: Record<string, (a: any) => unknown> = {
       foreign_keys: t.name === "orders" ? [{ name: "fk_customer", columns: ["customer_id"], ref_schema: null, ref_table: "customers", ref_columns: ["id"] }] : [],
     };
   },
-  select_all_sql: (a) => `SELECT * FROM \`${a.name}\` LIMIT 1000`,
-  run_query: () => ({ query_id: 1, columns: cols.map((name) => ({ name, type_name: name === "id" || name === "customer_id" ? "int" : name === "total" ? "decimal" : name === "placed_at" ? "datetime" : "varchar" })), row_count: rows.length, truncated: false, affected: null, elapsed_ms: 4 }),
-  get_rows: (a) => rows.slice(a.offset, a.offset + a.limit),
+  select_all_sql: (a) => `SELECT * FROM \`${a.name}\`${a.filter ? " WHERE " + a.filter : ""}${a.order ? " ORDER BY " + a.order : ""} LIMIT 1000`,
+  run_query: (a) => {
+    // Honour a trailing ORDER BY (and the sort-wrapper) so header sorting is visible in the mock.
+    const m = /ORDER BY (.+?)(?: LIMIT \d+)?;?\s*$/is.exec(a.sql ?? "");
+    currentRows = rows;
+    if (m) {
+      const keys = m[1].split(",").map((p: string) => { const t = /[`"]?(\w+)[`"]?\s*(ASC|DESC)?/i.exec(p.trim())!; return { i: cols.indexOf(t[1]), desc: /desc/i.test(t[2] ?? "") }; }).filter((k: { i: number }) => k.i >= 0);
+      currentRows = [...rows].sort((x: any, y: any) => { for (const k of keys) { const a1 = x[k.i].v ?? "", b1 = y[k.i].v ?? ""; if (a1 < b1) return k.desc ? 1 : -1; if (a1 > b1) return k.desc ? -1 : 1; } return 0; });
+    }
+    return base_run();
+  },
+  run_query_unused: () => ({ query_id: 1, columns: cols.map((name) => ({ name, type_name: name === "id" || name === "customer_id" ? "int" : name === "total" ? "decimal" : name === "placed_at" ? "datetime" : "varchar" })), row_count: rows.length, truncated: false, affected: null, elapsed_ms: 4 }),
+  get_rows: (a) => currentRows.slice(a.offset, a.offset + a.limit),
   release_query: () => null,
   explain: () => ({ op: "Query", detail: "", relation: null, est_rows: null, actual_rows: null, cost: null, time_ms: null, children: [
     { op: "Hash Join", detail: "Hash Cond: orders.customer_id = customers.id", relation: null, est_rows: 4800, actual_rows: 5000, cost: 410.2, time_ms: 18.4, children: [

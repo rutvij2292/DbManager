@@ -90,7 +90,19 @@ export function createFilterBar(columns: () => string[], quote: () => Quote, app
     });
   }
 
+  /** Add a condition (e.g. from a cell's right-click menu), open the bar and apply. */
+  function addRule(r: FilterRule) {
+    raw = false;
+    // An untouched placeholder rule (nothing typed yet) is replaced rather than kept alongside.
+    if (rules.length === 1 && !rules[0].value && rules[0].op === "=") rules = [r];
+    else rules.push({ ...r, or: false });
+    if (el.style.display === "none") el.style.display = "block";
+    draw();
+    submit();
+  }
+
   return {
+    addRule,
     el,
     get open() { return el.style.display !== "none"; },
     toggle() {

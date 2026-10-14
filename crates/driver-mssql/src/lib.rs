@@ -105,6 +105,20 @@ impl Connection for MsConn {
         };
         format!("SELECT TOP {limit} * FROM {t}")
     }
+    fn select_rows(&self, schema: Option<&str>, name: &str, filter: Option<&str>, order: Option<&str>, limit: usize) -> String {
+        let t = match schema {
+            Some(s) => format!("{}.{}", self.quote(s), self.quote(name)),
+            None => self.quote(name),
+        };
+        let mut sql = format!("SELECT TOP {limit} * FROM {t}");
+        if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
+            sql.push_str(&format!(" WHERE {f}"));
+        }
+        if let Some(o) = order.map(str::trim).filter(|o| !o.is_empty()) {
+            sql.push_str(&format!(" ORDER BY {o}"));
+        }
+        sql
+    }
     fn select_where(&self, schema: Option<&str>, name: &str, filter: &str, limit: usize) -> String {
         let t = match schema {
             Some(s) => format!("{}.{}", self.quote(s), self.quote(name)),

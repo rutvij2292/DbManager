@@ -322,12 +322,15 @@ async fn schema_map(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<Sche
 }
 
 #[tauri::command]
-fn select_all_sql(state: State<'_, AppState>, conn_id: u64, schema: Option<String>, name: String, limit: Option<usize>, filter: Option<String>) -> Result<String, String> {
+fn select_all_sql(state: State<'_, AppState>, conn_id: u64, schema: Option<String>, name: String, limit: Option<usize>, filter: Option<String>, order: Option<String>) -> Result<String, String> {
     let conn = state.conn(conn_id)?;
     let limit = limit.unwrap_or(1000);
-    Ok(match filter.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
-        Some(f) => conn.select_where(schema.as_deref(), &name, f, limit),
-        None => conn.select_all(schema.as_deref(), &name, limit),
+    let has = |o: &Option<String>| o.as_deref().map(str::trim).is_some_and(|x| !x.is_empty());
+    // Redis and MongoDB have their own read syntax; filters and sorting only apply to SQL engines.
+    Ok(if has(&filter) || has(&order) {
+        conn.select_rows(schema.as_deref(), &name, filter.as_deref(), order.as_deref(), limit)
+    } else {
+        conn.select_all(schema.as_deref(), &name, limit)
     })
 }
 

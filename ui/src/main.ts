@@ -17,7 +17,8 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { sql, SQLite, PostgreSQL, MySQL, MSSQL } from "@codemirror/lang-sql";
-import { api, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
+import { buildOrder, nextSort, wrapForSort, type SortKey, type FilterRule } from "./builder-sql";
+import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
 import { applyTheme, currentTheme, esc, toast, contextMenu, tagChip, tagHue as tagHueOf } from "./ui";
@@ -35,7 +36,7 @@ interface Server { id: string; name: string; kind: string; env?: string | null; 
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement;
 }
 
 /** The current workspace: the database the sidebar last selected or the active tab belongs to. */
@@ -92,7 +93,8 @@ app.innerHTML = `
         <button id="theme" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Switch theme (⌘⇧L)" aria-label="Switch theme"></button>
       </div>
     </nav>
-    <aside class="w-[272px] shrink-0 glass rounded-2xl flex flex-col min-h-0">
+    <aside id="sidebar" class="relative shrink-0 glass rounded-2xl flex flex-col min-h-0" style="width:272px">
+      <div id="sb-grip" class="grip-col" title="Drag to resize the sidebar"></div>
       <div class="titlebar h-11 shrink-0"></div>
       <div class="px-3 mb-2 relative">
         <span class="absolute left-[22px] top-[9px] text-muted pointer-events-none">${icon("search", 15)}</span>
@@ -124,6 +126,22 @@ app.innerHTML = `
   </div>`;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
+// Sidebar: drag the grip on its right edge; the width is remembered.
+{
+  const sb = $("sidebar"), grip = $("sb-grip");
+  const clamp = (w: number) => Math.round(Math.min(520, Math.max(212, w)));
+  sb.style.width = clamp(+(localStorage.getItem("lattice.sidebarW") ?? 272)) + "px";
+  grip.onpointerdown = (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("drag");
+    const left = sb.getBoundingClientRect().left;
+    grip.onpointermove = (ev) => { const w = clamp(ev.clientX - left); sb.style.width = w + "px"; localStorage.setItem("lattice.sidebarW", String(w)); };
+    grip.onpointerup = () => { grip.classList.remove("drag"); grip.onpointermove = grip.onpointerup = null; };
+  };
+  grip.ondblclick = () => { sb.style.width = "272px"; localStorage.setItem("lattice.sidebarW", "272"); };
+}
+
 function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | null = conn): Tab {
   const root = document.createElement("div");
   root.className = "h-full flex flex-col min-h-0";
@@ -137,11 +155,15 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     statusBar.innerHTML = `<span class="pill shrink-0" style="--hue:${engineVar(c.kind)};background:color-mix(in srgb, ${engineVar(c.kind)} 12%, transparent);color:var(--ink)"><span style="width:7px;height:7px;border-radius:4px;background:${engineVar(c.kind)}"></span>${esc(c.name)}${c.db ? `<span class="text-muted"> / ${esc(c.db)}</span>` : ""}</span>${risky ? `<span class="pill shrink-0" style="color:${envColor(c.env)};background:color-mix(in srgb, ${envColor(c.env)} 12%, transparent)">${esc(c.env!)}</span>` : ""}`;
   }
   statusBar.append(status);
-  const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status };
+  const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [] };
+  grid.sortable = kind !== "diagram" && !["redis", "mongo"].includes(c?.kind ?? "");
+  grid.onSort = (col, additive) => applySort(tab, col, additive);
+  grid.onCellMenu = (x, y, r, col) => cellMenu(tab, x, y, r, col);
   if (kind === "query") {
     root.append(queryBar(tab));
     const ed = document.createElement("div");
-    ed.className = "h-1/3 min-h-[80px] border-b border-line overflow-hidden";
+    ed.className = "overflow-hidden shrink-0";
+    ed.style.height = editorHeight();
     tab.editor = new EditorView({
       parent: ed,
       state: EditorState.create({
@@ -160,6 +182,23 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     });
     tab.edWrap = ed;
     root.append(ed);
+    // drag to give the editor or the results more room; the choice is remembered
+    const split = document.createElement("div");
+    split.className = "split-row";
+    split.title = "Drag to resize";
+    split.onpointerdown = (e) => {
+      e.preventDefault();
+      split.setPointerCapture(e.pointerId);
+      split.classList.add("drag");
+      split.onpointermove = (ev) => {
+        const total = root.getBoundingClientRect().height || 1;
+        const frac = Math.min(0.78, Math.max(0.12, (ev.clientY - ed.getBoundingClientRect().top) / total));
+        localStorage.setItem("lattice.editorFrac", String(frac));
+        if (!tab.builder) ed.style.height = frac * 100 + "%";
+      };
+      split.onpointerup = () => { split.classList.remove("drag"); split.onpointermove = split.onpointerup = null; };
+    };
+    root.append(split);
   }
   const gridWrap = document.createElement("div");
   gridWrap.className = "flex-1 min-h-0 relative";
@@ -237,6 +276,9 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   return tab;
 }
 
+/** The editor's share of a query tab (remembered between sessions). */
+const editorHeight = () => Math.round(Math.min(0.78, Math.max(0.12, +(localStorage.getItem("lattice.editorFrac") ?? 0.34))) * 100) + "%";
+
 const quoteFor = (c: Conn | null) => (c?.kind === "mssql" ? (s: string) => "[" + s.replace(/]/g, "]]") + "]" : c && ["mysql", "mariadb"].includes(c.kind) ? (s: string) => "`" + s.replace(/`/g, "``") + "`" : (s: string) => '"' + s.replace(/"/g, '""') + '"');
 
 /** ⌘B: toggle the visual query builder above the editor. */
@@ -246,7 +288,7 @@ function toggleBuilder() {
   if (t.builder) {
     t.builder.remove();
     t.builder = undefined;
-    t.edWrap.className = "h-1/3 min-h-[80px] border-b border-line overflow-hidden";
+    t.edWrap.style.height = editorHeight();
     return;
   }
   t.builder = createBuilder(
@@ -260,7 +302,7 @@ function toggleBuilder() {
   );
   t.builder.className += " h-[45%] shrink-0";
   t.root.insertBefore(t.builder, t.edWrap);
-  t.edWrap.className = "h-1/4 min-h-[70px] border-b border-line overflow-hidden";
+  t.edWrap.style.height = "26%";
 }
 
 function activate(t: Tab) {
@@ -531,6 +573,45 @@ function openDiagram(focus?: string) {
   loadDiagram(t);
 }
 
+/** Header click: update the sort and re-read. Table tabs sort on the server; query results re-run wrapped in a SELECT. */
+function applySort(t: Tab, col: string, additive: boolean) {
+  if (!t.conn) return;
+  if (t.grid.pendingCount) { t.status.textContent = "Commit (⌘S) or discard pending changes before sorting"; return; }
+  const next = nextSort(t.sort, col, additive);
+  if (t.kind === "table") { t.sort = next; t.grid.sort = next; reload(t); return; }
+  if (t.kind === "query") {
+    if (!t.baseSql) return;
+    if (!next.length) { t.sort = []; t.grid.sort = []; exec(t, t.baseSql); return; }
+    const wrapped = wrapForSort(t.baseSql, next, quoteFor(t.conn));
+    if (!wrapped) { toast("This statement can't be sorted from the header. Add an ORDER BY to the query.", "info"); return; }
+    t.sort = next; t.grid.sort = next;
+    exec(t, wrapped);
+  }
+}
+
+/** Right-click on a result cell: filter by or exclude its value, copy, set to NULL. */
+function cellMenu(t: Tab, x: number, y: number, r: number, c: number) {
+  const g = t.grid;
+  const col = g.columnName(c), v = g.valueAt(r, c);
+  if (!v) return;
+  const isNull = v.t === "Null";
+  const pg = !["mysql", "mariadb", "mssql", "sqlite"].includes(t.conn?.kind ?? "");
+  const text = v.t === "Bool" ? (pg ? String(v.v) : v.v ? "1" : "0") : show(v);
+  const short = (isNull ? "NULL" : text.length > 24 ? text.slice(0, 24) + "…" : text);
+  const canFilter = t.kind === "table" && !!t.filterBar;
+  const rule = (op: FilterRule["op"]): FilterRule => ({ col, op, value: text });
+  contextMenu(x, y, [
+    { label: isNull ? `Show only rows where ${col} is NULL` : `Show only ${col} = ${short}`, disabled: !canFilter, action: () => t.filterBar?.addRule(isNull ? { col, op: "is null", value: "" } : rule("=")) },
+    { label: isNull ? `Hide rows where ${col} is NULL` : `Hide rows where ${col} = ${short}`, disabled: !canFilter, action: () => t.filterBar?.addRule(isNull ? { col, op: "is not null", value: "" } : rule("<>")) },
+    { divider: true, label: "" },
+    { label: "Copy value", hint: "⌘C", action: () => { navigator.clipboard?.writeText(isNull ? "" : show(v)); toast("Copied", "ok"); } },
+    { label: "Copy row", action: () => { navigator.clipboard?.writeText(g.columns.map((_, i) => { const x2 = g.valueAt(r, i); return x2 && x2.t !== "Null" ? show(x2) : ""; }).join("\t")); toast("Copied the row", "ok"); } },
+    { label: "Copy column name", action: () => { navigator.clipboard?.writeText(col); toast("Copied " + col, "ok"); } },
+    { divider: true, label: "" },
+    { label: "Set to NULL", disabled: !g.editable || isNull, action: () => g.stageEdit(r, c, { t: "Null" }) },
+  ]);
+}
+
 function currentSql(t: Tab): string {
   const view = t.editor!;
   const sel = view.state.selection.main;
@@ -573,7 +654,7 @@ function runActive() {
   const view = t.editor!;
   const sel = view.state.selection.main;
   const text = sel.empty ? view.state.doc.toString() : view.state.sliceDoc(sel.from, sel.to);
-  if (text.trim()) exec(t, text);
+  if (text.trim()) { t.baseSql = text; t.sort = []; t.grid.sort = []; exec(t, text); }
 }
 
 function reload(t: Tab) {
@@ -585,7 +666,7 @@ function reload(t: Tab) {
     api.describe(t.conn.id, t.schemaName, t.table)
       .then((d) => { t.cols = d.columns; t.grid.editable = o?.kind !== "view" && d.columns.some((c) => c.primary_key); })
       .catch(() => { t.grid.editable = false; })
-      .then(() => api.selectAllSql(t.conn!.id, t.schemaName ?? null, t.table!, undefined, t.filterWhere))
+      .then(() => api.selectAllSql(t.conn!.id, t.schemaName ?? null, t.table!, undefined, t.filterWhere, buildOrder(t.sort, quoteFor(t.conn)) || undefined))
       .then((q) => exec(t, q))
       .then(() => t.grid.onChange());
   } else runActive();
@@ -1070,7 +1151,7 @@ async function exportActive() {
   let sqlText: string;
   if (t.kind === "table" && t.table) {
     const o = t.conn.objects.find((x) => x.name === t.table);
-    sqlText = await api.selectAllSql(t.conn.id, o?.schema ?? null, t.table, 2_000_000_000, t.filterWhere);
+    sqlText = await api.selectAllSql(t.conn.id, o?.schema ?? null, t.table, 2_000_000_000, t.filterWhere, buildOrder(t.sort, quoteFor(t.conn)) || undefined);
   } else if (t.kind === "query") sqlText = currentSql(t);
   else return;
   if (!sqlText.trim()) return;

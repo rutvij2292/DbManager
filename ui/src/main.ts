@@ -28,7 +28,7 @@ import { pickDatabase } from "./dbpicker";
 import { createDiagram } from "./diagram";
 import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
-import { SYSTEM_DBS, canManageDatabases, canTruncateAll, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
+import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
 import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
 
 /**
@@ -1185,25 +1185,42 @@ async function truncateDatabase(c: Conn) {
   } catch (e) { toast(`Truncate failed: ${e}`, "error"); }
 }
 
+/**
+ * Truncate/drop one table. Foreign keys can block it, so the dialog has a phpMyAdmin-style checkbox, and if the
+ * server refuses anyway the user is offered a retry that ignores foreign keys.
+ */
+async function tableOp(c: Conn, o: ObjectRef, op: "truncate" | "drop", build: (ignoreFk: boolean) => string[], text: { title: string; body: string; confirmLabel: string; typed?: string }): Promise<boolean> {
+  const option = canIgnoreForeignKeys(c.kind) && o.kind !== "view" ? { label: ignoreFkLabel(c.kind, op), checked: false } : undefined;
+  if (!(await confirmDanger({ ...text, sql: build(false), option }))) return false;
+  let ignore = !!option?.checked;
+  for (;;) {
+    const sqls = build(ignore);
+    try { await api.runStatements(c.id, sqls); for (const q of sqls) logSql(c, q, 0); return true; }
+    catch (e) {
+      const msg = String(e);
+      if (ignore || !option || !isForeignKeyError(msg)) { toast(`${op === "drop" ? "Drop" : "Truncate"} failed: ${msg}`, "error"); return false; }
+      const retry = await confirmDanger({ title: "Blocked by a foreign key", body: `${esc(msg.split("\n")[0])}<br><br>Retry with foreign key constraints ignored for this operation only?`, confirmLabel: "Retry ignoring foreign keys", sql: build(true) });
+      if (!retry) return false;
+      ignore = true;
+    }
+  }
+}
+
 async function truncateTable(c: Conn, o: ObjectRef) {
-  const sql = truncateTableSql(c.kind, o);
-  const ok = await confirmDanger({ title: `Truncate ${o.name}?`, body: `Deletes every row of <b>${esc(o.name)}</b>. The table stays. It cannot be undone.`, confirmLabel: "Truncate", typed: c.env === "production" ? o.name : undefined, sql: [sql] });
-  if (!ok) return;
-  try { await api.runStatements(c.id, [sql]); logSql(c, sql, 0); toast(`Truncated ${o.name}`, "ok"); reloadTablesOf(c); }
-  catch (e) { toast(`Truncate failed: ${e}`, "error"); }
+  const done = await tableOp(c, o, "truncate", (fk) => truncateTableSql(c.kind, o, fk), {
+    title: `Truncate ${o.name}?`, body: `Deletes every row of <b>${esc(o.name)}</b>. The table stays. It cannot be undone.`, confirmLabel: "Truncate", typed: c.env === "production" ? o.name : undefined,
+  });
+  if (done) { toast(`Truncated ${o.name}`, "ok"); reloadTablesOf(c); }
 }
 
 async function dropTable(c: Conn, o: ObjectRef) {
-  const sql = dropTableSql(c.kind, o);
-  const ok = await confirmDanger({ title: `Drop ${o.kind === "view" ? "view" : "table"} ${o.name}?`, body: `Permanently removes <b>${esc(o.name)}</b>${o.kind === "view" ? "" : " and its data"}. It cannot be undone.`, confirmLabel: "Drop", typed: o.name, sql: [sql] });
-  if (!ok) return;
-  try {
-    await api.runStatements(c.id, [sql]);
-    logSql(c, sql, 0);
-    for (const t of [...tabs]) if (t.conn === c && t.table === o.name) closeTab(t);
-    toast(`Dropped ${o.name}`, "ok");
-    await refreshDatabase(c);
-  } catch (e) { toast(`Drop failed: ${e}`, "error"); }
+  const done = await tableOp(c, o, "drop", (fk) => dropTableSql(c.kind, o, fk), {
+    title: `Drop ${o.kind === "view" ? "view" : "table"} ${o.name}?`, body: `Permanently removes <b>${esc(o.name)}</b>${o.kind === "view" ? "" : " and its data"}. It cannot be undone.`, confirmLabel: "Drop", typed: o.name,
+  });
+  if (!done) return;
+  for (const t of [...tabs]) if (t.conn === c && t.table === o.name) closeTab(t);
+  toast(`Dropped ${o.name}`, "ok");
+  await refreshDatabase(c);
 }
 
 /** Re-read the open table tabs of a database after its rows were deleted. */

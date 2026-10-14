@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql } from "../.test-build/dbadmin.mjs";
+import { createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, isForeignKeyError } from "../.test-build/dbadmin.mjs";
 
 test("create / drop database per engine", () => {
   assert.equal(createDatabaseSql("mysql", "my`db"), "CREATE DATABASE `my``db`");
@@ -21,8 +21,19 @@ test("truncate all tables", () => {
   assert.deepEqual(truncateAllSql("mysql", []), []);
 });
 
-test("single table", () => {
-  assert.equal(truncateTableSql("mysql", { schema: null, name: "a" }), "TRUNCATE TABLE `a`");
-  assert.equal(truncateTableSql("sqlite", { schema: null, name: "a" }), 'DELETE FROM "a"');
-  assert.equal(dropTableSql("postgres", { schema: "s", name: "v", kind: "view" }), 'DROP VIEW "s"."v"');
+test("single table, with and without ignoring foreign keys", () => {
+  const t = { schema: null, name: "a" };
+  assert.deepEqual(truncateTableSql("mysql", t), ["TRUNCATE TABLE `a`"]);
+  assert.deepEqual(truncateTableSql("mysql", t, true), ["SET FOREIGN_KEY_CHECKS=0", "TRUNCATE TABLE `a`", "SET FOREIGN_KEY_CHECKS=1"]);
+  assert.deepEqual(truncateTableSql("sqlite", t), ['DELETE FROM "a"']);
+  assert.deepEqual(truncateTableSql("postgres", t, true), ['TRUNCATE TABLE "a" CASCADE']);
+  assert.deepEqual(dropTableSql("postgres", { schema: "s", name: "v", kind: "view" }), ['DROP VIEW "s"."v"']);
+  assert.deepEqual(dropTableSql("mysql", t, true), ["SET FOREIGN_KEY_CHECKS=0", "DROP TABLE `a`", "SET FOREIGN_KEY_CHECKS=1"]);
+});
+
+test("foreign key errors are recognised", () => {
+  assert.ok(isForeignKeyError("Cannot truncate a table referenced in a foreign key constraint (`db`.`x`, CONSTRAINT `fk`)"));
+  assert.ok(isForeignKeyError("ERROR 1451 (23000): Cannot delete or update a parent row"));
+  assert.ok(isForeignKeyError('cannot truncate a table referenced in a foreign key constraint'));
+  assert.ok(!isForeignKeyError("syntax error near 'x'"));
 });

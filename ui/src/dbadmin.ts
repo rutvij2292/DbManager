@@ -37,13 +37,37 @@ export function truncateAllSql(kind: string, tables: TableRef[]): string[] | nul
   return tables.map((t) => `DELETE FROM ${qualified(kind, t)}`);
 }
 
-export function truncateTableSql(kind: string, t: TableRef): string {
-  return kind === "sqlite" ? `DELETE FROM ${qualified(kind, t)}` : `TRUNCATE TABLE ${qualified(kind, t)}`;
+/** Engines where foreign keys can be bypassed for one operation (SQL Server can't without dropping the constraints). */
+export const canIgnoreForeignKeys = (kind: string) => kind !== "mssql";
+
+/** Run `sql` with foreign-key enforcement off for just that statement, like phpMyAdmin's checkbox. */
+function withoutForeignKeys(kind: string, sql: string, ignore: boolean): string[] {
+  if (!ignore) return [sql];
+  if (isMy(kind)) return ["SET FOREIGN_KEY_CHECKS=0", sql, "SET FOREIGN_KEY_CHECKS=1"];
+  if (kind === "sqlite") return ["PRAGMA foreign_keys=OFF", sql, "PRAGMA foreign_keys=ON"];
+  return [sql]; // PostgreSQL: handled with CASCADE on the statement itself
 }
 
-export function dropTableSql(kind: string, t: TableRef): string {
-  return `DROP ${t.kind === "view" ? "VIEW" : "TABLE"} ${qualified(kind, t)}`;
+export function truncateTableSql(kind: string, t: TableRef, ignoreFk = false): string[] {
+  if (kind === "sqlite") return withoutForeignKeys(kind, `DELETE FROM ${qualified(kind, t)}`, ignoreFk);
+  if (kind === "postgres") return [`TRUNCATE TABLE ${qualified(kind, t)}${ignoreFk ? " CASCADE" : ""}`];
+  return withoutForeignKeys(kind, `TRUNCATE TABLE ${qualified(kind, t)}`, ignoreFk);
 }
+
+export function dropTableSql(kind: string, t: TableRef, ignoreFk = false): string[] {
+  const sql = `DROP ${t.kind === "view" ? "VIEW" : "TABLE"} ${qualified(kind, t)}`;
+  if (kind === "postgres") return [`${sql}${ignoreFk ? " CASCADE" : ""}`];
+  return withoutForeignKeys(kind, sql, ignoreFk);
+}
+
+/** What the "ignore foreign keys" option does, per engine, for the checkbox label. */
+export function ignoreFkLabel(kind: string, op: "truncate" | "drop"): string {
+  if (kind === "postgres") return op === "truncate" ? "Also empty tables that reference it (CASCADE)" : "Also remove foreign keys that reference it (CASCADE)";
+  return "Ignore foreign key constraints for this operation";
+}
+
+/** Did the server refuse because of a foreign key? */
+export const isForeignKeyError = (msg: string) => /foreign key|\b(1701|1451|1217|3730)\b|referenced in a foreign|REFERENCE constraint/i.test(msg);
 
 /** Ask for a name (new database). Resolves null when dismissed. */
 export function promptName(title: string, hint: string, confirmLabel: string): Promise<string | null> {
@@ -73,11 +97,12 @@ export function promptName(title: string, hint: string, confirmLabel: string): P
  * Confirm something destructive. With `typed`, the red button stays disabled until that exact name is typed in
  * (databases, and anything on a production connection); without it a plain confirm is shown.
  */
-export function confirmDanger(opts: { title: string; body: string; confirmLabel: string; typed?: string; sql?: string[] }): Promise<boolean> {
+export function confirmDanger(opts: { title: string; body: string; confirmLabel: string; typed?: string; sql?: string[]; option?: { label: string; checked: boolean } }): Promise<boolean> {
   return new Promise((resolve) => {
     const m = modal(`
       <div class="px-5 pt-4 pb-2"><div class="text-[16px] font-semibold text-danger">${esc(opts.title)}</div><div class="text-soft mt-1">${opts.body}</div></div>
       ${opts.sql?.length ? `<pre id="sql" class="mono text-[12.5px] mx-5 mb-2 p-2.5 rounded-lg bg-canvas overflow-auto select-text whitespace-pre-wrap" style="max-height:140px"></pre>` : ""}
+      ${opts.option ? `<label class="flex items-center gap-2 px-5 pb-3"><input id="opt" type="checkbox"${opts.option.checked ? " checked" : ""}/> ${esc(opts.option.label)}</label>` : ""}
       ${opts.typed ? `<div class="px-5 pb-3"><div class="text-[12.5px] text-muted mb-1">Type <b class="text-ink">${esc(opts.typed)}</b> to confirm</div><input id="t" class="field w-full" autocomplete="off"/></div>` : ""}
       <div class="px-5 py-3 border-t border-line flex justify-end gap-2"><button id="no" class="btn">Cancel</button><button id="yes" class="btn btn-careful"${opts.typed ? " disabled" : ""}>${esc(opts.confirmLabel)}</button></div>`, 500);
     if (opts.sql?.length) m.q("#sql").textContent = opts.sql.join(";\n") + ";";
@@ -85,6 +110,7 @@ export function confirmDanger(opts: { title: string; body: string; confirmLabel:
     const finish = (v: boolean) => { if (done) return; done = true; m.close(); resolve(v); };
     new MutationObserver(() => { if (!document.body.contains(m.o)) finish(false); }).observe(document.body, { childList: true });
     const yes = m.q<HTMLButtonElement>("#yes");
+    if (opts.option) m.q<HTMLInputElement>("#opt").onchange = (e) => { opts.option!.checked = (e.target as HTMLInputElement).checked; };
     m.q("#no").onclick = () => finish(false);
     yes.onclick = () => finish(true);
     if (opts.typed) {

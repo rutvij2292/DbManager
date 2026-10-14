@@ -134,7 +134,7 @@ impl Connection for MsConn {
             })
             .collect();
         let idx = self.query(&format!("SELECT i.name FROM sys.indexes i WHERE i.object_id = OBJECT_ID({}) AND i.name IS NOT NULL", lit(&format!("{}.{}", self.quote(schema), self.quote(name))))).await?;
-        Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl: None })
+        Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl: None, ..Default::default() })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
         let start = Instant::now();

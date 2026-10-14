@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use dbcore::{build_dml, Change, ColumnMeta, ConnConfig, Connection, Driver, ObjectInfo, ObjectRef, PlanNode, QueryResult, SchemaTable, Value};
+use dbcore::{build_ddl, build_dml, Change, StructChange, ColumnMeta, ConnConfig, Connection, Driver, ObjectInfo, ObjectRef, PlanNode, QueryResult, SchemaTable, Value};
 use driver_mongo::MongoDriver;
 use driver_mssql::MssqlDriver;
 use driver_mysql::MysqlDriver;
@@ -327,6 +327,25 @@ async fn apply_changes(
     Ok(stmts.into_iter().map(|(s, _)| s).collect())
 }
 
+/// Generate (and, unless `preview`, run) DDL for structure edits.
+#[tauri::command]
+async fn apply_structure(
+    state: State<'_, AppState>,
+    conn_id: u64,
+    schema: Option<String>,
+    table: String,
+    changes: Vec<StructChange>,
+    preview: bool,
+) -> Result<Vec<String>, String> {
+    let conn = state.conn(conn_id)?;
+    let ddl = build_ddl(conn.as_ref(), schema.as_deref(), &table, &changes).map_err(|e| e.to_string())?;
+    if !preview {
+        let stmts: Vec<(String, Option<u64>)> = ddl.iter().map(|s| (s.clone(), None)).collect();
+        conn.execute_batch(&stmts).await.map_err(|e| e.to_string())?;
+    }
+    Ok(ddl)
+}
+
 #[tauri::command]
 fn get_rows(state: State<'_, AppState>, query_id: u64, offset: usize, limit: usize) -> Result<Vec<Vec<Value>>, String> {
     let results = state.results.lock().unwrap();
@@ -353,7 +372,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

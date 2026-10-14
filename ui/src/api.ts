@@ -12,7 +12,16 @@ export type Change =
   | { kind: "update"; key: [string, Val][]; set: [string, Val][] }
   | { kind: "insert"; set: [string, Val][] }
   | { kind: "delete"; key: [string, Val][] }
-export interface ObjectInfo { columns: ColumnInfo[]; indexes: string[]; ddl: string | null }
+export interface IndexInfo { name: string; columns: string[]; unique: boolean; primary: boolean }
+export interface ForeignKey { name: string; columns: string[]; ref_schema: string | null; ref_table: string; ref_columns: string[] }
+export interface ObjectInfo { columns: ColumnInfo[]; indexes: string[]; ddl: string | null; index_details: IndexInfo[]; foreign_keys: ForeignKey[] }
+export type StructChange =
+  | { kind: "add_column"; name: string; type_name: string; nullable: boolean; default: string | null }
+  | { kind: "drop_column"; name: string }
+  | { kind: "rename_column"; from: string; to: string }
+  | { kind: "alter_column"; name: string; type_name: string; nullable: boolean; default: string | null; old_type: string; old_nullable: boolean; old_default: string | null }
+  | { kind: "create_index"; name: string; columns: string[]; unique: boolean }
+  | { kind: "drop_index"; name: string }
 export interface ConnConfig { kind: string; path?: string; host?: string; port?: number; user?: string; password?: string; database?: string; ssl?: string; ssh_host?: string; ssh_port?: number; ssh_user?: string; ssh_key?: string }
 
 export const api = {
@@ -35,6 +44,8 @@ export const api = {
   applyChanges: (connId: number, schema: string | null, table: string, changes: Change[], preview: boolean) =>
     invoke<string[]>("apply_changes", { connId, schema, table, changes, preview }),
   cancelQuery: (connId: number) => invoke<void>("cancel_query", { connId }),
+  applyStructure: (connId: number, schema: string | null, table: string, changes: StructChange[], preview: boolean) =>
+    invoke<string[]>("apply_structure", { connId, schema, table, changes, preview }),
   runQuery: (connId: number, sql: string) => invoke<Summary>("run_query", { connId, sql }),
   getRows: (queryId: number, offset: number, limit: number) => invoke<Val[][]>("get_rows", { queryId, offset, limit }),
   release: (queryId: number) => invoke<void>("release_query", { queryId }),

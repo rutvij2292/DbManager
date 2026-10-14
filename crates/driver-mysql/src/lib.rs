@@ -158,7 +158,11 @@ impl Connection for MyConn {
             .collect();
         let idx = self.query(&format!("SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = {}", lit(name))).await?;
         let ddl = self.query(&format!("SHOW CREATE TABLE {}", self.quote(name))).await.ok().and_then(|r| r.rows.first().and_then(|row| row.get(1).map(Value::display)));
-        Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl })
+        let ixs = self.query(&format!("SELECT index_name, non_unique, GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ',') FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = {} GROUP BY index_name, non_unique ORDER BY index_name", lit(name))).await?;
+        let index_details = ixs.rows.iter().map(|r| IndexInfo { name: r[0].display(), columns: r[2].display().split(',').map(String::from).collect(), unique: r[1].display() == "0", primary: r[0].display() == "PRIMARY" }).collect();
+        let fks = self.query(&format!("SELECT constraint_name, GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR ','), referenced_table_schema, referenced_table_name, GROUP_CONCAT(referenced_column_name ORDER BY ordinal_position SEPARATOR ',') FROM information_schema.key_column_usage WHERE table_schema = DATABASE() AND table_name = {} AND referenced_table_name IS NOT NULL GROUP BY constraint_name, referenced_table_schema, referenced_table_name ORDER BY constraint_name", lit(name))).await?;
+        let foreign_keys = fks.rows.iter().map(|r| ForeignKey { name: r[0].display(), columns: r[1].display().split(',').map(String::from).collect(), ref_schema: None, ref_table: r[3].display(), ref_columns: r[4].display().split(',').map(String::from).collect() }).collect();
+        Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl, index_details, foreign_keys })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
         let start = Instant::now();

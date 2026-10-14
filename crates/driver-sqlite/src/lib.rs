@@ -142,7 +142,25 @@ impl Connection for SqliteConn {
             .rows
             .first()
             .map(|r| r[0].display());
-        Ok(ObjectInfo { columns, indexes, ddl })
+        let mut index_details = Vec::new();
+        for r in &idx.rows {
+            // index_list: seq, name, unique, origin ('c' created, 'u' unique constraint, 'pk' primary key)
+            let iname = r[1].display();
+            let cols = self.query(&format!("PRAGMA index_info({})", quote_ident(&iname))).await?;
+            index_details.push(IndexInfo { name: iname, columns: cols.rows.iter().map(|c| c[2].display()).collect(), unique: r[2] == Value::I64(1), primary: r[3].display() == "pk" });
+        }
+        // foreign_key_list: id, seq, table, from, to, ...; rows sharing an id form one composite key
+        let fks = self.query(&format!("PRAGMA foreign_key_list({})", quote_ident(name))).await?;
+        let mut foreign_keys: Vec<ForeignKey> = Vec::new();
+        for r in &fks.rows {
+            let id = r[0].display();
+            let (from, to) = (r[3].display(), if r[4] == Value::Null { String::new() } else { r[4].display() });
+            match foreign_keys.iter_mut().find(|f| f.name == format!("fk_{id}")) {
+                Some(f) => { f.columns.push(from); f.ref_columns.push(to); }
+                None => foreign_keys.push(ForeignKey { name: format!("fk_{id}"), columns: vec![from], ref_schema: None, ref_table: r[2].display(), ref_columns: vec![to] }),
+            }
+        }
+        Ok(ObjectInfo { columns, indexes, ddl, index_details, foreign_keys })
     }
     async fn explain(&self, sql: &str, _analyze: bool) -> Result<PlanNode> {
         let r = self.query(&format!("EXPLAIN QUERY PLAN {sql}")).await?;
@@ -242,5 +260,33 @@ mod tests {
         assert!(started.elapsed().as_secs() < 5);
         // The connection stays usable afterwards.
         assert_eq!(c.query("SELECT 1").await.unwrap().rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn structure_metadata_and_ddl_roundtrip() {
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap();
+        c.query("CREATE TABLE parent(id INTEGER PRIMARY KEY, code TEXT)").await.unwrap();
+        c.query("CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id), a TEXT, b TEXT)").await.unwrap();
+        c.query("CREATE UNIQUE INDEX child_ab ON child(a, b)").await.unwrap();
+        let d = c.describe(None, "child").await.unwrap();
+        let ix = d.index_details.iter().find(|i| i.name == "child_ab").unwrap();
+        assert_eq!((ix.columns.clone(), ix.unique), (vec!["a".to_string(), "b".to_string()], true));
+        assert_eq!(d.foreign_keys.len(), 1);
+        assert_eq!((d.foreign_keys[0].ref_table.as_str(), d.foreign_keys[0].columns.clone(), d.foreign_keys[0].ref_columns.clone()), ("parent", vec!["parent_id".to_string()], vec!["id".to_string()]));
+
+        // Apply generated DDL through the connection and read the result back.
+        let ddl = build_ddl(c.as_ref(), None, "child", &[
+            StructChange::AddColumn { name: "score".into(), type_name: "REAL".into(), nullable: true, default: Some("0".into()) },
+            StructChange::RenameColumn { from: "a".into(), to: "alpha".into() },
+            StructChange::CreateIndex { name: "child_score".into(), columns: vec!["score".into()], unique: false },
+            StructChange::DropIndex { name: "child_ab".into() },
+        ]).unwrap();
+        c.execute_batch(&ddl.iter().map(|s| (s.clone(), None)).collect::<Vec<_>>()).await.unwrap();
+        let d = c.describe(None, "child").await.unwrap();
+        let names: Vec<_> = d.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "parent_id", "alpha", "b", "score"]);
+        assert!(d.index_details.iter().any(|i| i.name == "child_score") && !d.index_details.iter().any(|i| i.name == "child_ab"));
+        c.execute_batch(&build_ddl(c.as_ref(), None, "child", &[StructChange::DropColumn { name: "b".into() }]).unwrap().iter().map(|s| (s.clone(), None)).collect::<Vec<_>>()).await.unwrap();
+        assert_eq!(c.describe(None, "child").await.unwrap().columns.len(), 4);
     }
 }

@@ -184,7 +184,25 @@ impl Connection for PgConn {
             })
             .collect();
         let idx = self.query(&format!("SELECT indexname FROM pg_indexes WHERE schemaname = {} AND tablename = {}", lit(schema), lit(name))).await?;
-        Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl: None })
+        let ixs = self.query(&format!(
+            "SELECT i.relname, ix.indisunique, ix.indisprimary, \
+               (SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM unnest(ix.indkey) WITH ORDINALITY k(attnum, ord) JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum) \
+             FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid JOIN pg_class t ON t.oid = ix.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace \
+             WHERE n.nspname = {} AND t.relname = {} ORDER BY i.relname", lit(schema), lit(name))).await?;
+        let index_details = ixs.rows.iter().map(|r| IndexInfo { name: r[0].display(), columns: r[3].display().split(',').map(String::from).collect(), unique: r[1] == Value::Bool(true), primary: r[2] == Value::Bool(true) }).collect();
+        let fks = self.query(&format!(
+            "SELECT c.conname, \
+               (SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM unnest(c.conkey) WITH ORDINALITY k(attnum, ord) JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum), \
+               rn.nspname, rt.relname, \
+               (SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM unnest(c.confkey) WITH ORDINALITY k(attnum, ord) JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.attnum) \
+             FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace \
+               JOIN pg_class rt ON rt.oid = c.confrelid JOIN pg_namespace rn ON rn.oid = rt.relnamespace \
+             WHERE c.contype = 'f' AND n.nspname = {} AND t.relname = {} ORDER BY c.conname", lit(schema), lit(name))).await?;
+        let foreign_keys = fks.rows.iter().map(|r| ForeignKey {
+            name: r[0].display(), columns: r[1].display().split(',').map(String::from).collect(),
+            ref_schema: Some(r[2].display()), ref_table: r[3].display(), ref_columns: r[4].display().split(',').map(String::from).collect(),
+        }).collect();
+        Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl: None, index_details, foreign_keys })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
         let start = Instant::now();

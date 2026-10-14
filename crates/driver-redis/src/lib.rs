@@ -201,7 +201,7 @@ impl Connection for RedisConn {
         let ty = text(&self.cmd(&["TYPE", name]).await?);
         let ttl = text(&self.cmd(&["TTL", name]).await?);
         let ttl = if ttl == "-1" { "no expiry".to_string() } else { format!("{ttl} s") };
-        Ok(ObjectInfo { columns: vec![], indexes: vec![], ddl: Some(format!("type: {ty}\nttl: {ttl}")) })
+        Ok(ObjectInfo { columns: vec![], indexes: vec![], ddl: Some(format!("type: {ty}\nttl: {ttl}")), ..Default::default() })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
         let start = Instant::now();

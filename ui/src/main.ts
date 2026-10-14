@@ -5,6 +5,7 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { autocompletion, completionKeymap, pickedCompletion } from "@codemirror/autocomplete";
 import { createBuilder } from "./builder";
 import { showExport, showImport } from "./io";
+import { createStructureView } from "./structure";
 import { lintSql, lintPlan } from "./lint";
 import { renderPlan, hintsPanel } from "./planview";
 import { makeCompletionSource, recordAccepted } from "./complete";
@@ -18,7 +19,7 @@ interface Conn { id: number; name: string; kind: string; objects: ObjectRef[]; s
 interface Tab {
   id: number; title: string; kind: "query" | "table";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; editor?: EditorView; status: HTMLElement;
 }
 
 let conn: Conn | null = null;
@@ -119,6 +120,12 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
     commit.id = "commit"; discard.id = "discard";
     const info = document.createElement("span");
     info.className = "text-zinc-500 ml-2";
+    const seg = (label: string, mode: "data" | "structure") => {
+      const b = btn(label, mode === "data" ? "Table data" : "Table structure (columns, indexes, keys)", () => setMode(tab, mode));
+      b.dataset.mode = mode;
+      return b;
+    };
+    bar.append(seg("Data", "data"), seg("Structure", "structure"), document.createTextNode("│") as unknown as HTMLElement);
     bar.append(btn("+ Row", "Insert row (⌘I)", () => grid.addRow()), btn("− Row", "Delete selected row (⌘⌫)", () => grid.deleteSelected()), commit, discard, info);
     const refreshBar = () => {
       const n = grid.pendingCount;
@@ -298,6 +305,41 @@ function confirmSql(stmts: string[]): Promise<boolean> {
     document.body.append(o);
     (o.querySelector("#yes") as HTMLElement).focus();
   });
+}
+
+function setMode(t: Tab, mode: "data" | "structure") {
+  if (t.kind !== "table" || !t.gridWrap || !t.conn || !t.table) return;
+  t.mode = mode;
+  t.bar?.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("bg-blue-700", b.dataset.mode === mode));
+  const dataOnly = ["+ Row", "− Row", "Commit", "Discard"];
+  t.bar?.querySelectorAll<HTMLElement>("button").forEach((b) => { if (dataOnly.includes(b.textContent ?? "")) b.style.display = mode === "data" ? "" : "none"; });
+  if (mode === "data") { t.gridWrap.replaceChildren(t.grid.el); return; }
+  const conn = t.conn, name = t.table;
+  const o = conn.objects.find((x) => x.name === name);
+  t.schemaName = o?.schema ?? null;
+  if (!t.structure) {
+    t.structure = createStructureView(
+      () => api.describe(conn.id, t.schemaName ?? null, name),
+      async (changes) => {
+        if (!changes.length) return false;
+        const ddl = await api.applyStructure(conn.id, t.schemaName ?? null, name, changes, true);
+        if (!(await confirmSql(ddl))) return false;
+        await api.applyStructure(conn.id, t.schemaName ?? null, name, changes, false);
+        t.cols = undefined; // force the data tab to re-read primary keys
+        refreshSchema(conn);
+        return true;
+      },
+      (m) => { t.status.textContent = m; },
+    );
+  }
+  t.gridWrap.replaceChildren(t.structure.el);
+  t.structure.reload().catch((e) => { t.status.textContent = "Cannot read structure: " + e; });
+}
+
+/** Re-read table/column names for completion and the sidebar after DDL. */
+function refreshSchema(c: Conn) {
+  api.listObjects(c.id).then((o) => { c.objects = o; if (conn === c) renderObjects(); });
+  api.schemaMap(c.id).then((m) => { c.schema = m; }).catch(() => {});
 }
 
 function currentSql(t: Tab): string {

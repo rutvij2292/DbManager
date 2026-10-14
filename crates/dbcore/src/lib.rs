@@ -97,10 +97,31 @@ pub struct PlanNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForeignKey {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_schema: Option<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObjectInfo {
     pub columns: Vec<ColumnInfo>,
     pub indexes: Vec<String>,
     pub ddl: Option<String>,
+    #[serde(default)]
+    pub index_details: Vec<IndexInfo>,
+    #[serde(default)]
+    pub foreign_keys: Vec<ForeignKey>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -267,4 +288,147 @@ pub fn build_dml(conn: &dyn Connection, schema: Option<&str>, table: &str, chang
             }
         })
         .collect()
+}
+
+
+/// A staged edit to a table's structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StructChange {
+    AddColumn { name: String, type_name: String, nullable: bool, default: Option<String> },
+    DropColumn { name: String },
+    RenameColumn { from: String, to: String },
+    /// Replace a column's type / nullability / default (the full new definition).
+    AlterColumn { name: String, type_name: String, nullable: bool, default: Option<String>, old_type: String, old_nullable: bool, old_default: Option<String> },
+    CreateIndex { name: String, columns: Vec<String>, unique: bool },
+    DropIndex { name: String },
+}
+
+/// Generate dialect-specific DDL for structure edits. Errors name the dialect's limitation.
+pub fn build_ddl(conn: &dyn Connection, schema: Option<&str>, table: &str, changes: &[StructChange]) -> Result<Vec<String>> {
+    let d = conn.dialect();
+    let q = |s: &str| conn.quote(s);
+    let t = match schema {
+        Some(s) if !s.is_empty() => format!("{}.{}", q(s), q(table)),
+        _ => q(table),
+    };
+    let def_clause = |default: &Option<String>| match default.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+        Some(x) => format!(" DEFAULT {x}"),
+        None => String::new(),
+    };
+    let null_clause = |nullable: bool| if nullable { "" } else { " NOT NULL" };
+    let mut out = Vec::new();
+    for c in changes {
+        match c {
+            StructChange::AddColumn { name, type_name, nullable, default } => {
+                let col = format!("{} {}{}{}", q(name), type_name, def_clause(default), null_clause(*nullable));
+                out.push(if d == "mssql" { format!("ALTER TABLE {t} ADD {col};") } else { format!("ALTER TABLE {t} ADD COLUMN {col};") });
+            }
+            StructChange::DropColumn { name } => out.push(if d == "mssql" { format!("ALTER TABLE {t} DROP COLUMN {};", q(name)) } else { format!("ALTER TABLE {t} DROP COLUMN {};", q(name)) }),
+            StructChange::RenameColumn { from, to } => out.push(match d {
+                "mssql" => format!("EXEC sp_rename N'{}.{}', N'{}', N'COLUMN';", t.replace('\'', "''"), from.replace('\'', "''"), to.replace('\'', "''")),
+                _ => format!("ALTER TABLE {t} RENAME COLUMN {} TO {};", q(from), q(to)),
+            }),
+            StructChange::AlterColumn { name, type_name, nullable, default, old_type, old_nullable, old_default } => {
+                let (type_changed, null_changed, def_changed) = (type_name != old_type, nullable != old_nullable, default.as_deref().unwrap_or("").trim() != old_default.as_deref().unwrap_or("").trim());
+                match d {
+                    "sqlite" => return Err(DbError::msg("SQLite cannot alter an existing column's type, nullability or default; add a new column or recreate the table")),
+                    "postgres" => {
+                        if type_changed {
+                            out.push(format!("ALTER TABLE {t} ALTER COLUMN {} TYPE {type_name} USING {}::{type_name};", q(name), q(name)));
+                        }
+                        if null_changed {
+                            out.push(format!("ALTER TABLE {t} ALTER COLUMN {} {} NOT NULL;", q(name), if *nullable { "DROP" } else { "SET" }));
+                        }
+                        if def_changed {
+                            out.push(match default.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                                Some(x) => format!("ALTER TABLE {t} ALTER COLUMN {} SET DEFAULT {x};", q(name)),
+                                None => format!("ALTER TABLE {t} ALTER COLUMN {} DROP DEFAULT;", q(name)),
+                            });
+                        }
+                    }
+                    "mysql" => out.push(format!("ALTER TABLE {t} MODIFY COLUMN {} {}{}{};", q(name), type_name, null_clause(*nullable), def_clause(default))),
+                    "mssql" => {
+                        if def_changed {
+                            return Err(DbError::msg("SQL Server defaults are named constraints; change the default with a custom ALTER TABLE"));
+                        }
+                        out.push(format!("ALTER TABLE {t} ALTER COLUMN {} {}{};", q(name), type_name, null_clause(*nullable)));
+                    }
+                    other => return Err(DbError::msg(format!("altering columns is not supported for {other}"))),
+                }
+            }
+            StructChange::CreateIndex { name, columns, unique } => {
+                if columns.is_empty() {
+                    return Err(DbError::msg("an index needs at least one column"));
+                }
+                out.push(format!("CREATE {}INDEX {} ON {t} ({});", if *unique { "UNIQUE " } else { "" }, q(name), columns.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")));
+            }
+            StructChange::DropIndex { name } => out.push(match d {
+                "mysql" | "mssql" => format!("DROP INDEX {} ON {t};", q(name)),
+                "postgres" => format!("DROP INDEX {};", match schema { Some(s) if !s.is_empty() => format!("{}.{}", q(s), q(name)), _ => q(name) }),
+                _ => format!("DROP INDEX {};", q(name)),
+            }),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod ddl_tests {
+    use super::*;
+
+    struct Fake(&'static str);
+    #[async_trait]
+    impl Connection for Fake {
+        fn dialect(&self) -> &'static str { self.0 }
+        fn quote(&self, i: &str) -> String {
+            match self.0 { "mysql" => format!("`{i}`"), "mssql" => format!("[{i}]"), _ => format!("\"{i}\"") }
+        }
+        async fn ping(&self) -> Result<()> { Ok(()) }
+        async fn objects(&self) -> Result<Vec<ObjectRef>> { Ok(vec![]) }
+        async fn describe(&self, _: Option<&str>, _: &str) -> Result<ObjectInfo> { Ok(ObjectInfo::default()) }
+        async fn query(&self, _: &str) -> Result<QueryResult> { Ok(QueryResult::default()) }
+    }
+
+    fn add() -> StructChange { StructChange::AddColumn { name: "age".into(), type_name: "INT".into(), nullable: false, default: Some("0".into()) } }
+    fn alter() -> StructChange {
+        StructChange::AlterColumn { name: "age".into(), type_name: "BIGINT".into(), nullable: true, default: None, old_type: "INT".into(), old_nullable: false, old_default: Some("0".into()) }
+    }
+
+    #[test]
+    fn add_drop_rename_per_dialect() {
+        let ch = [add(), StructChange::RenameColumn { from: "age".into(), to: "years".into() }, StructChange::DropColumn { name: "years".into() }];
+        assert_eq!(build_ddl(&Fake("postgres"), Some("public"), "t", &ch).unwrap(), [
+            "ALTER TABLE \"public\".\"t\" ADD COLUMN \"age\" INT DEFAULT 0 NOT NULL;",
+            "ALTER TABLE \"public\".\"t\" RENAME COLUMN \"age\" TO \"years\";",
+            "ALTER TABLE \"public\".\"t\" DROP COLUMN \"years\";"]);
+        let my = build_ddl(&Fake("mysql"), None, "t", &ch).unwrap();
+        assert_eq!(my[0], "ALTER TABLE `t` ADD COLUMN `age` INT DEFAULT 0 NOT NULL;");
+        let ms = build_ddl(&Fake("mssql"), Some("dbo"), "t", &ch).unwrap();
+        assert_eq!(ms[0], "ALTER TABLE [dbo].[t] ADD [age] INT DEFAULT 0 NOT NULL;");
+        assert_eq!(ms[1], "EXEC sp_rename N'[dbo].[t].age', N'years', N'COLUMN';");
+    }
+
+    #[test]
+    fn alter_column_per_dialect() {
+        assert_eq!(build_ddl(&Fake("postgres"), None, "t", &[alter()]).unwrap(), [
+            "ALTER TABLE \"t\" ALTER COLUMN \"age\" TYPE BIGINT USING \"age\"::BIGINT;",
+            "ALTER TABLE \"t\" ALTER COLUMN \"age\" DROP NOT NULL;",
+            "ALTER TABLE \"t\" ALTER COLUMN \"age\" DROP DEFAULT;"]);
+        assert_eq!(build_ddl(&Fake("mysql"), None, "t", &[alter()]).unwrap(), ["ALTER TABLE `t` MODIFY COLUMN `age` BIGINT;"]);
+        assert!(build_ddl(&Fake("sqlite"), None, "t", &[alter()]).unwrap_err().to_string().contains("SQLite cannot alter"));
+        // Only changed aspects are emitted on Postgres.
+        let only_null = StructChange::AlterColumn { name: "a".into(), type_name: "INT".into(), nullable: false, default: None, old_type: "INT".into(), old_nullable: true, old_default: None };
+        assert_eq!(build_ddl(&Fake("postgres"), None, "t", &[only_null]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn indexes_per_dialect() {
+        let ci = StructChange::CreateIndex { name: "ix".into(), columns: vec!["a".into(), "b".into()], unique: true };
+        let di = StructChange::DropIndex { name: "ix".into() };
+        assert_eq!(build_ddl(&Fake("postgres"), Some("s"), "t", &[ci.clone(), di.clone()]).unwrap(), ["CREATE UNIQUE INDEX \"ix\" ON \"s\".\"t\" (\"a\", \"b\");", "DROP INDEX \"s\".\"ix\";"]);
+        assert_eq!(build_ddl(&Fake("mysql"), None, "t", &[di.clone()]).unwrap(), ["DROP INDEX `ix` ON `t`;"]);
+        assert_eq!(build_ddl(&Fake("sqlite"), None, "t", &[di]).unwrap(), ["DROP INDEX \"ix\";"]);
+        assert!(build_ddl(&Fake("sqlite"), None, "t", &[StructChange::CreateIndex { name: "x".into(), columns: vec![], unique: false }]).is_err());
+    }
 }

@@ -160,7 +160,7 @@ impl Connection for MongoConn {
         let docs: Vec<Document> = self.db.collection::<Document>(name).find(Document::new()).limit(100).await.map_err(DbError::msg)?.try_collect().await.map_err(DbError::msg)?;
         let r = docs_to_result(docs);
         let columns = r.columns.into_iter().map(|c| ColumnInfo { name: c.name, type_name: c.type_name, nullable: true, primary_key: false, default: None }).collect();
-        Ok(ObjectInfo { columns, indexes: vec![], ddl: None })
+        Ok(ObjectInfo { columns, indexes: vec![], ddl: None, ..Default::default() })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
         let start = Instant::now();

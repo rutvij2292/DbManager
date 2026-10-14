@@ -8,7 +8,7 @@ export function pickDatabase(databases: string[], current: string | null | undef
   return new Promise((resolve) => {
     const m = modal(`
       <div class="px-4 pt-3 pb-2 border-b border-line">
-        <div class="text-[15px] font-semibold">Open a database</div>
+        <div class="text-[16px] font-semibold">Open a database</div>
         <div class="text-soft mt-0.5">${databases.length} on this server</div>
         <div class="relative mt-2.5"><span class="absolute left-2.5 top-[7px] text-muted pointer-events-none">${icon("search", 14)}</span>
           <input id="q" class="field w-full" style="padding-left:30px" placeholder="Search databases" autocomplete="off"/></div>
@@ -30,7 +30,7 @@ export function pickDatabase(databases: string[], current: string | null | undef
       shown = [...user, ...(showSystem || term ? sys : [])];
       idx = Math.min(idx, Math.max(0, shown.length - 1));
       const row = (d: string, i: number) => `<div data-i="${i}" class="flex items-center gap-2.5 px-4 h-8 cursor-default ${i === idx ? "bg-accent text-white" : "hover:bg-canvas"}">
-        <span class="${i === idx ? "" : "text-muted"}">${icon("database", 14)}</span><span class="truncate">${esc(d)}</span>${d === current ? `<span class="ml-auto text-[11px] ${i === idx ? "" : "text-muted"}">current</span>` : ""}</div>`;
+        <span class="${i === idx ? "" : "text-muted"}">${icon("database", 14)}</span><span class="truncate">${esc(d)}</span>${d === current ? `<span class="ml-auto text-[12px] ${i === idx ? "" : "text-muted"}">current</span>` : ""}</div>`;
       list.innerHTML = user.map((d, i) => row(d, i)).join("") +
         (sys.length && !showSystem && !term ? `<div id="sys" class="px-4 h-8 flex items-center gap-1.5 text-muted cursor-default hover:text-ink">${icon("chevron", 11)}<span>${sys.length} system databases</span></div>` : "") +
         (showSystem || term ? sys.map((d, i) => row(d, user.length + i)).join("") : "") +

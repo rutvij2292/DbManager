@@ -11,7 +11,7 @@ const tkey = (t: SchemaTable) => `${t.schema ?? ""}.${t.name}`;
  */
 export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote, onSql: (sql: string) => void, top: () => boolean = () => false): HTMLElement {
   const root = document.createElement("div");
-  root.className = "h-full overflow-auto p-2 text-[12px] bg-canvas border-b border-line-strong";
+  root.className = "h-full overflow-auto p-2 text-[13px] bg-canvas border-b border-line-strong";
   let m: Model = emptyModel();
 
   const tables = () => getTables();
@@ -48,7 +48,7 @@ export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote
     const d = document.createElement("div");
     d.className = "mb-2";
     const h = document.createElement("div");
-    h.className = "text-[10px] uppercase tracking-wide text-muted mb-1";
+    h.className = "text-[11px] uppercase tracking-wide text-muted mb-1";
     h.textContent = title;
     d.append(h, ...kids);
     return d;
@@ -121,7 +121,7 @@ export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote
           };
           line.append(cb, document.createTextNode(c));
           if (existing) {
-            line.append(select([["", "—"], ...(["COUNT", "SUM", "AVG", "MIN", "MAX"] as const).map((a): [string, string] => [a, a])], existing.agg, (v) => { existing.agg = v as Agg; change(); }, sel + " text-[11px]"));
+            line.append(select([["", "—"], ...(["COUNT", "SUM", "AVG", "MIN", "MAX"] as const).map((a): [string, string] => [a, a])], existing.agg, (v) => { existing.agg = v as Agg; change(); }, sel + " text-[12px]"));
           }
           g.append(line);
         }

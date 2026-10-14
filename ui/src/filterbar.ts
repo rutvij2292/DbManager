@@ -8,7 +8,7 @@ import { esc } from "./ui";
  */
 export function createFilterBar(columns: () => string[], quote: () => Quote, apply: (where: string) => void) {
   const el = document.createElement("div");
-  el.className = "shrink-0 border-b border-line bg-canvas px-3 py-2 text-[12px]";
+  el.className = "shrink-0 border-b border-line bg-canvas px-3 py-2 text-[13px]";
   el.style.display = "none";
   let rules: FilterRule[] = [{ col: "", op: "=", value: "" }];
   let raw = false, rawText = "";

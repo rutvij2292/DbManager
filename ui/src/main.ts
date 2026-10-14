@@ -19,9 +19,10 @@ import { tags as t } from "@lezer/highlight";
 import { sql, SQLite, PostgreSQL, MySQL, MSSQL } from "@codemirror/lang-sql";
 import { api, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
-import { icon, engineBadge, envColor, ENGINE_NAMES } from "./icons";
+import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
 import { applyTheme, currentTheme, esc, toast, contextMenu } from "./ui";
 import { showTablePlusImport } from "./tpimport";
+import { tabsOf, nextAfterClose, nthTab, cycleTab, tabForSwitch } from "./workspace";
 import { pickDatabase } from "./dbpicker";
 import { createDiagram } from "./diagram";
 import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
@@ -30,16 +31,21 @@ import { Grid } from "./grid";
 /** One open database: its own backend connection, tables and completion schema. */
 interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean }
 /** A saved connection that is currently connected, with the databases opened on it. */
-interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[] }
+interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[]; lastTab?: Tab | null }
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement;
 }
 
 /** The current workspace: the database the sidebar last selected or the active tab belongs to. */
 let conn: Conn | null = null;
 const servers: Server[] = [];
+/** The connection whose workspace is on screen. Tabs, sidebar and shortcuts only ever see this one. */
+let activeServer: Server | null = null;
+let launcherOpen = false;
+/** Tabs that belong to a connection. This is the only list the UI may iterate: connections never share tabs. */
+const serverTabs = (s: Server | null = activeServer): Tab[] => tabsOf(tabs, s);
 const tabs: Tab[] = [];
 let active: Tab | null = null;
 let tabSeq = 0;
@@ -75,40 +81,43 @@ const app = document.getElementById("app")!;
 applyTheme(currentTheme());
 const iconBtn = (id: string, ic: string, title: string) => `<button id="${id}" class="btn btn-ghost" style="width:28px;padding:0;justify-content:center" title="${title}" aria-label="${title}">${icon(ic, 16)}</button>`;
 app.innerHTML = `
-  <div class="h-full flex">
-    <aside class="w-[252px] shrink-0 bg-canvas border-r border-line flex flex-col">
+  <div class="h-full flex gap-2 p-2">
+    <nav id="rail" class="w-[78px] shrink-0 glass rounded-2xl flex flex-col items-center" aria-label="Connections">
+      <div class="titlebar h-11 shrink-0 w-full"></div>
+      <div id="rail-items" class="flex-1 overflow-y-auto overflow-x-visible flex flex-col items-center gap-1 py-1 w-full px-1.5"></div>
+      <div class="flex flex-col items-center gap-1 py-2.5">
+        <button id="addconn" class="flex flex-col items-center justify-center gap-0.5 rounded-xl" style="width:66px;height:50px" title="Connect to another database (⌘N)" aria-label="Connect to another database">${icon("plus", 18)}<span class="text-[11.5px]">Connect</span></button>
+        <button id="theme" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Switch theme (⌘⇧L)" aria-label="Switch theme"></button>
+      </div>
+    </nav>
+    <aside class="w-[272px] shrink-0 glass rounded-2xl flex flex-col min-h-0">
       <div class="titlebar h-11 shrink-0"></div>
-      <div class="px-3 mb-1.5 flex items-center">
-        <span class="text-[11.5px] font-semibold text-muted">Connections</span><span class="flex-1"></span>
-        <button id="addconn" class="btn btn-ghost" style="width:24px;height:22px;padding:0;justify-content:center" title="Connect to a database (⌘N)" aria-label="Connect to a database">${icon("plus", 14)}</button>
+      <div class="px-3 mb-2 relative">
+        <span class="absolute left-[22px] top-[9px] text-muted pointer-events-none">${icon("search", 15)}</span>
+        <input id="filter" placeholder="Search tables" class="field w-full" style="padding-left:34px;background:color-mix(in srgb, var(--panel) 70%, transparent)" />
+        <span class="kbd absolute right-[22px] top-[6px] pointer-events-none">⌘P</span>
       </div>
-      <div class="px-2.5 mb-1.5 relative">
-        <span class="absolute left-5 top-[7px] text-muted pointer-events-none">${icon("search", 14)}</span>
-        <input id="filter" placeholder="Search tables" class="field w-full" style="padding-left:28px" />
-        <span class="kbd absolute right-5 top-[5px] pointer-events-none">⌘P</span>
-      </div>
-      <div id="objects" class="flex-1 overflow-auto px-1.5 pb-2 text-[12.5px]"></div>
-      <div class="border-t border-line px-2.5 py-2 flex items-center gap-1">
-        <button id="open" class="btn btn-ghost flex-1" style="justify-content:flex-start">${icon("plug", 15)}<span>Connections</span><span class="kbd ml-auto">⌘O</span></button>
-        <button id="diagram" class="btn btn-ghost" style="width:28px;padding:0;justify-content:center" title="Diagram of this database (⌘⇧D)">${icon("diagram", 15)}</button>
-        <button id="theme" class="btn btn-ghost" style="width:28px;padding:0;justify-content:center" title="Switch theme"></button>
+      <div id="objects" class="flex-1 overflow-auto px-2 pb-2"></div>
+      <div class="px-3 py-2.5 flex items-center gap-1">
+        <button id="open" class="btn btn-ghost flex-1" style="justify-content:flex-start">${icon("plug", 16)}<span>Connections</span><span class="kbd ml-auto">⌘O</span></button>
+        <button id="diagram" class="btn btn-ghost" style="width:32px;padding:0;justify-content:center" title="Diagram of this database (⌘⇧D)">${icon("diagram", 16)}</button>
       </div>
     </aside>
     <div class="flex-1 min-w-0 flex flex-col">
-      <div class="titlebar h-11 shrink-0 bg-canvas border-b border-line flex items-end px-2 gap-2">
-        <div id="tabs" class="flex items-end overflow-x-auto flex-1 min-w-0 h-full"></div>
+      <div class="titlebar h-11 shrink-0 flex items-end px-1 gap-2">
+        <div id="tabs" class="flex items-end gap-0.5 overflow-x-auto flex-1 min-w-0 h-full"></div>
         <div class="flex items-center gap-0.5 pb-1.5">
           ${iconBtn("backup", "archive", "Back up this database… (⌘⌥B)")}${iconBtn("restore", "restore", "Restore a backup… (⌘⌥R)")}<span class="w-px h-4 bg-line-strong mx-1"></span>
           ${iconBtn("import", "upload", "Import a file… (⌘⌥I)")}${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
         </div>
       </div>
-      <main id="main" class="flex-1 min-h-0 flex flex-col bg-panel"></main>
+      <main id="main" class="card flex-1 min-h-0 flex flex-col" style="border-top-left-radius:0"></main>
     </div>
   </div>
-  <div id="palette" class="hidden fixed inset-0 flex items-start justify-center pt-24 z-50" style="background:color-mix(in srgb, var(--ink) 28%, transparent)">
-    <div class="w-[560px] bg-panel rounded-xl shadow-pop border border-line-strong overflow-hidden">
-      <input id="pinput" placeholder="Open a table, view or collection" class="w-full bg-panel px-4 py-3 outline-none border-b border-line text-[14px]"/>
-      <div id="plist" class="max-h-80 overflow-auto py-1"></div>
+  <div id="palette" class="hidden fixed inset-0 flex items-start justify-center pt-24 z-50" style="background:color-mix(in srgb, var(--ink) 26%, transparent);backdrop-filter:blur(8px)">
+    <div class="w-[580px] glass-strong rounded-2xl overflow-hidden">
+      <input id="pinput" placeholder="Open a table, view or collection" class="w-full bg-transparent px-5 py-3.5 outline-none border-b border-line text-[16px]"/>
+      <div id="plist" class="max-h-80 overflow-auto py-1.5"></div>
     </div>
   </div>`;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -117,8 +126,15 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   const root = document.createElement("div");
   root.className = "h-full flex flex-col min-h-0";
   const grid = new Grid();
-  const status = document.createElement("div");
-  status.className = "h-7 shrink-0 px-4 text-[11.5px] leading-7 text-soft bg-canvas border-t border-line truncate";
+  const status = document.createElement("span");
+  status.className = "truncate flex-1 min-w-0";
+  const statusBar = document.createElement("div");
+  statusBar.className = "h-8 shrink-0 px-4 flex items-center gap-3 text-[13px] text-soft bg-canvas";
+  if (c) {
+    const risky = c.env === "production" || c.env === "staging";
+    statusBar.innerHTML = `<span class="pill shrink-0" style="--hue:${engineVar(c.kind)};background:color-mix(in srgb, ${engineVar(c.kind)} 12%, transparent);color:var(--ink)"><span style="width:7px;height:7px;border-radius:4px;background:${engineVar(c.kind)}"></span>${esc(c.name)}${c.db ? `<span class="text-muted"> / ${esc(c.db)}</span>` : ""}</span>${risky ? `<span class="pill shrink-0" style="color:${envColor(c.env)};background:color-mix(in srgb, ${envColor(c.env)} 12%, transparent)">${esc(c.env!)}</span>` : ""}`;
+  }
+  statusBar.append(status);
   const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status };
   if (kind === "query") {
     root.append(queryBar(tab));
@@ -144,12 +160,20 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     root.append(ed);
   }
   const gridWrap = document.createElement("div");
-  gridWrap.className = "flex-1 min-h-0";
+  gridWrap.className = "flex-1 min-h-0 relative";
   gridWrap.append(grid.el);
+  if (kind === "query") {
+    const empty = document.createElement("div");
+    empty.className = "absolute inset-0 flex flex-col items-center justify-center text-center gap-1 pointer-events-none";
+    empty.style.background = "var(--panel)";
+    empty.innerHTML = `<div style="color:var(--soft)">${ART_RESULTS}</div><div class="text-[16px] font-semibold mt-2">Results appear here</div><div class="text-soft">Write a query above and press <span class="kbd">⌘↵</span> to run it.</div>`;
+    gridWrap.append(empty);
+    tab.empty = empty;
+  }
   tab.gridWrap = gridWrap;
   if (kind === "table") {
     const bar = document.createElement("div");
-    bar.className = "h-10 shrink-0 flex items-center gap-1.5 px-3 bg-canvas border-b border-line text-[12px]";
+    bar.className = "h-11 shrink-0 flex items-center gap-1.5 px-3 bg-canvas text-[13.5px]";
     const btn = (label: string, title: string, f: () => void, ic?: string, cls = "btn") => {
       const b = document.createElement("button");
       b.innerHTML = (ic ? icon(ic, 14) : "") + `<span>${label}</span>`;
@@ -162,11 +186,11 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     const info = document.createElement("span");
     info.className = "hint text-muted ml-2 truncate";
     const segWrap = document.createElement("div");
-    segWrap.className = "inline-flex p-0.5 rounded-lg bg-raised mr-2";
+    segWrap.className = "seg mr-2";
     const seg = (label: string, mode: "data" | "structure", ic: string) => {
-      const b = btn(label, mode === "data" ? "Table data" : "Table structure (columns, indexes, keys)", () => setMode(tab, mode), ic, "btn btn-ghost");
-      b.style.height = "24px";
+      const b = btn(label, mode === "data" ? "Table data" : "Table structure (columns, indexes, keys)", () => setMode(tab, mode), ic, "");
       b.dataset.mode = mode;
+      b.setAttribute("aria-pressed", "false");
       return b;
     };
     segWrap.append(seg("Data", "data", "table"), seg("Structure", "structure", "structure"));
@@ -192,9 +216,9 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     bar.append(segWrap, ...(sqlLike ? [filterBtn, diagBtn] : []), addRow, delRow, sep, commit, discard, info);
     const refreshBar = () => {
       const n = grid.pendingCount;
-      commit.toggleAttribute("disabled", n === 0);
-      discard.toggleAttribute("disabled", n === 0);
-      commit.className = n ? "btn btn-primary" : "btn";
+      commit.style.display = discard.style.display = n ? "" : "none";
+      commit.querySelector("span")!.textContent = n ? `Commit ${n}` : "Commit";
+      commit.className = n ? (isCareful(tab.conn?.env) && tab.conn?.env === "production" ? "btn btn-careful" : "btn btn-primary") : "btn";
       info.textContent = !tab.cols ? "" : grid.editable ? (n ? `${n} pending change${n > 1 ? "s" : ""}` : "Double-click a cell to edit") : "Read-only: this table has no primary key";
     };
     grid.onChange = refreshBar;
@@ -204,9 +228,9 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     root.append(bar);
     if (tab.filterBar) root.append(tab.filterBar.el);
   }
-  root.append(gridWrap, status);
+  root.append(gridWrap, statusBar);
   tabs.push(tab);
-  activate(tab);
+  activate(tab); // also switches the workspace to this tab's connection
   tab.editor?.focus();
   return tab;
 }
@@ -239,20 +263,38 @@ function toggleBuilder() {
 
 function activate(t: Tab) {
   active = t;
-  if (t.conn) conn = t.conn; // the sidebar and dialogs follow the tab you are working in
-  const main = $("main");
-  main.replaceChildren(t.root);
+  launcherOpen = false;
+  if (t.conn) {
+    conn = t.conn; // the sidebar and dialogs follow the tab you are working in
+    activeServer = t.conn.server;
+    t.conn.server.lastTab = t;
+  }
+  $("main").replaceChildren(t.root);
   renderTabs();
 }
 
+/** Switch the whole workspace (tabs, sidebar, current database) to another connection. */
+function switchServer(s: Server) {
+  activeServer = s;
+  launcherOpen = false;
+  const target = tabForSwitch(tabs, s, s.lastTab);
+  if (target) { activate(target); return; }
+  conn = s.conns[0] ?? null;
+  active = null;
+  renderTabs();
+  showHome();
+}
+
 function closeTab(t: Tab) {
-  const i = tabs.indexOf(t);
-  if (i < 0) return;
-  tabs.splice(i, 1);
+  const server = t.conn?.server ?? null;
+  const g = tabs.indexOf(t);
+  if (g < 0) return;
+  const next = nextAfterClose(tabs, t); // always a tab of the same connection, or null
+  tabs.splice(g, 1);
   t.grid.setResult(null);
   t.editor?.destroy();
+  if (server && server.lastTab === t) server.lastTab = null;
   if (active === t) {
-    const next = tabs[Math.min(i, tabs.length - 1)];
     if (next) activate(next);
     else { active = null; renderTabs(); showHome(); }
   } else renderTabs();
@@ -260,23 +302,24 @@ function closeTab(t: Tab) {
 
 function renderTabs() {
   const el = $("tabs");
+  const mine = serverTabs();
+  const multiDb = (activeServer?.conns.length ?? 0) > 1;
   el.replaceChildren(
-    ...tabs.map((t, i) => {
+    ...mine.map((t, i) => {
       const on = t === active;
       const d = document.createElement("div");
-      d.className = "group flex items-center gap-2 pl-3 pr-2 h-[34px] mb-[-1px] rounded-t-lg cursor-default text-[12.5px] max-w-52 shrink-0 border border-b-0 " +
-        (on ? "bg-panel text-ink border-line" : "text-soft border-transparent hover:bg-raised");
-      if (on) d.style.boxShadow = "inset 0 2px 0 var(--accent)";
-      d.title = `${t.title}${t.conn?.db ? ` · ${t.conn.db}` : ""}${t.conn ? ` · ${t.conn.name}` : ""}${i < 9 ? `  (⌘${i + 1})` : ""}`;
-      const multi = servers.length > 1 || servers.some((sv) => sv.conns.length > 1);
-      const risky = t.conn?.env && t.conn.env !== "local";
-      d.innerHTML = `<span class="${on ? "text-accent" : "text-muted"}">${icon(t.kind === "table" ? "table" : t.kind === "diagram" ? "diagram" : "plan", 14)}</span><span class="truncate">${esc(t.title)}</span>` +
-        (multi && t.conn?.db ? `<span class="text-muted text-[11px] shrink-0 truncate" style="max-width:84px">${esc(t.conn.db)}</span>` : "") +
-        (risky ? `<span class="shrink-0" style="width:6px;height:6px;border-radius:3px;background:${envColor(t.conn!.env)}" title="${esc(t.conn!.env!)}"></span>` : "");
+      d.className = "group tab";
+      d.setAttribute("role", "tab");
+      d.setAttribute("aria-selected", String(on));
+      if (t.conn) d.style.setProperty("--hue", t.conn.env === "production" ? "var(--env-production)" : engineVar(t.conn.kind));
+      d.title = `${t.title}${t.conn?.db ? ` · ${t.conn.db}` : ""}${i < 9 ? `  (⌘${i + 1})` : ""}`;
+      const tint = t.kind === "table" ? engineVar(t.conn?.kind) : t.kind === "diagram" ? "var(--eng-mssql)" : "var(--accent)";
+      d.innerHTML = `<span style="color:${tint}">${icon(t.kind === "table" ? "table" : t.kind === "diagram" ? "diagram" : "plan", 15)}</span><span class="truncate">${esc(t.title)}</span>` +
+        (multiDb && t.conn?.db ? `<span class="text-muted text-[12px] shrink-0 truncate" style="max-width:96px">${esc(t.conn.db)}</span>` : "");
       const x = document.createElement("button");
       x.innerHTML = icon("close", 12);
       x.setAttribute("aria-label", "Close tab");
-      x.className = "rounded p-0.5 text-muted hover:text-ink hover:bg-raised2 " + (on ? "" : "opacity-0 group-hover:opacity-100");
+      x.className = "rounded p-1 text-muted hover:text-ink hover:bg-raised2 " + (on ? "" : "opacity-0 group-hover:opacity-100");
       x.onclick = (e) => { e.stopPropagation(); closeTab(t); };
       d.append(x);
       d.onclick = () => activate(t);
@@ -284,7 +327,32 @@ function renderTabs() {
       return d;
     }),
   );
+  renderRail();
   renderObjects();
+}
+
+// ---------- connection rail: the narrow strip at the far left that switches between connections ----------
+function renderRail() {
+  const host = $("rail-items");
+  host.replaceChildren(...servers.map((s) => {
+    const on = s === activeServer && !launcherOpen;
+    const n = serverTabs(s).length;
+    const b = document.createElement("button");
+    b.className = "relative flex flex-col items-center gap-1 rounded-xl shrink-0 px-1 pt-2 pb-1.5 " + (on ? "glass-strong" : "hover:bg-raised");
+    b.style.cssText = "width:66px;transition:background .12s";
+    b.setAttribute("aria-label", `${s.name}${on ? " (current)" : ""}`);
+    b.title = `${s.name} · ${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}\n${n} tab${n === 1 ? "" : "s"} · ${s.conns.length} database${s.conns.length === 1 ? "" : "s"} open`;
+    b.innerHTML = engineBadge(s.kind, 36) +
+      `<span class="text-[11.5px] leading-[1.15] text-center w-full ${on ? "text-ink font-medium" : "text-soft"}" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word">${esc(s.name)}</span>` +
+      (on ? `<span class="absolute" style="left:-7px;top:18px;width:4px;height:24px;border-radius:0 3px 3px 0;background:var(--hue-active,var(--accent))"></span>` : "") +
+      (s.env && s.env !== "local" ? `<span class="absolute" style="right:7px;top:5px;width:10px;height:10px;border-radius:5px;background:${envColor(s.env)};border:2px solid var(--panel)"></span>` : "") +
+      (n > 1 ? `<span class="absolute text-[10.5px] font-semibold rounded-full bg-raised2 text-soft" style="right:4px;top:30px;min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 4px">${n}</span>` : "");
+    b.onclick = () => switchServer(s);
+    b.oncontextmenu = (e) => { e.preventDefault(); serverMenu(s, e.clientX, e.clientY); };
+    return b;
+  }));
+  const plus = $("addconn");
+  plus.className = "relative flex flex-col items-center justify-center gap-0.5 rounded-xl " + (launcherOpen ? "glass-strong text-accent" : "text-muted hover:bg-raised hover:text-ink");
 }
 
 async function exec(t: Tab, sqlText: string) {
@@ -292,6 +360,8 @@ async function exec(t: Tab, sqlText: string) {
   if (t.panel && t.gridWrap) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
   if (t.running) { t.status.textContent = "A query is already running — ⌘. to cancel"; return; }
   t.running = true; t.cancelled = false;
+  t.empty?.remove(); t.empty = undefined;
+  if (t.gridWrap) { t.runBar = document.createElement("div"); t.runBar.className = "running-bar"; t.gridWrap.append(t.runBar); }
   t.status.textContent = "Running… (⌘. to cancel)";
   try {
     const s: Summary = await api.runQuery(t.conn.id, sqlText);
@@ -304,10 +374,10 @@ async function exec(t: Tab, sqlText: string) {
     await t.grid.setResult(null);
     t.status.textContent = t.cancelled ? "Query cancelled" : "Error: " + e;
     t.status.classList.toggle("text-danger", !t.cancelled);
-    t.running = false;
+    t.running = false; t.runBar?.remove();
     return;
   }
-  t.running = false;
+  t.running = false; t.runBar?.remove();
   t.status.classList.remove("text-danger");
 }
 
@@ -365,7 +435,7 @@ function confirmSql(stmts: string[]): Promise<boolean> {
     o.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50";
     o.innerHTML = `<div class="w-[640px] max-h-[70vh] bg-raised rounded-lg border border-line-strong shadow-2xl flex flex-col">
       <div class="px-4 py-2 border-b border-line-strong font-semibold">Review changes (${stmts.length} statement${stmts.length > 1 ? "s" : ""}, one transaction)</div>
-      <pre class="mono text-[12px] p-4 overflow-auto flex-1 select-text whitespace-pre-wrap"></pre>
+      <pre class="mono text-[13px] p-4 overflow-auto flex-1 select-text whitespace-pre-wrap"></pre>
       <div class="p-3 flex justify-end gap-2 border-t border-line-strong">
         <button id="no" class="px-3 py-1 rounded hover:bg-raised2">Cancel</button>
         <button id="yes" class="px-3 py-1 rounded btn-primary">Commit</button></div></div>`;
@@ -384,16 +454,13 @@ function setMode(t: Tab, mode: "data" | "structure") {
   if (t.kind !== "table" || !t.gridWrap || !t.conn || !t.table) return;
   t.mode = mode;
   t.bar?.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => {
-    const on = b.dataset.mode === mode;
-    b.style.background = on ? "var(--panel)" : "transparent";
-    b.style.color = on ? "var(--ink)" : "var(--soft)";
-    b.style.boxShadow = on ? "0 1px 2px rgb(20 28 46 / .12)" : "none";
+    b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
   });
   const dataOnly = ["+ Row", "− Row", "Commit", "Discard", "Filter"];
   if (mode === "structure" && t.filterBar?.open) t.filterBar.toggle();
   t.bar?.querySelectorAll<HTMLElement>(".hint").forEach((h) => { h.style.display = mode === "data" ? "" : "none"; });
   t.bar?.querySelectorAll<HTMLElement>("button[data-label]").forEach((b) => { if (dataOnly.includes(b.dataset.label ?? "")) b.style.display = mode === "data" ? "" : "none"; });
-  if (mode === "data") { t.gridWrap.replaceChildren(t.grid.el); return; }
+  if (mode === "data") { t.gridWrap.replaceChildren(t.grid.el); t.grid.onChange(); return; }
   const conn = t.conn, name = t.table;
   const o = conn.objects.find((x) => x.name === name);
   t.schemaName = o?.schema ?? null;
@@ -554,23 +621,34 @@ async function refreshDatabase(c: Conn) {
 // ---------- sidebar tree: servers -> databases -> tables ----------
 const collapsed = new Set<string>();
 interface RowOpts { level: number; ic: string; label: string; sub?: string; badge?: string; stripe?: string; chevron?: "open" | "shut"; count?: number; active?: boolean; strong?: boolean; muted?: boolean; actions?: { ic: string; title: string; fn: () => void }[]; click?: () => void; dbl?: () => void; menu?: (x: number, y: number) => void; title?: string }
-function treeRow(o: RowOpts): HTMLElement {
+function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElement {
   const d = document.createElement("div");
-  d.className = "group flex items-center gap-1.5 pr-1.5 rounded-md cursor-default select-none " + (o.active ? "bg-accent-soft " : "hover:bg-raised ") + (o.level === 0 ? "h-[34px] mb-0.5" : "h-[26px]");
-  d.style.paddingLeft = 6 + o.level * 14 + "px";
-  if (o.stripe) d.style.boxShadow = `inset 3px 0 0 ${o.stripe}`;
+  const chev = o.chevron ? `<span class="text-muted shrink-0" style="width:12px;transition:transform .16s var(--ease-out);transform:rotate(${o.chevron === "open" ? 90 : 0}deg)">${icon("chevron", 11)}</span>` : `<span style="width:12px" class="shrink-0"></span>`;
+  if (o.level === 0) { // the connection itself: a card in its engine's colour
+    d.className = "group srv-card select-none";
+    d.style.setProperty("--hue", o.hue ?? "var(--accent)");
+    d.dataset.env = o.env ?? "local";
+    d.innerHTML = chev + (o.badge ?? "") +
+      `<span class="min-w-0 flex-1"><span class="block truncate font-semibold text-[14.5px] leading-tight">${esc(o.label)}</span><span class="block truncate text-[12px] text-muted">${esc(o.sub ?? "")}</span></span>` +
+      (o.env && o.env !== "local" ? `<span class="pill shrink-0 group-hover:hidden" style="color:${envColor(o.env)};background:color-mix(in srgb, ${envColor(o.env)} 13%, transparent)">${esc(o.env)}</span>` : "");
+  } else {
+    const h = o.level === 1 ? 32 : o.level === 2 ? 28 : 30;
+    d.className = "group tree-row flex items-center gap-1.5 pr-1.5 select-none";
+    d.style.height = h + "px";
+    d.style.paddingLeft = 6 + (o.level - 1) * 16 + "px";
+    if (o.active) d.setAttribute("aria-current", "true");
+    d.innerHTML = chev + `<span class="${o.active ? "" : "text-muted"} shrink-0">${icon(o.ic, 15)}</span>` +
+      `<span class="min-w-0 flex-1 truncate ${o.level === 2 ? "text-soft font-medium text-[13px]" : ""} ${o.level === 1 ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}</span>` +
+      (o.count !== undefined ? `<span class="text-muted text-[12px] shrink-0 group-hover:hidden">${o.count}</span>` : "");
+  }
   if (o.title) d.title = o.title;
-  const chev = o.chevron ? `<span class="text-muted shrink-0" style="width:12px;transition:transform .12s;transform:rotate(${o.chevron === "open" ? 90 : 0}deg)">${icon("chevron", 11)}</span>` : `<span style="width:12px" class="shrink-0"></span>`;
-  d.innerHTML = chev + (o.badge ?? `<span class="${o.active ? "text-accent" : "text-muted"} shrink-0">${icon(o.ic, 14)}</span>`) +
-    `<span class="min-w-0 flex-1 truncate ${o.strong || o.active ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}${o.sub ? `<span class="text-muted font-normal text-[11px]"> ${esc(o.sub)}</span>` : ""}</span>` +
-    (o.count !== undefined ? `<span class="text-muted text-[11px] shrink-0 group-hover:hidden">${o.count}</span>` : "");
   if (o.actions?.length) {
     const box = document.createElement("span");
-    box.className = "hidden group-hover:flex items-center shrink-0";
+    box.className = "hidden group-hover:flex items-center shrink-0 rounded-md bg-panel/70";
     for (const a of o.actions) {
       const b = document.createElement("button");
       b.className = "rounded p-1 text-muted hover:text-ink hover:bg-raised2";
-      b.title = a.title; b.setAttribute("aria-label", a.title); b.innerHTML = icon(a.ic, 13);
+      b.title = a.title; b.setAttribute("aria-label", a.title); b.innerHTML = icon(a.ic, 14);
       b.onclick = (e) => { e.stopPropagation(); a.fn(); };
       b.ondblclick = (e) => e.stopPropagation();
       box.append(b);
@@ -583,12 +661,20 @@ function treeRow(o: RowOpts): HTMLElement {
   return d;
 }
 
+/** Original line illustrations (two tones: the accent plus the apricot spark). */
+const ART_LATTICE = `<svg viewBox="0 0 150 110" width="150" height="110" fill="none" aria-hidden="true"><g fill="currentColor" opacity=".32">${[0, 1, 2, 3, 4].flatMap((i) => [0, 1, 2, 3].map((j) => `<circle cx="${14 + i * 30}" cy="${14 + j * 27}" r="3.2"/>`)).join("")}</g>
+  <g stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="44" y="26" width="62" height="54" rx="7" fill="var(--panel)"/><path d="M44 42h62M64 42v38M85 42v38M44 58h62" opacity=".75"/></g>
+  <circle cx="134" cy="14" r="6" fill="var(--spark)"/><path d="M106 33 129 17" stroke="var(--spark)" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+const ART_RESULTS = `<svg viewBox="0 0 120 80" width="120" height="80" fill="none" aria-hidden="true"><g fill="var(--accent)" opacity=".14"><rect x="8" y="30" width="104" height="11" rx="5"/><rect x="8" y="48" width="104" height="11" rx="5"/><rect x="8" y="66" width="70" height="11" rx="5"/></g>
+  <rect x="14" y="6" width="2.6" height="18" rx="1.3" fill="var(--accent)"><animate attributeName="opacity" values="1;0.15;1" dur="1.2s" repeatCount="indefinite"/></rect><rect x="22" y="12" width="36" height="6" rx="3" fill="var(--spark)" opacity=".85"/></svg>`;
+
 const KIND_GROUPS: [string, string, string][] = [["table", "Tables", "table"], ["view", "Views", "view"], ["collection", "Collections", "collection"], ["key", "Keys", "key"]];
 
 function renderObjects() {
   const host = $("objects");
-  if (!servers.length) {
-    host.innerHTML = `<div class="px-4 py-10 text-center"><div class="inline-flex text-muted mb-2">${icon("database", 26)}</div><div class="font-medium">No connections open</div><div class="text-soft mt-0.5 mb-3">Connect to a database to browse its tables.</div><button id="emptyconn" class="btn btn-primary">${icon("plug", 14)}<span>Connect</span></button></div>`;
+  if (!activeServer) {
+    const some = servers.length > 0;
+    host.innerHTML = `<div class="px-4 py-10 text-center"><div class="inline-flex text-muted mb-2">${icon("database", 26)}</div><div class="font-medium">${some ? "Choose a connection" : "No connections open"}</div><div class="text-soft mt-0.5 mb-3">${some ? "Pick one from the strip on the left." : "Connect to a database to browse its tables."}</div><button id="emptyconn" class="btn btn-primary">${icon("plug", 14)}<span>Connect</span></button></div>`;
     ($("emptyconn")).onclick = () => showLauncher();
     return;
   }
@@ -596,7 +682,7 @@ function renderObjects() {
   const openTab = active?.kind === "table" ? active : null;
   const frag = document.createDocumentFragment();
   let any = false;
-  for (const s of servers) {
+  for (const s of activeServer ? [activeServer] : []) {
     const sKey = "s:" + s.id, sOpen = q ? true : !collapsed.has(sKey);
     const children: HTMLElement[] = [];
     for (const c of s.conns) {
@@ -638,8 +724,8 @@ function renderObjects() {
     any = true;
     const first = s.conns[0];
     frag.append(treeRow({
-      level: 0, ic: "plug", label: s.name, sub: s.conns.length > 1 ? `${s.conns.length} databases` : undefined, strong: true, stripe: envColor(s.env),
-      badge: engineBadge(s.kind, 20), chevron: sOpen ? "open" : "shut", title: `${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}`,
+      level: 0, ic: "plug", label: s.name, hue: engineVar(s.kind), env: s.env, sub: [ENGINE_NAMES[s.kind] ?? s.kind, s.conns.length > 1 ? `${s.conns.length} databases` : s.conns[0]?.db].filter(Boolean).join(" · "), strong: true,
+      badge: engineBadge(s.kind, 28), chevron: sOpen ? "open" : "shut", title: `${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}`,
       click: () => { if (first) conn = first; sOpen ? collapsed.add(sKey) : collapsed.delete(sKey); renderObjects(); },
       menu: (x, y) => serverMenu(s, x, y),
       actions: [{ ic: "plus", title: s.dbs.length ? "Open a database" : "New query", fn: () => (s.dbs.length ? pickAndOpen(s) : makeTab("query", "Query", undefined, s.conns[0] ?? null)) }, { ic: "close", title: "Disconnect", fn: () => disconnectServer(s) }],
@@ -691,7 +777,7 @@ function serverMenu(s: Server, x: number, y: number) {
 // ---------- connection lifecycle ----------
 function afterWorkspaceChange() {
   renderTabs();
-  if (!tabs.length) showHome();
+  if (!serverTabs().length) { active = null; showHome(); }
 }
 
 /** Register an open database under its server and load its tables. */
@@ -699,10 +785,11 @@ async function addDatabase(s: Server, connId: number, db: string | null): Promis
   const c: Conn = { id: connId, name: s.name, kind: s.kind, env: s.env, db, dbs: s.dbs, objects: [], schema: [], server: s, loading: true };
   s.conns.push(c);
   conn = c;
+  activeServer = s; launcherOpen = false;
   collapsed.delete("s:" + s.id); collapsed.delete("d:" + c.id);
   renderObjects();
   refreshDatabase(c);
-  if (!tabs.length || !active) makeTab("query", "Query", undefined, c);
+  if (!serverTabs(s).length) makeTab("query", "Query", undefined, c); // first tab of this connection
   else renderTabs();
   return c;
 }
@@ -710,15 +797,16 @@ async function addDatabase(s: Server, connId: number, db: string | null): Promis
 /** Connect (or re-focus) a saved connection. */
 async function useConnection(id: number, p: Profile) {
   const have = servers.find((sv) => sv.id === p.id);
-  if (have) { // already connected: drop the duplicate and just go to it
-    api.disconnect(id).catch(() => {});
-    conn = have.conns[0] ?? conn; renderObjects();
-    if (have.conns[0]) { const t = tabs.find((k) => k.conn === have.conns[0]); t ? activate(t) : makeTab("query", "Query", undefined, have.conns[0]); } else pickAndOpen(have);
+  if (have) { // already connected: drop the duplicate and go to the existing workspace
+    if (id >= 0) api.disconnect(id).catch(() => {});
+    switchServer(have);
+    if (!have.conns.length) pickAndOpen(have);
     return;
   }
   const dbs = await api.listDatabases(id).catch(() => [] as string[]);
   const s: Server = { id: p.id, name: p.name, kind: p.kind, env: p.environment, profile: p, rootId: id, dbs, conns: [] };
   servers.push(s);
+  activeServer = s; launcherOpen = false;
   // With a database in the profile, or an engine that has no database list (SQLite, Redis), open it straight away.
   if (p.database || !dbs.length) await addDatabase(s, id, p.database || (p.kind === "sqlite" ? (p.path ?? "").split("/").pop() || "main" : null));
   else { renderObjects(); await pickAndOpen(s); }
@@ -754,16 +842,18 @@ function closeDatabase(c: Conn) {
 function disconnectServer(s: Server) {
   for (const c of [...s.conns]) { for (const t of [...tabs]) if (t.conn === c) closeTab(t); if (c.id !== s.rootId) api.disconnect(c.id).catch(() => {}); }
   api.disconnect(s.rootId).catch(() => {});
+  const wasActive = activeServer === s;
   servers.splice(servers.indexOf(s), 1);
-  if (conn?.server === s) conn = servers.flatMap((x) => x.conns)[0] ?? null;
-  renderObjects();
   toast(`Disconnected from ${s.name}`, "info");
-  afterWorkspaceChange();
+  if (!wasActive) { renderTabs(); return; }
+  activeServer = null; conn = null; active = null;
+  const next = servers[servers.length - 1];
+  if (next) switchServer(next); else { renderTabs(); showLauncher(); }
 }
 
 /** ⌘K: open another database on the current server. */
 function openDatabasePicker() {
-  const s = conn?.server ?? servers[0];
+  const s = activeServer;
   if (!s) { toast("Connect to a database first.", "info"); return; }
   if (!s.dbs.length) { toast(`${ENGINE_NAMES[s.kind] ?? s.kind} connections have a single database.`, "info"); return; }
   pickAndOpen(s);
@@ -771,7 +861,7 @@ function openDatabasePicker() {
 
 function queryBar(tab: Tab): HTMLElement {
   const bar = document.createElement("div");
-  bar.className = "h-10 shrink-0 flex items-center gap-1 px-3 bg-canvas border-b border-line text-[12px]";
+  bar.className = "h-11 shrink-0 flex items-center gap-1 px-3 bg-canvas text-[13.5px]";
   const b = (html: string, title: string, f: () => void, cls = "btn btn-ghost") => {
     const el = document.createElement("button");
     el.innerHTML = html; el.title = title; el.className = cls; el.onclick = f;
@@ -796,6 +886,7 @@ function queryBar(tab: Tab): HTMLElement {
 /** The home view: saved connections, plus a one-click way to bring them over from TablePlus. */
 async function showLauncher() {
   active = null;
+  launcherOpen = true;
   renderTabs();
   const wrap = document.createElement("div");
   wrap.className = "h-full overflow-auto";
@@ -803,36 +894,43 @@ async function showLauncher() {
   const [profiles, tp] = await Promise.all([api.listConnections().catch(() => [] as Profile[]), api.tableplusScan().catch(() => [])]);
   if (active || $("main").firstChild !== wrap) return; // user moved on while we were loading
   const importable = tp.filter((e) => e.kind && !e.already_imported);
-  wrap.innerHTML = `<div class="mx-auto px-8 pt-14 pb-10" style="max-width:720px">
-    <div class="flex items-center gap-3.5">
-      <img src="/lattice-logo.svg" alt="" width="46" height="46" style="border-radius:11px;box-shadow:0 1px 2px rgb(20 28 46 / .18), 0 6px 16px rgb(31 55 201 / .22)"/>
-      <div><h1 class="text-[24px] font-semibold tracking-[-0.01em] leading-tight">Lattice</h1>
-      <p class="text-soft">Open a database, or add a new connection.</p></div>
+  const dismissed = localStorage.getItem("lattice.tpDismissed") === "1";
+  wrap.innerHTML = `<div class="mx-auto px-10 pt-12 pb-10" style="max-width:860px">
+    <div class="flex items-center gap-5">
+      <div class="flex-1"><div class="flex items-center gap-3.5 mb-3"><img src="/lattice-logo.svg" alt="" width="44" height="44" style="border-radius:11px;box-shadow:0 1px 2px rgb(19 34 48 / .18), 0 6px 16px rgb(11 116 160 / .25)"/><span class="text-[15px] font-semibold text-soft">Lattice</span></div>
+        <h1 class="text-[30px] font-semibold leading-[1.15] tracking-[-0.02em]">Where would you like to work?</h1>
+        <p class="text-soft text-[15px] mt-1.5">Open a saved connection, or add a new one.</p></div>
+      <div class="hidden md:block text-muted shrink-0">${ART_LATTICE}</div>
     </div>
-    ${importable.length ? `<div id="tpbanner" class="mt-6 flex items-center gap-4 rounded-xl px-4 py-3 bg-accent-soft" style="box-shadow: inset 3px 0 0 var(--accent)">
-        <div class="flex-1"><div class="font-medium">${importable.length} connection${importable.length === 1 ? "" : "s"} found in TablePlus</div>
-        <div class="text-soft text-[12.5px]">Bring them over instead of typing hosts and users again.</div></div>
-        <button id="tpgo" class="btn btn-primary">Import from TablePlus</button></div>` : ""}
-    <div id="rows" class="mt-6 rounded-xl border border-line-strong overflow-hidden bg-panel"></div>
-    <div class="mt-5 flex items-center gap-2">
-      <button id="newconn" class="btn">${icon("plus", 14)}<span>New connection</span><span class="kbd">⌘N</span></button>
-      ${tp.length && !importable.length ? `<button id="tpgo2" class="btn btn-ghost">Import from TablePlus</button>` : ""}
+    ${importable.length && !dismissed ? `<div id="tpbanner" class="mt-7 flex items-center gap-4 rounded-xl px-4 py-3.5 bg-accent-soft" style="box-shadow: inset 3px 0 0 var(--accent)">
+        <div class="flex-1"><div class="font-semibold">${importable.length} connection${importable.length === 1 ? "" : "s"} found in TablePlus</div>
+        <div class="text-soft">Bring them over instead of typing hosts and users again.</div></div>
+        <button id="tpno" class="btn btn-ghost">Not now</button><button id="tpgo" class="btn btn-primary">Import from TablePlus</button></div>` : ""}
+    <div id="rows" class="mt-7 grid gap-3" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"></div>
+    <div class="mt-6 flex items-center gap-2">
+      <button id="newconn" class="btn">${icon("plus", 15)}<span>New connection</span><span class="kbd">⌘N</span></button>
+      ${tp.length && (!importable.length || dismissed) ? `<button id="tpgo2" class="btn btn-ghost">Import from TablePlus</button>` : ""}
     </div></div>`;
   const rows = wrap.querySelector("#rows") as HTMLElement;
   if (!profiles.length) {
-    rows.innerHTML = `<div class="px-6 py-10 text-center"><div class="inline-flex text-muted mb-2">${icon("database", 28)}</div>
-      <div class="font-medium">No saved connections yet</div><div class="text-soft mt-0.5">Add a connection, or import the ones you already have.</div></div>`;
+    rows.style.display = "block";
+    rows.innerHTML = `<div class="card px-6 py-10 text-center"><div class="inline-flex text-muted mb-2">${icon("database", 28)}</div>
+      <div class="text-[16px] font-semibold">No saved connections yet</div><div class="text-soft mt-1">Add a connection, or import the ones you already have.</div></div>`;
   }
   const sorted = [...profiles].sort((a, b) => a.name.localeCompare(b.name));
   for (const p of sorted) {
     const row = document.createElement("div");
-    row.className = "group flex items-center gap-3 px-4 h-[58px] cursor-default hover:bg-canvas border-b border-line last:border-b-0";
-    row.style.boxShadow = `inset 3px 0 0 ${envColor(p.environment)}`;
+    const hue = engineVar(p.kind);
+    row.className = "group relative flex items-center gap-3.5 rounded-xl px-4 h-[78px] cursor-default overflow-hidden";
+    row.style.cssText = `background:var(--panel);box-shadow:var(--shadow-1), inset 0 0 0 1px color-mix(in srgb, ${hue} 16%, var(--line));transition:box-shadow .15s, transform .15s var(--ease-out)`;
+    row.onmouseenter = () => { row.style.boxShadow = `var(--shadow-2), inset 0 0 0 1px color-mix(in srgb, ${hue} 38%, var(--line))`; row.style.transform = "translateY(-1px)"; };
+    row.onmouseleave = () => { row.style.boxShadow = `var(--shadow-1), inset 0 0 0 1px color-mix(in srgb, ${hue} 16%, var(--line))`; row.style.transform = ""; };
     const where = p.path ?? [p.user && `${p.user}@`, p.host, p.port && `:${p.port}`, p.database && `/${p.database}`].filter(Boolean).join("");
-    row.innerHTML = `${engineBadge(p.kind, 32)}
-      <div class="min-w-0 flex-1"><div class="font-medium truncate">${esc(p.name)}</div><div class="mono text-[11.5px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div></div>
-      <div class="relative shrink-0" style="width:104px;height:28px">
-        ${servers.some((sv) => sv.id === p.id) ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:var(--ok)"><span style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>connected</span>` : p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)}">${esc(p.environment)}</span>` : ""}
+    const edge = p.environment === "production" ? `<span class="absolute inset-y-0 left-0" style="width:4px;background:repeating-linear-gradient(135deg,var(--env-production) 0 3px,transparent 3px 6px);opacity:.8"></span>` : p.environment === "staging" ? `<span class="absolute inset-y-0 left-0" style="width:3px;background:var(--env-staging)"></span>` : "";
+    row.innerHTML = `${edge}${engineBadge(p.kind, 42)}
+      <div class="min-w-0 flex-1"><div class="font-semibold text-[15px] truncate">${esc(p.name)}</div><div class="mono text-[12.5px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div></div>
+      <div class="relative shrink-0" style="width:96px;height:30px">
+        ${servers.some((sv) => sv.id === p.id) ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:var(--ok);background:var(--ok-soft)"><span style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>connected</span>` : p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)};background:color-mix(in srgb, ${envColor(p.environment)} 13%, transparent)">${esc(p.environment)}</span>` : ""}
         <button class="btn btn-primary absolute right-0 top-0 opacity-0 group-hover:opacity-100 focus:opacity-100">Connect</button>
       </div>`;
     const live = servers.find((sv) => sv.id === p.id);
@@ -848,6 +946,7 @@ async function showLauncher() {
   }
   const doImport = async () => { if (await showTablePlusImport(tp)) showLauncher(); };
   (wrap.querySelector("#tpgo") as HTMLElement | null)?.addEventListener("click", doImport);
+  (wrap.querySelector("#tpno") as HTMLElement | null)?.addEventListener("click", () => { localStorage.setItem("lattice.tpDismissed", "1"); showLauncher(); });
   (wrap.querySelector("#tpgo2") as HTMLElement | null)?.addEventListener("click", doImport);
   (wrap.querySelector("#newconn") as HTMLElement).onclick = openConnections;
 }
@@ -861,18 +960,19 @@ async function connectProfile(p: Profile) {
 /** What to show when no tab is open: the launcher if nothing is connected, otherwise a short workspace hint. */
 function showHome() {
   if (!servers.length) { showLauncher(); return; }
-  active = null;
+  active = null; launcherOpen = false;
   renderTabs();
-  const c = conn ?? servers[0].conns[0] ?? null;
+  const sv = activeServer ?? servers[0];
+  const c = conn?.server === sv ? conn : sv.conns[0] ?? null;
   const wrap = document.createElement("div");
   wrap.className = "h-full flex items-center justify-center";
-  wrap.innerHTML = `<div class="text-center" style="max-width:360px"><img src="/lattice-logo.svg" alt="" width="52" height="52" class="mx-auto mb-4" style="border-radius:12px;box-shadow:0 1px 2px rgb(20 28 46 / .18), 0 6px 16px rgb(31 55 201 / .22)"/>
-    <div class="text-[15px] font-semibold">No tabs open</div>
-    <div class="text-soft mt-1 mb-4">Double-click a table in the sidebar, or start a query.</div>
-    <div class="flex justify-center gap-2"><button id="hq" class="btn btn-primary" ${c ? "" : "disabled"}>${icon("plan", 14)}<span>New query</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘T</span></button><button id="hc" class="btn">${icon("plug", 14)}<span>Connect another</span></button></div></div>`;
+  wrap.innerHTML = `<div class="text-center" style="max-width:380px"><div class="inline-flex mb-3">${engineBadge(sv.kind, 48)}</div>
+    <div class="text-[16px] font-semibold">${esc(sv.name)}</div>
+    <div class="text-soft mt-1 mb-4">${c ? "No tabs open. Double-click a table in the sidebar, or start a query." : "No database is open on this connection yet."}</div>
+    <div class="flex justify-center gap-2">${c ? `<button id="hq" class="btn btn-primary">${icon("plan", 14)}<span>New query</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘T</span></button>` : `<button id="hq" class="btn btn-primary">${icon("database", 14)}<span>Open a database</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘K</span></button>`}<button id="hc" class="btn">${icon("plug", 14)}<span>Connect another</span></button></div></div>`;
   $("main").replaceChildren(wrap);
-  ($("hq")).onclick = () => makeTab("query", "Query", undefined, c);
-  ($("hc")).onclick = () => showLauncher();
+  $("hq").onclick = () => (c ? makeTab("query", "Query", undefined, c) : pickAndOpen(sv));
+  $("hc").onclick = () => showLauncher();
 }
 
 function openConnections() {
@@ -890,7 +990,7 @@ function palette() {
     list.replaceChildren(...items.map((o, i) => {
       const d = document.createElement("div");
       d.className = "px-4 py-1.5 flex items-center gap-2 " + (i === idx ? "bg-accent text-white" : "");
-      d.innerHTML = `${icon(o.kind === "view" ? "view" : o.kind === "key" ? "key" : o.kind === "collection" ? "collection" : "table", 14)}<span>${esc(o.name)}</span><span class="ml-auto text-[11px] opacity-70">${o.kind}</span>`;
+      d.innerHTML = `${icon(o.kind === "view" ? "view" : o.kind === "key" ? "key" : o.kind === "collection" ? "collection" : "table", 14)}<span>${esc(o.name)}</span><span class="ml-auto text-[12px] opacity-70">${o.kind}</span>`;
       d.onclick = () => choose(o);
       return d;
     }));
@@ -971,7 +1071,7 @@ window.addEventListener("keydown", (e) => {
   if (e.altKey && e.code === "KeyI") return go(importActive);
   if (e.altKey && e.code === "KeyB") return go(backupActive);
   if (e.altKey && e.code === "KeyR") return go(restoreActive);
-  if (k === "t") go(() => makeTab("query", "Query"));
+  if (k === "t") go(newQuery);
   else if (k === "w") go(() => active && closeTab(active));
   else if (k === "o" || k === "n") go(openConnections);
   else if (k === "p") go(palette);
@@ -985,7 +1085,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
   else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
   else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => active!.grid.deleteSelected());
-  else if (/^[1-9]$/.test(k)) go(() => tabs[+k - 1] && activate(tabs[+k - 1]));
+  else if (/^[1-9]$/.test(k)) go(() => { const t = nthTab(tabs, activeServer, +k); if (t) activate(t); });
   else if (e.shiftKey && (e.key === "]" || e.key === "}")) go(() => cycle(1));
   else if (e.shiftKey && (e.key === "[" || e.key === "{")) go(() => cycle(-1));
   else if (k === "f" && active?.kind === "table" && active.filterBar) go(() => { if (active!.mode === "structure") setMode(active!, "data"); active!.filterBar!.toggle(); });
@@ -993,16 +1093,24 @@ window.addEventListener("keydown", (e) => {
   else if (k === "l") go(() => $("filter").focus());
 });
 
+/** New query tab in the current database of the current connection. */
+function newQuery() {
+  const c = conn?.server === activeServer ? conn : activeServer?.conns[0] ?? null;
+  if (!c) { toast(activeServer?.dbs.length ? "Open a database first (⌘K)." : "Connect to a database first.", "info"); return; }
+  makeTab("query", "Query", undefined, c);
+}
+
 function cycle(d: number) {
   if (!active) return;
-  activate(tabs[(tabs.indexOf(active) + d + tabs.length) % tabs.length]);
+  const next = cycleTab(tabs, active, d);
+  if (next) activate(next);
 }
 
 $("backup").onclick = backupActive;
 $("restore").onclick = restoreActive;
 $("import").onclick = importActive;
 $("export").onclick = exportActive;
-$("newtab").onclick = () => makeTab("query", "Query");
+$("newtab").onclick = newQuery;
 $("open").onclick = openConnections;
 $("addconn").onclick = () => showLauncher();
 $("diagram").onclick = () => openDiagram();

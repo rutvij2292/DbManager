@@ -34,7 +34,7 @@ export function createStructureView(
   status: (s: string) => void,
 ): { el: HTMLElement; reload: () => Promise<void> } {
   const el = document.createElement("div");
-  el.className = "h-full overflow-auto px-6 py-5 text-[12.5px] bg-panel";
+  el.className = "h-full overflow-auto px-6 py-5 text-[13.5px] bg-panel";
   let rows: Row[] = [];
   let indexes: IndexInfo[] = [];
   let droppedIdx = new Set<string>();
@@ -89,7 +89,7 @@ export function createStructureView(
         <td class="pr-2 w-9"><button data-rmni="${i}" class="btn btn-ghost" style="width:24px;padding:0;justify-content:center">${icon("close", 12)}</button></td></tr>`).join("")}
       </tbody></table>`)}
       ${info && info.foreign_keys.length ? box("Foreign keys", info.foreign_keys.length, `<table class="w-full"><tbody>${info.foreign_keys.map((f) => `<tr class="border-b border-line last:border-b-0"><td class="px-4 h-9 mono">${esc(f.name)}</td><td class="px-2 mono text-soft">${esc(f.columns.join(", "))} <span class="text-muted">references</span> ${esc((f.ref_schema && f.ref_schema !== "public" ? f.ref_schema + "." : "") + f.ref_table)}(${esc(f.ref_columns.join(", "))})</td></tr>`).join("")}</tbody></table>`) : ""}
-      ${info?.ddl ? box("Definition", 1, `<pre class="mono text-[12px] p-4 overflow-auto select-text whitespace-pre-wrap">${esc(info.ddl)}</pre>`) : ""}`;
+      ${info?.ddl ? box("Definition", 1, `<pre class="mono text-[13px] p-4 overflow-auto select-text whitespace-pre-wrap">${esc(info.ddl)}</pre>`) : ""}`;
 
     const q = <T extends HTMLElement>(s: string) => el.querySelector(s) as T;
     q("#addcol").onclick = () => { rows.push({ orig: null, name: "", type: "TEXT", nullable: true, def: "", dropped: false }); draw(); };

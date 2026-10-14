@@ -37,15 +37,19 @@ export function icon(name: keyof typeof P | string, size = 16, cls = ""): string
   return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] ?? ""}</svg>`;
 }
 
-/** Engine glyphs: two letters on a tint, so connections are recognisable at a glance. */
+/** Engine identity: a two-letter glyph on the engine's own hue (tokens, so it adapts to light and dark). */
 const ENGINES: Record<string, { label: string; hue: string }> = {
-  postgres: { label: "Pg", hue: "#336791" }, cockroach: { label: "Cr", hue: "#6933ff" }, redshift: { label: "Rs", hue: "#8c4fff" }, greenplum: { label: "Gp", hue: "#2d9c5b" },
-  mysql: { label: "My", hue: "#c07b00" }, mariadb: { label: "Ma", hue: "#7a5c3e" }, sqlite: { label: "Sq", hue: "#2c7fb8" },
-  mssql: { label: "Ms", hue: "#b2383d" }, redis: { label: "Rd", hue: "#c43b32" }, mongo: { label: "Mg", hue: "#1f8a4c" },
+  postgres: { label: "Pg", hue: "--eng-pg" }, cockroach: { label: "Cr", hue: "--eng-mssql" }, redshift: { label: "Rs", hue: "--eng-mssql" }, greenplum: { label: "Gp", hue: "--eng-mongo" },
+  mysql: { label: "My", hue: "--eng-my" }, mariadb: { label: "Ma", hue: "--eng-maria" }, sqlite: { label: "Sq", hue: "--eng-sqlite" },
+  mssql: { label: "Ms", hue: "--eng-mssql" }, redis: { label: "Rd", hue: "--eng-redis" }, mongo: { label: "Mg", hue: "--eng-mongo" },
 };
+/** CSS value for an engine's hue, e.g. `var(--eng-pg)`. */
+export function engineVar(kind: string | null | undefined): string {
+  return `var(${(kind && ENGINES[kind]?.hue) || "--muted"})`;
+}
 export function engineBadge(kind: string | null | undefined, size = 30): string {
-  const e = (kind && ENGINES[kind]) || { label: "··", hue: "#7c8aa3" };
-  return `<span class="inline-flex items-center justify-center shrink-0 font-semibold" style="width:${size}px;height:${size}px;border-radius:${Math.round(size / 3.4)}px;background:color-mix(in srgb, ${e.hue} 14%, var(--panel));color:${e.hue};border:1px solid color-mix(in srgb, ${e.hue} 30%, var(--panel));font-size:${Math.round(size * 0.4)}px">${e.label}</span>`;
+  const e = (kind && ENGINES[kind]) || { label: "··", hue: "--muted" };
+  return `<span class="glyph" style="--hue:var(${e.hue});width:${size}px;height:${size}px;border-radius:${Math.round(size / 3.6)}px;font-size:${Math.round(size * 0.4)}px;letter-spacing:-.01em">${e.label}</span>`;
 }
 
 export const ENGINE_NAMES: Record<string, string> = {
@@ -56,3 +60,5 @@ export const ENGINE_NAMES: Record<string, string> = {
 export function envColor(env: string | null | undefined): string {
   return env === "production" ? "var(--env-production)" : env === "staging" ? "var(--env-staging)" : "var(--env-local)";
 }
+/** Rose for production, amber for staging; local gets no chrome of its own. */
+export const isCareful = (env: string | null | undefined) => env === "production" || env === "staging";

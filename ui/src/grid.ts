@@ -1,6 +1,6 @@
 import { api, show, type Summary, type Val } from "./api";
 
-const ROW_H = 26, PAGE = 200, MIN_W = 72, GUTTER = 48;
+const ROW_H = 30, PAGE = 200, MIN_W = 80, GUTTER = 52;
 
 type Kind = "num" | "text" | "time" | "bool" | "json";
 /** Rough value family of a column, from its declared type. Drives alignment, width and the header glyph. */
@@ -13,7 +13,8 @@ function kindOf(type: string): Kind {
   return "text";
 }
 const GLYPH: Record<Kind, string> = { num: "#", text: "Aa", time: "◷", bool: "◐", json: "{}" };
-const WIDTH: Record<Kind, number> = { num: 96, text: 170, time: 172, bool: 84, json: 200 };
+const WIDTH: Record<Kind, number> = { num: 104, text: 190, time: 188, bool: 92, json: 220 };
+const GLYPH_COLOR: Record<Kind, string> = { num: "var(--num)", text: "var(--muted)", time: "var(--date)", bool: "var(--ok)", json: "var(--tok-type)" };
 
 /** Virtualized result grid: only visible rows are in the DOM; rows load in pages from Rust. */
 export class Grid {
@@ -36,8 +37,9 @@ export class Grid {
   inserted: Val[][] = [];
 
   constructor() {
-    this.el.className = "h-full flex flex-col text-[12.5px] bg-panel";
-    this.head.className = "flex bg-canvas border-b border-line-strong overflow-hidden shrink-0";
+    this.el.className = "h-full flex flex-col text-[13.5px] bg-panel";
+    this.head.className = "flex overflow-hidden shrink-0";
+    this.head.style.cssText = "background:var(--grid-head);border-bottom:1px solid var(--line-strong);height:34px";
     this.body.className = "flex-1 overflow-auto relative";
     this.spacer.style.position = "relative";
     this.rowsLayer.style.position = "absolute";
@@ -131,23 +133,29 @@ export class Grid {
     this.widths = s.columns.map((c) => Math.max(MIN_W, WIDTH[kindOf(c.type_name)], Math.min(260, c.name.length * 8 + 54)));
     const corner = document.createElement("div");
     corner.className = "grid-cell gutter shrink-0";
+    corner.style.height = "34px";
     corner.style.width = GUTTER + "px";
     this.head.append(corner);
     s.columns.forEach((c, i) => {
       const k = kindOf(c.type_name);
       const h = document.createElement("div");
-      h.className = "grid-cell font-medium text-ink shrink-0 flex items-center gap-1.5";
+      h.className = "grid-cell shrink-0 flex items-center gap-1.5";
+      h.style.cssText = "height:34px;line-height:34px;font-weight:600;font-size:13px;color:var(--soft)";
       h.style.width = this.widths[i] + "px";
       h.style.justifyContent = k === "num" ? "flex-end" : "flex-start";
       h.title = `${c.name}  ${c.type_name}`;
-      h.innerHTML = `<span class="text-muted font-normal" style="font-size:10.5px;font-family:var(--font-mono)">${GLYPH[k]}</span><span class="truncate"></span>`;
+      h.innerHTML = `<span style="font-size:11px;font-weight:500;font-family:var(--font-mono);color:${GLYPH_COLOR[k]}">${GLYPH[k]}</span><span class="truncate"></span>`;
       (h.lastElementChild as HTMLElement).textContent = c.name;
       this.head.append(h);
     });
+    const fill = document.createElement("div");
+    fill.className = "flex-1";
+    fill.style.minWidth = "0";
+    this.head.append(fill);
     const total = this.widths.reduce((a, b) => a + b, 0) + GUTTER;
     this.resize();
-    this.spacer.style.width = total + "px";
-    this.rowsLayer.style.width = total + "px";
+    this.spacer.style.width = "100%"; this.spacer.style.minWidth = total + "px";
+    this.rowsLayer.style.width = "100%"; this.rowsLayer.style.minWidth = total + "px";
     this.render();
   }
 
@@ -165,10 +173,15 @@ export class Grid {
       const div = document.createElement("div");
       const gone = this.deleted.has(r);
       const selected = r === this.sel;
-      div.className = "flex " + (gone ? "bg-danger-soft line-through text-muted " : isNew ? "bg-ok-soft " : selected ? "bg-accent-soft " : r % 2 ? "bg-canvas/50 " : "") + (selected || gone || isNew ? "" : "hover:bg-accent-soft/60");
+      div.className = "flex " + (gone ? "line-through " : "");
+      div.style.height = ROW_H + "px";
+      div.style.background = gone ? "var(--del-soft)" : isNew ? "var(--new-soft)" : selected ? "var(--sel)" : r % 2 ? "var(--stripe)" : "";
+      if (!gone && !isNew && !selected) { div.onmouseenter = () => (div.style.background = "var(--row-hover)"); div.onmouseleave = () => (div.style.background = r % 2 ? "var(--stripe)" : ""); }
       div.onclick = () => { this.sel = r; this.render(); };
       const g = document.createElement("div");
-      g.className = "grid-cell gutter shrink-0 mono text-[11px]";
+      g.className = "grid-cell gutter shrink-0";
+      g.style.fontVariantNumeric = "tabular-nums";
+      g.style.padding = "0 10px";
       g.style.width = GUTTER + "px";
       g.textContent = isNew ? "new" : String(r + 1);
       div.append(g);
@@ -178,18 +191,19 @@ export class Grid {
         c.style.width = this.widths[i] + "px";
         const edited = this.edits.get(r)?.get(i);
         const v = edited ?? row?.[i];
-        if (edited) c.classList.add("bg-warn-soft");
+        if (edited) { c.style.background = "var(--edit-soft)"; c.style.boxShadow = "inset 2px 0 0 var(--warn)"; }
         c.ondblclick = () => this.startEdit(r, i, c);
         if (v) {
           const k = kindOf(col.type_name);
-          if (v.t === "Null") c.innerHTML = '<span class="null-chip">NULL</span>';
+          if (v.t === "Null") c.innerHTML = '<span class="v-null">null</span>';
           else if (v.t === "Bool" || (k === "bool" && (v.t === "I64" || v.t === "Text"))) {
             const on = v.t === "Bool" ? v.v : v.v === 1 || v.v === "1" || v.v === "true";
-            c.innerHTML = `<span style="color:${on ? "var(--ok)" : "var(--muted)"}">${on ? "● true" : "○ false"}</span>`;
+            c.innerHTML = `<span style="color:${on ? "var(--ok)" : "var(--muted)"}">${on ? "●" : "○"} ${on ? "true" : "false"}</span>`;
           } else {
             c.textContent = show(v);
-            if (k === "num" || v.t === "I64" || v.t === "F64") { c.style.textAlign = "right"; c.classList.add("mono"); }
-            else if (k === "time" || k === "json") c.classList.add("mono");
+            if (k === "num" || v.t === "I64" || v.t === "F64") c.classList.add("v-num");
+            else if (k === "time") c.classList.add("v-date");
+            else if (k === "json") c.classList.add("v-soft");
             c.title = c.textContent ?? "";
           }
         }

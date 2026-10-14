@@ -38,14 +38,14 @@ const EXT: Record<ExportFormat, string> = { csv: "csv", tsv: "tsv", json: "json"
 export function showExport(connId: number, sql: string, suggestedName: string, status: (s: string) => void) {
   const m = modal(`
     <div class="px-4 py-2 border-b border-line-strong font-semibold">Export</div>
-    <div id="body" class="p-4 flex flex-col gap-3 text-[12.5px] overflow-auto">
+    <div id="body" class="p-4 flex flex-col gap-3 text-[13.5px] overflow-auto">
       <div class="flex gap-4 flex-wrap" id="fmts">
         ${(["csv", "tsv", "json", "jsonl", "sql"] as ExportFormat[]).map((f, i) => `<label class="flex items-center gap-1"><input type="radio" name="fmt" value="${f}" ${i === 0 ? "checked" : ""}/>${({ csv: "CSV", tsv: "TSV", json: "JSON", jsonl: "JSON Lines", sql: "SQL INSERTs" })[f]}</label>`).join("")}
       </div>
       <label class="flex items-center gap-2"><input type="checkbox" id="hdr" checked/> Include column names (CSV / TSV)</label>
       <label class="flex items-center gap-2">CSV delimiter <input id="delim" class="${field} w-14" maxlength="1" value=","/></label>
       <div class="text-muted">Source</div>
-      <pre class="mono text-[11px] bg-panel rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap select-text">${esc(sql)}</pre>
+      <pre class="mono text-[12px] bg-panel rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap select-text">${esc(sql)}</pre>
       <div class="flex justify-end gap-2"><button id="x" class="px-3 py-1 rounded hover:bg-raised2">Close</button>
       <button id="go" class="px-3 py-1 rounded btn-primary">Export…</button></div>
     </div>`);
@@ -75,8 +75,8 @@ export async function showImport(connId: number, objects: ObjectRef[], currentTa
   try { prev = await api.importPreview(path, header); } catch (e) { done("Cannot read file: " + e); return; }
 
   const m = modal(`
-    <div class="px-4 py-2 border-b border-line-strong font-semibold">Import <span class="font-normal text-soft mono text-[11px]">${esc(path.split("/").pop()!)}</span></div>
-    <div id="body" class="p-4 flex flex-col gap-3 text-[12.5px] overflow-auto">
+    <div class="px-4 py-2 border-b border-line-strong font-semibold">Import <span class="font-normal text-soft mono text-[12px]">${esc(path.split("/").pop()!)}</span></div>
+    <div id="body" class="p-4 flex flex-col gap-3 text-[13.5px] overflow-auto">
       <div class="flex gap-4 items-center flex-wrap">
         <label class="flex items-center gap-1"><input type="checkbox" id="hdr" checked/> First row is a header</label>
         <label class="flex items-center gap-1"><input type="checkbox" id="empty" checked/> Empty values → NULL</label>
@@ -106,7 +106,7 @@ export async function showImport(connId: number, objects: ObjectRef[], currentTa
     const creating = sel.value === "__new";
     m.q("#newname").classList.toggle("hidden", !creating);
     const opts = (cur: string | null) => `<option value="">— skip —</option>` + targetCols.map((c) => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("");
-    m.q("#map").innerHTML = `<table class="w-full text-[12px]"><thead class="bg-panel text-soft"><tr><th class="text-left px-2 py-1">File column</th><th class="text-left px-2">Sample</th><th class="text-left px-2">${creating ? "New column name" : "Table column"}</th></tr></thead><tbody>` +
+    m.q("#map").innerHTML = `<table class="w-full text-[13px]"><thead class="bg-panel text-soft"><tr><th class="text-left px-2 py-1">File column</th><th class="text-left px-2">Sample</th><th class="text-left px-2">${creating ? "New column name" : "Table column"}</th></tr></thead><tbody>` +
       prev.headers.map((h, i) => `<tr class="border-t border-line"><td class="px-2 py-1 mono">${esc(h)} <span class="text-muted">${prev.types[i] ?? ""}</span></td>
         <td class="px-2 text-soft mono truncate max-w-48">${esc((prev.sample.slice(0, 3).map((r) => r[i] ?? "NULL")).join(" · "))}</td>
         <td class="px-2">${creating ? `<input data-i="${i}" value="${esc(mapping[i] ?? h)}" class="${field} w-full"/>` : `<select data-i="${i}" class="${field} w-full">${opts(mapping[i] ?? null)}</select>`}</td></tr>`).join("") + "</tbody></table>";

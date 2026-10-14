@@ -10,13 +10,13 @@ export function showTablePlusImport(entries: TpEntry[]): Promise<boolean> {
     const supported = entries.filter((e) => e.kind);
     const m = modal(`
       <div class="px-5 pt-4 pb-3 border-b border-line">
-        <div class="text-[15px] font-semibold">Import from TablePlus</div>
+        <div class="text-[16px] font-semibold">Import from TablePlus</div>
         <div class="text-soft mt-0.5">${entries.length} connection${entries.length === 1 ? "" : "s"} found on this Mac. Choose the ones to bring over.</div>
       </div>
       <div id="list" class="overflow-auto flex-1 py-1"></div>
       <div class="px-5 py-3 border-t border-line flex flex-col gap-2">
         <label class="flex items-start gap-2"><input id="pw" type="checkbox" class="mt-0.5" checked/>
-          <span>Copy saved passwords from the macOS Keychain<br/><span class="text-muted text-[12px]">macOS asks for permission once per connection. Choose Allow, or skip this and enter passwords the first time you connect.</span></span></label>
+          <span>Copy saved passwords from the macOS Keychain<br/><span class="text-muted text-[13px]">macOS asks for permission once per connection. Choose Allow, or skip this and enter passwords the first time you connect.</span></span></label>
         <div class="flex items-center gap-2 mt-1">
           <button id="all" class="btn btn-ghost">Select all</button>
           <span class="flex-1"></span>
@@ -35,8 +35,8 @@ export function showTablePlusImport(entries: TpEntry[]): Promise<boolean> {
           <input type="checkbox" data-id="${e.id}" ${checked.has(e.id) ? "checked" : ""} ${off ? "disabled" : ""}/>
           ${engineBadge(e.kind, 28)}
           <span class="min-w-0 flex-1"><span class="block font-medium truncate">${esc(e.name)}</span>
-            <span class="block mono text-[11.5px] text-muted truncate">${esc(where(e) || ENGINE_NAMES[e.kind ?? ""] || e.driver)}</span></span>
-          <span class="text-[11.5px] text-muted shrink-0 text-right">${note}</span></label>`;
+            <span class="block mono text-[12.5px] text-muted truncate">${esc(where(e) || ENGINE_NAMES[e.kind ?? ""] || e.driver)}</span></span>
+          <span class="text-[12.5px] text-muted shrink-0 text-right">${note}</span></label>`;
       }).join("");
       list.querySelectorAll<HTMLInputElement>("input[data-id]").forEach((i) => (i.onchange = () => { i.checked ? checked.add(i.dataset.id!) : checked.delete(i.dataset.id!); sync(); }));
       sync();

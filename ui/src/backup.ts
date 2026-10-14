@@ -16,7 +16,7 @@ export function showBackup(connId: number, connName: string, dbName: string, obj
   const label = (t: ObjectRef) => (t.schema && t.schema !== "public" ? t.schema + "." : "") + t.name;
   const m = modal(`
     <div class="px-5 pt-4 pb-3 border-b border-line">
-      <div class="text-[15px] font-semibold">Back up ${esc(dbName)}</div>
+      <div class="text-[16px] font-semibold">Back up ${esc(dbName)}</div>
       <div class="text-soft mt-0.5">${esc(connName)} · saved as a SQL script you can restore anywhere.</div>
     </div>
     <div id="body" class="flex flex-col min-h-0">
@@ -28,7 +28,7 @@ export function showBackup(connId: number, connName: string, dbName: string, obj
         <label class="flex items-center gap-2"><input id="o-data" type="checkbox" checked/> Data</label>
         <label class="flex items-center gap-2"><input id="o-views" type="checkbox" checked/> Views</label>
         <label class="flex items-center gap-2"><input id="o-gzip" type="checkbox" checked/> Compress (.gz)</label>
-        <label class="flex items-center gap-2" style="grid-column:1/3"><input id="o-drop" type="checkbox"/> Add <span class="mono text-[12px]">DROP TABLE IF EXISTS</span> before each table <span class="text-muted">(replaces tables when restoring)</span></label>
+        <label class="flex items-center gap-2" style="grid-column:1/3"><input id="o-drop" type="checkbox"/> Add <span class="mono text-[13px]">DROP TABLE IF EXISTS</span> before each table <span class="text-muted">(replaces tables when restoring)</span></label>
       </div>
       <div id="msg" class="px-5 text-danger min-h-4"></div>
       <div class="px-5 py-3 border-t border-line flex justify-end gap-2"><button id="x" class="btn btn-ghost">Cancel</button><button id="go" class="btn btn-primary">${icon("archive", 14)}<span>Back up…</span></button></div>
@@ -82,15 +82,15 @@ export async function showRestore(connId: number, connName: string, dbName: stri
   const prod = env === "production";
   const m = modal(`
     <div class="px-5 pt-4 pb-3 border-b border-line">
-      <div class="text-[15px] font-semibold">Restore a backup</div>
-      <div class="text-soft mt-0.5 mono text-[12px] truncate" title="${esc(path)}">${esc(path.split("/").pop() ?? path)}</div>
+      <div class="text-[16px] font-semibold">Restore a backup</div>
+      <div class="text-soft mt-0.5 mono text-[13px] truncate" title="${esc(path)}">${esc(path.split("/").pop() ?? path)}</div>
     </div>
     <div id="body" class="px-5 py-4 flex flex-col gap-3">
       <div class="rounded-lg px-3 py-2.5 ${prod ? "bg-danger-soft" : "bg-warn-soft"}" style="box-shadow: inset 3px 0 0 ${prod ? "var(--danger)" : "var(--warn)"}">
         <div class="font-medium">${prod ? "This is a production database." : "This changes the database."}</div>
-        <div class="text-soft text-[12.5px]">The script runs against <b>${esc(dbName || connName)}</b> on ${esc(connName)}. Statements in it can create, replace or delete tables and data.</div>
+        <div class="text-soft text-[13.5px]">The script runs against <b>${esc(dbName || connName)}</b> on ${esc(connName)}. Statements in it can create, replace or delete tables and data.</div>
       </div>
-      <label class="flex items-start gap-2"><input id="keep" type="checkbox" class="mt-0.5"/><span>Keep going after errors<br/><span class="text-muted text-[12px]">Off by default: the restore stops at the first failing statement and tells you which one.</span></span></label>
+      <label class="flex items-start gap-2"><input id="keep" type="checkbox" class="mt-0.5"/><span>Keep going after errors<br/><span class="text-muted text-[13px]">Off by default: the restore stops at the first failing statement and tells you which one.</span></span></label>
       ${prod ? `<label class="flex items-start gap-2"><input id="ack" type="checkbox" class="mt-0.5"/><span>I understand this will change the production database.</span></label>` : ""}
       <div class="flex justify-end gap-2 mt-1"><button id="x" class="btn btn-ghost">Cancel</button><button id="go" class="btn btn-primary" ${prod ? "disabled" : ""}>${icon("restore", 14)}<span>Restore</span></button></div>
     </div>`, 520);
@@ -113,8 +113,8 @@ export async function showRestore(connId: number, connName: string, dbName: stri
       un();
       if (!r.failed) { done(`Restored: ${r.statements.toLocaleString()} statements${r.copied_rows ? `, ${r.copied_rows.toLocaleString()} rows copied` : ""}.`); m.close(); return; }
       m.q("#body").innerHTML = `<div class="flex flex-col gap-2"><div class="font-medium text-warn">Finished with ${r.failed} error${r.failed === 1 ? "" : "s"} in ${r.statements.toLocaleString()} statements.</div>
-        <div class="overflow-auto rounded-lg border border-line" style="max-height:240px">${r.errors.map(([s, e]) => `<div class="px-3 py-2 border-b border-line last:border-b-0"><div class="mono text-[11.5px] text-muted truncate" title="${esc(s)}">${esc(s)}</div><div class="text-danger text-[12.5px]">${esc(e)}</div></div>`).join("")}</div>
-        ${r.failed > r.errors.length ? `<div class="text-muted text-[12px]">Showing the first ${r.errors.length}.</div>` : ""}
+        <div class="overflow-auto rounded-lg border border-line" style="max-height:240px">${r.errors.map(([s, e]) => `<div class="px-3 py-2 border-b border-line last:border-b-0"><div class="mono text-[12.5px] text-muted truncate" title="${esc(s)}">${esc(s)}</div><div class="text-danger text-[13.5px]">${esc(e)}</div></div>`).join("")}</div>
+        ${r.failed > r.errors.length ? `<div class="text-muted text-[13px]">Showing the first ${r.errors.length}.</div>` : ""}
         <div class="flex justify-end"><button id="ok" class="btn btn-primary">Done</button></div></div>`;
       m.q("#ok").onclick = () => { m.close(); done(`Restore finished with ${r.failed} error${r.failed === 1 ? "" : "s"}.`); };
     } catch (e) {

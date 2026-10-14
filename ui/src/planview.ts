@@ -12,7 +12,7 @@ export function renderPlan(root: PlanNode, hints: Hint[]): HTMLElement {
   const unit = root.time_ms != null || findAny(root, (n) => n.time_ms != null) ? "ms" : root.cost != null ? "cost" : "rows";
 
   const el = document.createElement("div");
-  el.className = "h-full overflow-auto p-3 text-[12px] flex gap-4";
+  el.className = "h-full overflow-auto p-3 text-[13px] flex gap-4";
   const tree = document.createElement("div");
   tree.className = "flex-1 min-w-0";
   const node = (n: PlanNode, depth: number): string => {
@@ -25,7 +25,7 @@ export function renderPlan(root: PlanNode, hints: Hint[]): HTMLElement {
     return `<div class="${depth ? "ml-5 pl-3 border-l border-line-strong" : ""} my-1.5">
       <div class="rounded border border-line-strong bg-raised px-2 py-1.5 inline-block min-w-64 max-w-full">
         <div class="flex gap-2 items-baseline"><b class="text-ink">${esc(n.op)}</b>${n.relation ? `<span class="text-accent">${esc(n.relation)}</span>` : ""}<span class="ml-auto text-soft mono">${esc(stats)}</span></div>
-        ${n.detail ? `<div class="text-soft mono text-[11px] break-words">${esc(n.detail)}</div>` : ""}
+        ${n.detail ? `<div class="text-soft mono text-[12px] break-words">${esc(n.detail)}</div>` : ""}
         <div class="h-1 mt-1 rounded bg-raised2"><div class="h-1 rounded ${hot}" style="width:${Math.max(2, share * 100)}%"></div></div>
       </div>
       ${n.children.map((c) => node(c, depth + 1)).join("")}

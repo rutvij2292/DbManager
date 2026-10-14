@@ -27,7 +27,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
         <div id="list" class="flex-1 overflow-auto p-1"></div>
         <button id="new" class="m-2 bg-raised hover:bg-raised2 rounded py-1">+ New connection</button>
       </div>
-      <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[12.5px]">
+      <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[13.5px]">
         <label>Name <input name="name" class="${field}" placeholder="Local Postgres"/></label>
         <label>Type <select name="kind" class="${field}">${KINDS.map((k) => `<option value="${k.id}">${k.label}</option>`).join("")}</select></label>
         <div id="net" class="flex flex-col gap-2 overflow-auto">
@@ -47,7 +47,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
         </div>
         <div id="file" class="hidden flex gap-2 items-end"><label class="flex-1">File <input name="path" class="${field}"/></label>
           <button type="button" id="browse" class="bg-raised2 hover:bg-raised2 rounded px-3 py-1">Browse…</button></div>
-        <div id="msg" class="text-[12px] min-h-4 mt-1"></div>
+        <div id="msg" class="text-[13px] min-h-4 mt-1"></div>
         <div class="mt-auto flex gap-2 justify-end">
           <button type="button" id="del" class="mr-auto text-danger hover:text-danger">Delete</button>
           <button type="button" id="close" class="px-3 py-1 rounded hover:bg-raised2">Close</button>
@@ -61,7 +61,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   const q = <T extends HTMLElement>(s: string) => overlay.querySelector(s) as T;
   const form = q<HTMLFormElement>("#form");
   const el = (n: string) => form.elements.namedItem(n) as HTMLInputElement;
-  const msg = (t: string, bad = false) => { const m = q("#msg"); m.textContent = t; m.className = "text-[12px] min-h-4 mt-1 " + (bad ? "text-danger" : "text-ok"); };
+  const msg = (t: string, bad = false) => { const m = q("#msg"); m.textContent = t; m.className = "text-[13px] min-h-4 mt-1 " + (bad ? "text-danger" : "text-ok"); };
   let current: Profile | null = null;
 
   const kindOf = () => KINDS.find((k) => k.id === el("kind").value)!;
@@ -131,7 +131,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     q("#list").replaceChildren(...list.map((p) => {
       const d = document.createElement("div");
       d.className = "px-2 py-1.5 rounded cursor-default hover:bg-raised " + (p.id === current?.id ? "bg-raised2" : "");
-      d.innerHTML = `<div class="truncate">${p.name.replace(/</g, "&lt;")}</div><div class="text-[10px] text-muted">${p.kind}</div>`;
+      d.innerHTML = `<div class="truncate">${p.name.replace(/</g, "&lt;")}</div><div class="text-[11px] text-muted">${p.kind}</div>`;
       d.onclick = () => { fill(p); refresh(); };
       d.ondblclick = async () => { fill(p); form.requestSubmit(); };
       return d;

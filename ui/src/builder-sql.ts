@@ -32,12 +32,13 @@ export function literal(v: string): string {
   return t !== "" && /^-?\d+(\.\d+)?$/.test(t) ? t : `'${v.replace(/'/g, "''")}'`;
 }
 
-export function buildSql(m: Model, q: Quote): string {
+/** `top` = T-SQL style (`SELECT TOP n`) instead of a trailing LIMIT. */
+export function buildSql(m: Model, q: Quote, top = false): string {
   if (!m.from) return "";
   const aggs = m.cols.some((c) => c.agg) || m.countAll;
   const select: string[] = m.cols.map((c) => (c.agg ? `${c.agg}(${col(q, c.ref)}) AS ${q(`${c.agg.toLowerCase()}_${c.ref.col}`)}` : col(q, c.ref)));
   if (m.countAll) select.push("COUNT(*) AS " + q("count"));
-  const lines = [`SELECT ${m.distinct ? "DISTINCT " : ""}${select.length ? select.join(", ") : "*"}`, `FROM ${tbl(q, m.from)}`];
+  const lines = [`SELECT ${m.distinct ? "DISTINCT " : ""}${top && m.limit ? `TOP ${m.limit} ` : ""}${select.length ? select.join(", ") : "*"}`, `FROM ${tbl(q, m.from)}`];
   for (const j of m.joins) lines.push(`${j.type} JOIN ${tbl(q, j)} ON ${col(q, j.left)} = ${col(q, j.right)}`);
   const where = m.filters
     .map((f) => {
@@ -58,7 +59,7 @@ export function buildSql(m: Model, q: Quote): string {
   const plain = m.cols.filter((c) => !c.agg);
   if (aggs && plain.length) lines.push("GROUP BY " + plain.map((c) => col(q, c.ref)).join(", "));
   if (m.orderBy.length) lines.push("ORDER BY " + m.orderBy.map((o) => `${col(q, o.ref)} ${o.dir}`).join(", "));
-  if (m.limit) lines.push(`LIMIT ${m.limit}`);
+  if (m.limit && !top) lines.push(`LIMIT ${m.limit}`);
   return lines.join("\n") + ";";
 }
 

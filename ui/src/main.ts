@@ -8,7 +8,7 @@ import { lintSql, lintPlan } from "./lint";
 import { renderPlan, hintsPanel } from "./planview";
 import { makeCompletionSource, recordAccepted } from "./complete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { sql, SQLite, PostgreSQL, MySQL } from "@codemirror/lang-sql";
+import { sql, SQLite, PostgreSQL, MySQL, MSSQL } from "@codemirror/lang-sql";
 import { api, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { Grid } from "./grid";
@@ -27,14 +27,14 @@ let tabSeq = 0;
 const sqlLang = new Compartment();
 
 function langFor(c: Conn | null) {
-  const dialect = c?.kind === "sqlite" ? SQLite : c && ["mysql", "mariadb"].includes(c.kind) ? MySQL : PostgreSQL;
+  const dialect = c?.kind === "sqlite" ? SQLite : c?.kind === "mssql" ? MSSQL : c && ["mysql", "mariadb"].includes(c.kind) ? MySQL : PostgreSQL;
   return sql({ dialect, upperCaseKeywords: true });
 }
 
 async function formatEditor(view: EditorView, c: Conn | null) {
   // Loaded on first use to keep startup memory small.
   const { format: formatSql } = await import("sql-formatter");
-  const language = c?.kind === "sqlite" ? "sqlite" : c && ["mysql", "mariadb"].includes(c.kind) ? "mysql" : "postgresql";
+  const language = c?.kind === "sqlite" ? "sqlite" : c?.kind === "mssql" ? "transactsql" : c && ["mysql", "mariadb"].includes(c.kind) ? "mysql" : "postgresql";
   const sel = view.state.selection.main;
   const [from, to] = sel.empty ? [0, view.state.doc.length] : [sel.from, sel.to];
   try {
@@ -135,7 +135,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
   return tab;
 }
 
-const quoteFor = (c: Conn | null) => (c && ["mysql", "mariadb"].includes(c.kind) ? (s: string) => "`" + s.replace(/`/g, "``") + "`" : (s: string) => '"' + s.replace(/"/g, '""') + '"');
+const quoteFor = (c: Conn | null) => (c?.kind === "mssql" ? (s: string) => "[" + s.replace(/]/g, "]]") + "]" : c && ["mysql", "mariadb"].includes(c.kind) ? (s: string) => "`" + s.replace(/`/g, "``") + "`" : (s: string) => '"' + s.replace(/"/g, '""') + '"');
 
 /** ⌘B: toggle the visual query builder above the editor. */
 function toggleBuilder() {
@@ -154,6 +154,7 @@ function toggleBuilder() {
       if (!text) return;
       t.editor!.dispatch({ changes: { from: 0, to: t.editor!.state.doc.length, insert: text } });
     },
+    () => t.conn?.kind === "mssql",
   );
   t.builder.className += " h-[45%] shrink-0";
   t.root.insertBefore(t.builder, t.edWrap);
@@ -374,7 +375,7 @@ function renderObjects() {
     ...(conn?.objects ?? []).filter((o) => o.name.toLowerCase().includes(q)).map((o) => {
       const d = document.createElement("div");
       d.className = "px-2 py-0.5 rounded hover:bg-zinc-800 cursor-default truncate";
-      d.textContent = (o.kind === "view" ? "◇ " : "▦ ") + (o.schema && o.schema !== "public" ? o.schema + "." : "") + o.name;
+      d.textContent = (o.kind === "view" ? "◇ " : o.kind === "key" ? "⚿ " : o.kind === "collection" ? "❒ " : "▦ ") + (o.schema && o.schema !== "public" ? o.schema + "." : "") + o.name;
       d.ondblclick = () => openTable(o.name);
       return d;
     }),

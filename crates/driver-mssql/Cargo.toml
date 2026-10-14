@@ -1,0 +1,12 @@
+[package]
+name = "driver-mssql"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbcore = { path = "../dbcore" }
+async-trait.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tiberius = { version = "0.12", default-features = false, features = ["tds73", "chrono", "rustls"] }
+chrono = "0.4"

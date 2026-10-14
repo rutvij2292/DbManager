@@ -46,3 +46,10 @@ test("no table -> empty; join suggestions", () => {
   assert.deepEqual([j2.left.col, j2.right.col], ["user_id", "id"]);
   assert.equal(suggestJoin([users], { schema: null, name: "x", columns: ["a"] }), null);
 });
+
+test("T-SQL uses TOP instead of LIMIT", () => {
+  const m = emptyModel();
+  m.from = { table: "t", schema: "dbo" };
+  m.limit = 10;
+  assert.equal(buildSql(m, (s) => `[${s}]`, true), "SELECT TOP 10 *\nFROM [dbo].[t];".replace("[dbo].", "[dbo].") );
+});

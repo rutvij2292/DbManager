@@ -136,6 +136,10 @@ pub trait Connection: Send + Sync {
     async fn explain(&self, _sql: &str, _analyze: bool) -> Result<PlanNode> {
         Err(DbError::msg("EXPLAIN is not supported for this driver"))
     }
+    /// Statement that opens a transaction in this dialect.
+    fn begin_sql(&self) -> &'static str {
+        "BEGIN"
+    }
     /// SQL literal for a value in this dialect.
     fn literal(&self, v: &Value) -> String {
         match v {
@@ -150,7 +154,7 @@ pub trait Connection: Send + Sync {
     /// Run statements in one transaction. Each carries the exact affected-row count it must produce
     /// (`None` = don't check); any mismatch or error rolls everything back.
     async fn execute_batch(&self, stmts: &[(String, Option<u64>)]) -> Result<u64> {
-        self.query("BEGIN").await?;
+        self.query(self.begin_sql()).await?;
         let mut total = 0;
         for (sql, expect) in stmts {
             let r = match self.query(sql).await {

@@ -1,0 +1,10 @@
+[package]
+name = "driver-redis"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbcore = { path = "../dbcore" }
+async-trait.workspace = true
+tokio.workspace = true
+redis = { version = "1", default-features = false, features = ["tokio-comp", "tokio-native-tls-comp"] }

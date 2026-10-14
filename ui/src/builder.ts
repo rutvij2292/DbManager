@@ -9,7 +9,7 @@ const tkey = (t: SchemaTable) => `${t.schema ?? ""}.${t.name}`;
  * Visual query builder panel. Pick tables, columns, filters and ordering; every change
  * regenerates the SQL and hands it to `onSql` (the tab's editor).
  */
-export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote, onSql: (sql: string) => void): HTMLElement {
+export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote, onSql: (sql: string) => void, top: () => boolean = () => false): HTMLElement {
   const root = document.createElement("div");
   root.className = "h-full overflow-auto p-2 text-[12px] bg-zinc-950 border-b border-zinc-700";
   let m: Model = emptyModel();
@@ -23,7 +23,7 @@ export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote
   const allRefs = () => used().flatMap((t) => t.columns.map((c) => refOf(t, c)));
   const refFromKey = (k: string) => allRefs().find((r) => refKey(r) === k)!;
 
-  const emit = () => onSql(buildSql(m, quote()));
+  const emit = () => onSql(buildSql(m, quote(), top()));
   const change = () => { emit(); draw(); };
 
   function select(options: [string, string][], value: string, on: (v: string) => void, cls = sel) {

@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use dbcore::{build_dml, Change, ColumnMeta, ConnConfig, Connection, Driver, ObjectInfo, ObjectRef, PlanNode, QueryResult, SchemaTable, Value};
+use driver_mongo::MongoDriver;
+use driver_mssql::MssqlDriver;
 use driver_mysql::MysqlDriver;
 use driver_postgres::PostgresDriver;
+use driver_redis::RedisDriver;
 use driver_sqlite::SqliteDriver;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -87,6 +90,9 @@ async fn open_conn(config: &ConnConfig) -> Result<Arc<dyn Connection>, String> {
         "postgres" | "cockroach" | "redshift" | "greenplum" => PostgresDriver.connect(config).await,
         // MariaDB speaks the MySQL wire protocol.
         "mysql" | "mariadb" => MysqlDriver.connect(config).await,
+        "mssql" => MssqlDriver.connect(config).await,
+        "redis" => RedisDriver.connect(config).await,
+        "mongo" => MongoDriver.connect(config).await,
         k => return Err(format!("driver '{k}' is not implemented yet")),
     }
     .map_err(|e| e.to_string())?;

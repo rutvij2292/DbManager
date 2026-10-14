@@ -22,9 +22,10 @@ import { showConnectionManager } from "./connections";
 import { icon, engineBadge, envColor, ENGINE_NAMES } from "./icons";
 import { applyTheme, currentTheme, esc, toast } from "./ui";
 import { showTablePlusImport } from "./tpimport";
+import { pickDatabase } from "./dbpicker";
 import { Grid } from "./grid";
 
-interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; objects: ObjectRef[]; schema: SchemaTable[] }
+interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[] }
 interface Tab {
   id: number; title: string; kind: "query" | "table";
   conn: Conn | null; table?: string;
@@ -74,6 +75,9 @@ app.innerHTML = `
         <span id="sw-badge"></span>
         <span class="min-w-0 flex-1"><span id="sw-name" class="block font-medium truncate">Not connected</span><span id="sw-sub" class="block text-[11px] text-muted truncate">Choose a connection</span></span>
         <span class="text-muted">${icon("chevronDown", 14)}</span>
+      </button>
+      <button id="dbpick" class="hidden mx-2.5 mb-2 items-center gap-2 rounded-lg px-2.5 h-8 text-left bg-raised hover:bg-raised2" title="Switch database (⌘K)">
+        <span class="text-soft">${icon("database", 14)}</span><span id="dbname" class="flex-1 truncate font-medium"></span><span class="kbd">⌘K</span>
       </button>
       <div class="px-2.5 mb-2 relative">
         <span class="absolute left-5 top-[7px] text-muted pointer-events-none">${icon("search", 14)}</span>
@@ -486,6 +490,11 @@ const collapsed = new Set<string>();
 function renderObjects() {
   const host = $("objects");
   if (!conn) { host.innerHTML = `<div class="px-3 py-6 text-muted text-center">Connect to a database to see its tables.</div>`; return; }
+  if (!conn.db && conn.dbs?.length) {
+    host.innerHTML = `<div class="px-4 py-8 text-center"><div class="text-soft mb-3">This connection isn’t tied to a database yet.</div><button id="pickempty" class="btn btn-primary">Choose a database</button></div>`;
+    (host.querySelector("#pickempty") as HTMLElement).onclick = () => openDatabasePicker();
+    return;
+  }
   const q = $<HTMLInputElement>("filter").value.toLowerCase();
   const items = conn.objects.filter((o) => o.name.toLowerCase().includes(q));
   const groups: [string, string, string][] = [["table", "Tables", "table"], ["view", "Views", "view"], ["collection", "Collections", "collection"], ["key", "Keys", "key"]];
@@ -521,12 +530,41 @@ function paintSwitcher() {
   $("sw-sub").textContent = conn ? (conn.sub || ENGINE_NAMES[conn.kind] || conn.kind) : "Choose a connection";
   $("sw-sub").style.color = conn?.env === "production" ? "var(--env-production)" : "";
   $("switch").style.boxShadow = conn ? `inset 3px 0 0 ${envColor(conn.env)}` : "none";
+  const row = $("dbpick");
+  const show = !!conn?.dbs?.length;
+  row.style.display = show ? "flex" : "none";
+  $("dbname").textContent = conn?.db ?? "Choose a database";
+  $("dbname").style.color = conn?.db ? "" : "var(--muted)";
+}
+
+/** Open the database list for the current connection; switching reopens it against the chosen database. */
+async function openDatabasePicker() {
+  const c = conn;
+  if (!c?.dbs?.length) return;
+  const chosen = await pickDatabase(c.dbs, c.db);
+  if (!chosen || chosen === c.db) return;
+  try {
+    await api.switchDatabase(c.id, chosen);
+    c.db = chosen;
+    c.schema = [];
+    paintSwitcher();
+    await refreshObjects();
+    api.schemaMap(c.id).then((m) => {
+      c.schema = m;
+      for (const t of tabs) if (t.editor && t.conn === c) t.editor.dispatch({ effects: sqlLang.reconfigure(langFor(c)) });
+    }).catch(() => {});
+    if (!tabs.length) makeTab("query", "Query"); else if (!active) activate(tabs[0]);
+    toast(`Now using ${chosen}`, "ok");
+  } catch (e) {
+    toast(`Couldn't open ${chosen}: ${e}`, "error");
+  }
 }
 
 async function useConnection(id: number, p: { name: string; kind: string; environment?: string | null; host?: string | null; port?: number | null; database?: string | null; path?: string | null }) {
   const where = p.path ?? [p.host, p.port && `:${p.port}`].filter(Boolean).join("");
-  const c: Conn = { id, name: p.name, kind: p.kind, env: p.environment, sub: [ENGINE_NAMES[p.kind] ?? p.kind, p.environment === "production" ? "production" : ""].filter(Boolean).join(" · ") || where, objects: [], schema: [] };
+  const c: Conn = { id, name: p.name, kind: p.kind, db: p.database || null, env: p.environment, sub: [ENGINE_NAMES[p.kind] ?? p.kind, p.environment === "production" ? "production" : ""].filter(Boolean).join(" · ") || where, objects: [], schema: [] };
   conn = c;
+  c.dbs = await api.listDatabases(id).catch(() => []);
   paintSwitcher();
   await refreshObjects();
   api.schemaMap(id).then((m) => {
@@ -539,6 +577,8 @@ async function useConnection(id: number, p: { name: string; kind: string; enviro
     }
   }).catch(() => {});
   if (!tabs.length) makeTab("query", "Query"); else if (!active) activate(tabs[0]);
+  // No database in the profile (common for imported connections): let the user pick one now.
+  if (!c.db && c.dbs?.length) openDatabasePicker();
 }
 
 function queryBar(tab: Tab): HTMLElement {
@@ -706,6 +746,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "w") go(() => active && closeTab(active));
   else if (k === "o" || k === "n") go(openConnections);
   else if (k === "p") go(palette);
+  else if (k === "k") go(openDatabasePicker);
   else if (k === "r") go(() => active && reload(active));
   else if (k === "enter") go(runActive);
   else if (k === "e") go(() => explainActive(e.shiftKey));
@@ -732,6 +773,7 @@ $("export").onclick = exportActive;
 $("newtab").onclick = () => makeTab("query", "Query");
 $("open").onclick = openConnections;
 $("switch").onclick = () => { showLauncher(); };
+$("dbpick").onclick = () => openDatabasePicker();
 const paintTheme = () => { $("theme").innerHTML = icon(currentTheme() === "dark" ? "sun" : "moon", 15); };
 const toggleTheme = () => { applyTheme(currentTheme() === "dark" ? "light" : "dark"); paintTheme(); };
 $("theme").onclick = toggleTheme;

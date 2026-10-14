@@ -1,7 +1,7 @@
 use dbcore::{ColumnMeta, Connection, DbError, Result, Value};
 use serde::Deserialize;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -127,6 +127,31 @@ pub async fn export(
     };
     let (mut started, mut total, mut json_rows) = (false, 0u64, 0u64);
     let table = opts.table.clone().unwrap_or_else(|| "export".into());
+
+    // Fast path: let the server write the CSV itself (Postgres COPY). Anything it can't do falls
+    // through to the generic streaming writer below, from a clean file.
+    if opts.format == ExportFormat::Csv {
+        let stop = || cancel.load(Ordering::Relaxed);
+        match conn.native_csv_export(sql, opts.header, delim, &mut w, &stop, progress).await {
+            Ok(Some(n)) => {
+                w.flush().map_err(io)?;
+                progress(n);
+                return Ok(n);
+            }
+            Ok(None) => {}
+            Err(DbError::Cancelled) => {
+                drop(w);
+                let _ = std::fs::remove_file(path);
+                return Err(DbError::Cancelled);
+            }
+            Err(_) => {
+                w.flush().map_err(io)?;
+                let f = w.get_mut();
+                f.set_len(0).map_err(io)?;
+                f.seek(SeekFrom::Start(0)).map_err(io)?;
+            }
+        }
+    }
 
     let res = conn
         .query_batches(sql, opts.batch_rows.max(1), &mut |cols, rows| {

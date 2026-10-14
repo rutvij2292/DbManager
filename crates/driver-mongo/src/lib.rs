@@ -12,6 +12,7 @@ pub struct MongoDriver;
 
 struct MongoConn {
     db: Database,
+    client: Client,
 }
 
 fn enc(s: &str) -> String {
@@ -41,7 +42,7 @@ impl Driver for MongoDriver {
             cfg.port.unwrap_or(27017)
         );
         let client = Client::with_uri_str(uri).await.map_err(DbError::msg)?;
-        Ok(Arc::new(MongoConn { db: client.database(&db) }))
+        Ok(Arc::new(MongoConn { db: client.database(&db), client }))
     }
 }
 
@@ -149,6 +150,11 @@ impl Connection for MongoConn {
     }
     async fn ping(&self) -> Result<()> {
         self.db.run_command(mongodb::bson::doc! { "ping": 1 }).await.map(|_| ()).map_err(DbError::msg)
+    }
+    async fn databases(&self) -> Result<Vec<String>> {
+        let mut names = self.client.list_database_names().await.map_err(DbError::msg)?;
+        names.sort();
+        Ok(names)
     }
     async fn objects(&self) -> Result<Vec<ObjectRef>> {
         let mut names = self.db.list_collection_names().await.map_err(DbError::msg)?;

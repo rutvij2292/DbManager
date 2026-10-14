@@ -80,3 +80,23 @@ async fn live_structure() {
     assert!(col("b").type_name.starts_with("varchar(40)") && !col("b").nullable && col("b").default.as_deref() == Some("x"));
     assert!(d.index_details.iter().any(|i| i.name == "s_child_score") && !d.index_details.iter().any(|i| i.name == "s_child_ab"));
 }
+
+/// The bug: a connection saved without a database (typical for imported TablePlus connections)
+/// showed nothing. It must list the server's databases, and reopening one must expose its tables.
+#[tokio::test]
+#[ignore]
+async fn live_connection_without_database_lists_and_switches() {
+    let port: u16 = std::env::var("LATTICE_MYSQL_PORT").expect("LATTICE_MYSQL_PORT").parse().unwrap();
+    let base = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("root".into()), password: Some("pw".into()), ssl: Some("disable".into()), ..Default::default() };
+    let c = MysqlDriver.connect(&base).await.unwrap();
+    let dbs = c.databases().await.unwrap();
+    assert!(dbs.iter().any(|d| d == "shop") && dbs.iter().any(|d| d == "analytics"), "{dbs:?}");
+    assert!(dbs.iter().any(|d| d == "information_schema"), "system databases are listed too");
+    assert!(c.objects().await.unwrap().is_empty(), "no database selected, so no tables");
+
+    let shop = MysqlDriver.connect(&ConnConfig { database: Some("shop".into()), ..base.clone() }).await.unwrap();
+    let names: Vec<_> = shop.objects().await.unwrap().into_iter().map(|o| o.name).collect();
+    assert_eq!(names, ["customers", "orders"]);
+    let ana = MysqlDriver.connect(&ConnConfig { database: Some("analytics".into()), ..base }).await.unwrap();
+    assert_eq!(ana.objects().await.unwrap()[0].name, "events");
+}

@@ -110,6 +110,37 @@ impl Connection for SqliteConn {
         let _ = producer.await;
         Ok(total)
     }
+    async fn bulk_insert(&self, schema: Option<&str>, table: &str, columns: &[String], rows: &[Vec<Value>]) -> Result<Option<u64>> {
+        let t = match schema.filter(|s| !s.is_empty()) {
+            Some(sc) => format!("{}.{}", quote_ident(sc), quote_ident(table)),
+            None => quote_ident(table),
+        };
+        let sql = format!("INSERT INTO {t} ({}) VALUES ({})", columns.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", "), vec!["?"; columns.len()].join(", "));
+        let (conn, rows) = (self.0.clone(), rows.to_vec());
+        let n = tokio::task::spawn_blocking(move || -> Result<u64> {
+            let mut c = conn.lock().unwrap();
+            let tx = c.transaction().map_err(DbError::msg)?;
+            {
+                let mut stmt = tx.prepare_cached(&sql).map_err(DbError::msg)?;
+                for r in &rows {
+                    let params = r.iter().map(|v| match v {
+                        Value::Null => rusqlite::types::Value::Null,
+                        Value::Bool(b) => rusqlite::types::Value::Integer(*b as i64),
+                        Value::I64(i) => rusqlite::types::Value::Integer(*i),
+                        Value::F64(f) => rusqlite::types::Value::Real(*f),
+                        Value::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                        Value::Bytes(b) => rusqlite::types::Value::Blob(b.clone()),
+                    });
+                    stmt.execute(rusqlite::params_from_iter(params)).map_err(DbError::msg)?;
+                }
+            }
+            tx.commit().map_err(DbError::msg)?;
+            Ok(rows.len() as u64)
+        })
+        .await
+        .map_err(DbError::msg)??;
+        Ok(Some(n))
+    }
     async fn cancel(&self) -> Result<()> {
         self.1.interrupt();
         Ok(())

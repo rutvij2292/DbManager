@@ -144,6 +144,10 @@ impl Connection for MyConn {
         let r = self.query("SELECT table_schema, table_name, IF(table_type = 'VIEW', 'view', 'table') FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name").await?;
         Ok(r.rows.iter().map(|r| ObjectRef { schema: None, name: r[1].display(), kind: r[2].display() }).collect())
     }
+    async fn databases(&self) -> Result<Vec<String>> {
+        let r = self.query("SHOW DATABASES").await?;
+        Ok(r.rows.iter().map(|r| r[0].display()).collect())
+    }
     async fn describe(&self, _schema: Option<&str>, name: &str) -> Result<ObjectInfo> {
         let cols = self.query(&format!("SELECT column_name, column_type, is_nullable, column_default, column_key FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = {} ORDER BY ordinal_position", lit(name))).await?;
         let columns = cols

@@ -5,7 +5,7 @@
 const T = (v: string) => ({ t: "Text", v }), I = (v: number) => ({ t: "I64", v }), F = (v: number) => ({ t: "F64", v }), N = { t: "Null" };
 
 const profiles = [
-  { id: "p1", name: "Shop – local", kind: "mysql", host: "127.0.0.1", port: 3306, user: "root", database: "shop", environment: "local", color: null },
+  { id: "p1", name: "Shop – local", kind: "mysql", host: "127.0.0.1", port: 3306, user: "root", database: null, environment: "local", color: null },
   { id: "p2", name: "Analytics warehouse", kind: "postgres", host: "db.analytics.internal", port: 5432, user: "analyst", database: "warehouse", environment: "staging", color: null, ssh_host: "bastion.example.com" },
   { id: "p3", name: "Billing – production", kind: "postgres", host: "billing-primary.example.com", port: 5432, user: "app_ro", database: "billing", environment: "production", color: null },
   { id: "p4", name: "Session cache", kind: "redis", host: "127.0.0.1", port: 6379, environment: "local", color: null },
@@ -25,13 +25,16 @@ const names = ["Ada Lovelace", "Grace Hopper", "Linus Torvalds", "Margaret Hamil
 const status = ["paid", "pending", "shipped", "refunded"];
 const rows = Array.from({ length: 5000 }, (_, i) => [I(i + 1), I(1 + (i * 7) % 8), T(status[i % 4]), F(Math.round((20 + ((i * 37) % 480)) * 100) / 100), T(`2026-0${1 + (i % 9)}-${10 + (i % 18)} 1${i % 10}:2${i % 6}:00`), i % 3 === 0 ? N : { t: "Bool", v: i % 2 === 0 }]);
 
+let currentDb: string | null = null;
 const handlers: Record<string, (a: any) => unknown> = {
   list_connections: () => profiles,
-  connect_saved: () => 1,
+  connect_saved: (a) => { currentDb = profiles.find((p) => p.id === a.id)?.database ?? null; return 1; },
+  list_databases: () => ["analytics", "information_schema", "mysql", "performance_schema", "shop", "shop_staging", "sys"],
+  switch_database: (a) => { currentDb = a.database; return null; },
   connect: () => 1,
   test_connection: () => null,
-  list_objects: () => tables.map(({ schema, name, kind }) => ({ schema, name, kind })),
-  schema_map: () => tables.map(({ schema, name, columns }) => ({ schema, name, columns })),
+  list_objects: () => (currentDb === "shop" ? tables.map(({ schema, name, kind }) => ({ schema, name, kind })) : []),
+  schema_map: () => (currentDb !== "shop" ? [] : tables).map(({ schema, name, columns }) => ({ schema, name, columns })),
   describe: (a) => {
     const t = tables.find((x) => x.name === a.name) ?? tables[0];
     return {

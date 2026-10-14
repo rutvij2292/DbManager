@@ -22,6 +22,9 @@ const MAX_ROWS: usize = 200_000;
 struct AppState {
     next_id: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<dyn Connection>>>,
+    /// The config each connection was opened with (host/port already point at any SSH tunnel),
+    /// so it can be reopened against a different database.
+    configs: Mutex<HashMap<u64, ConnConfig>>,
     results: Mutex<HashMap<u64, QueryResult>>,
     /// ssh processes keeping tunnels open, keyed by connection id (killed on drop).
     tunnels: Mutex<HashMap<u64, tokio::process::Child>>,
@@ -103,10 +106,10 @@ async fn open_conn(config: &ConnConfig) -> Result<Arc<dyn Connection>, String> {
 }
 
 /// Connect, going through an SSH tunnel when configured. The tunnel handle must be kept alive.
-async fn open_conn_tunneled(mut config: ConnConfig) -> Result<(Arc<dyn Connection>, Option<tokio::process::Child>), String> {
+async fn open_conn_tunneled(mut config: ConnConfig) -> Result<(Arc<dyn Connection>, Option<tokio::process::Child>, ConnConfig), String> {
     let tunnel = open_tunnel(&mut config).await?;
     let conn = open_conn(&config).await?;
-    Ok((conn, tunnel))
+    Ok((conn, tunnel, config))
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -263,13 +266,32 @@ async fn connect_saved(app: tauri::AppHandle, state: State<'_, AppState>, id: St
         kind: p.kind, path: p.path, host: p.host, port: p.port, user: p.user, password, database: p.database,
         ssl: p.ssl, ssh_host: p.ssh_host, ssh_port: p.ssh_port, ssh_user: p.ssh_user, ssh_key: p.ssh_key, socket: p.socket,
     };
-    let (conn, tunnel) = open_conn_tunneled(config).await?;
+    let (conn, tunnel, effective) = open_conn_tunneled(config).await?;
     let cid = state.id();
     state.conns.lock().unwrap().insert(cid, conn);
+    state.configs.lock().unwrap().insert(cid, effective);
     if let Some(t) = tunnel {
         state.tunnels.lock().unwrap().insert(cid, t);
     }
     Ok(cid)
+}
+
+/// Databases available on this connection's server.
+#[tauri::command]
+async fn list_databases(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<String>, String> {
+    state.conn(conn_id)?.databases().await.map_err(|e| e.to_string())
+}
+
+/// Reopen a connection against another database (same id, same tunnel). Tabs that were opened on
+/// the previous database keep their results but new queries run against the new one.
+#[tauri::command]
+async fn switch_database(state: State<'_, AppState>, conn_id: u64, database: String) -> Result<(), String> {
+    let mut config = state.configs.lock().unwrap().get(&conn_id).cloned().ok_or("not connected")?;
+    config.database = Some(database);
+    let conn = open_conn(&config).await?;
+    state.conns.lock().unwrap().insert(conn_id, conn);
+    state.configs.lock().unwrap().insert(conn_id, config);
+    Ok(())
 }
 
 #[tauri::command]
@@ -334,9 +356,10 @@ async fn import_data(app: tauri::AppHandle, state: State<'_, AppState>, conn_id:
 
 #[tauri::command]
 async fn connect(state: State<'_, AppState>, config: ConnConfig) -> Result<u64, String> {
-    let (conn, tunnel) = open_conn_tunneled(config).await?;
+    let (conn, tunnel, effective) = open_conn_tunneled(config).await?;
     let id = state.id();
     state.conns.lock().unwrap().insert(id, conn);
+    state.configs.lock().unwrap().insert(id, effective);
     if let Some(t) = tunnel {
         state.tunnels.lock().unwrap().insert(id, t);
     }
@@ -346,6 +369,7 @@ async fn connect(state: State<'_, AppState>, config: ConnConfig) -> Result<u64, 
 #[tauri::command]
 fn disconnect(state: State<'_, AppState>, conn_id: u64) {
     state.conns.lock().unwrap().remove(&conn_id);
+    state.configs.lock().unwrap().remove(&conn_id);
     state.tunnels.lock().unwrap().remove(&conn_id); // kill_on_drop closes the tunnel
 }
 
@@ -451,7 +475,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

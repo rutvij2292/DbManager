@@ -119,6 +119,10 @@ impl Connection for MsConn {
         let r = self.query("SELECT TABLE_SCHEMA, TABLE_NAME, CASE TABLE_TYPE WHEN 'VIEW' THEN 'view' ELSE 'table' END FROM INFORMATION_SCHEMA.TABLES ORDER BY 1, 2").await?;
         Ok(r.rows.iter().map(|r| ObjectRef { schema: Some(r[0].display()), name: r[1].display(), kind: r[2].display() }).collect())
     }
+    async fn databases(&self) -> Result<Vec<String>> {
+        let r = self.query("SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1 ORDER BY name").await?;
+        Ok(r.rows.iter().map(|r| r[0].display()).collect())
+    }
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo> {
         let schema = schema.unwrap_or("dbo");
         let cols = self.query(&format!(

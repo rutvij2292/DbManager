@@ -38,9 +38,8 @@ async fn connect_client(cfg: &ConnConfig) -> Result<(Client, Option<MakeTlsConne
     if let Some(p) = &cfg.password {
         c.password(p);
     }
-    if let Some(d) = &cfg.database {
-        c.dbname(d);
-    }
+    // Without a database tokio-postgres would try one named after the user, which often doesn't exist.
+    c.dbname(cfg.database.as_deref().filter(|d| !d.is_empty()).unwrap_or("postgres"));
     c.connect_timeout(std::time::Duration::from_secs(10));
     let mode = cfg.ssl.as_deref().unwrap_or("prefer");
     let tls = || -> Result<MakeTlsConnector> {
@@ -156,6 +155,81 @@ impl Connection for PgConn {
         let _ = client.batch_execute("ROLLBACK").await;
         Ok(total)
     }
+    async fn bulk_insert(&self, schema: Option<&str>, table: &str, columns: &[String], rows: &[Vec<Value>]) -> Result<Option<u64>> {
+        use futures_util::SinkExt;
+        let t = match schema.filter(|s| !s.is_empty()) {
+            Some(sc) => format!("{}.{}", self.quote(sc), self.quote(table)),
+            None => self.quote(table),
+        };
+        let stmt = format!("COPY {t} ({}) FROM STDIN WITH (FORMAT text)", columns.iter().map(|c| self.quote(c)).collect::<Vec<_>>().join(", "));
+        // COPY text format: tab-separated, \N for NULL, backslash escapes.
+        let mut buf = String::with_capacity(rows.len() * 64);
+        for r in rows {
+            for (i, v) in r.iter().enumerate() {
+                if i > 0 {
+                    buf.push('\t');
+                }
+                match v {
+                    Value::Null => buf.push_str("\\N"),
+                    Value::Bool(b) => buf.push(if *b { 't' } else { 'f' }),
+                    Value::I64(n) => buf.push_str(&n.to_string()),
+                    Value::F64(f) => buf.push_str(&f.to_string()),
+                    Value::Text(s) => {
+                        for ch in s.chars() {
+                            match ch {
+                                '\\' => buf.push_str("\\\\"),
+                                '\t' => buf.push_str("\\t"),
+                                '\n' => buf.push_str("\\n"),
+                                '\r' => buf.push_str("\\r"),
+                                c => buf.push(c),
+                            }
+                        }
+                    }
+                    Value::Bytes(b) => {
+                        buf.push_str("\\\\x");
+                        for x in b {
+                            buf.push_str(&format!("{x:02x}"));
+                        }
+                    }
+                }
+            }
+            buf.push('\n');
+        }
+        let sink = self.0.copy_in::<_, bytes::Bytes>(&stmt).await.map_err(DbError::msg)?;
+        futures_util::pin_mut!(sink);
+        sink.send(bytes::Bytes::from(buf)).await.map_err(DbError::msg)?;
+        let n = sink.finish().await.map_err(DbError::msg)?;
+        Ok(Some(n))
+    }
+    async fn native_csv_export(&self, sql: &str, header: bool, delimiter: char, out: &mut (dyn std::io::Write + Send), cancel: &(dyn Fn() -> bool + Send + Sync), progress: &(dyn Fn(u64) + Send + Sync)) -> Result<Option<u64>> {
+        use futures_util::TryStreamExt;
+        if !delimiter.is_ascii() || delimiter == '"' || delimiter == '\n' || delimiter == '\r' {
+            return Ok(None);
+        }
+        // A private connection: COPY OUT would otherwise block the shared one for its duration.
+        let client = connect_client(&self.2).await?.0;
+        let body = sql.trim().trim_end_matches(';');
+        let stmt = format!("COPY ({body}) TO STDOUT WITH (FORMAT csv, HEADER {}, DELIMITER '{}')", if header { "true" } else { "false" }, delimiter);
+        let stream = client.copy_out(&stmt).await.map_err(DbError::msg)?;
+        futures_util::pin_mut!(stream);
+        // Count records by newlines outside quotes (a doubled quote toggles twice, so it nets out).
+        let (mut rows, mut in_quote) = (0u64, false);
+        while let Some(chunk) = stream.try_next().await.map_err(DbError::msg)? {
+            if cancel() {
+                return Err(DbError::Cancelled);
+            }
+            for &b in chunk.iter() {
+                match b {
+                    b'"' => in_quote = !in_quote,
+                    b'\n' if !in_quote => rows += 1,
+                    _ => {}
+                }
+            }
+            out.write_all(&chunk).map_err(DbError::msg)?;
+            progress(rows.saturating_sub(header as u64));
+        }
+        Ok(Some(rows.saturating_sub(header as u64)))
+    }
     async fn cancel(&self) -> Result<()> {
         let token = self.0.cancel_token();
         match &self.1 {
@@ -170,6 +244,10 @@ impl Connection for PgConn {
     async fn objects(&self) -> Result<Vec<ObjectRef>> {
         let r = self.query("SELECT table_schema, table_name, CASE table_type WHEN 'VIEW' THEN 'view' ELSE 'table' END FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY 1,2").await?;
         Ok(r.rows.iter().map(|r| ObjectRef { schema: Some(r[0].display()), name: r[1].display(), kind: r[2].display() }).collect())
+    }
+    async fn databases(&self) -> Result<Vec<String>> {
+        let r = self.query("SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname").await?;
+        Ok(r.rows.iter().map(|r| r[0].display()).collect())
     }
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo> {
         let schema = schema.unwrap_or("public");

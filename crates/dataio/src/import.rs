@@ -233,11 +233,14 @@ fn sql_type(dialect: &str, t: ColType) -> &'static str {
     }
 }
 
-const ROWS_PER_STATEMENT: usize = 500;
-const STATEMENTS_PER_TRANSACTION: usize = 20;
+/// Rows read and committed together. Large enough to amortise round trips, small enough to bound memory.
+const CHUNK_ROWS: usize = 20_000;
+/// Upper size of one multi-row INSERT when no bulk path exists (stays well under MySQL's 4 MB default packet).
+const STATEMENT_BYTES: usize = 512 * 1024;
 
-/// Import `path` into a table. Rows are inserted 500 per statement, 20 statements per transaction;
-/// a failure reports how many rows were committed before it.
+/// Import `path` into a table in 20,000-row chunks, one transaction each. Uses the driver's bulk path
+/// (Postgres COPY, SQLite prepared statements) when it has one, else byte-sized multi-row INSERTs.
+/// A failure reports how many rows were already committed.
 pub async fn import(conn: &dyn Connection, path: &Path, opts: &ImportOptions, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool) -> Result<ImportReport> {
     let kind = kind_of(path, opts.delimiter)?;
     let mut targets: Vec<(usize, String)> = opts.mapping.iter().enumerate().filter_map(|(i, t)| t.clone().filter(|t| !t.is_empty()).map(|t| (i, t))).collect();
@@ -268,47 +271,66 @@ pub async fn import(conn: &dyn Connection, path: &Path, opts: &ImportOptions, pr
         conn.query(&format!("CREATE TABLE {table} ({cols})")).await?;
     }
 
-    let col_list = targets.iter().map(|(_, n)| conn.quote(n)).collect::<Vec<_>>().join(", ");
-    let make_stmt = |rows: &[Row]| -> (String, Option<u64>) {
-        let values = rows
-            .iter()
-            .map(|r| {
-                let cells = targets.iter().map(|(i, _)| match r.get(*i).cloned().flatten() {
-                    None => Value::Null,
-                    Some(s) if s.is_empty() && opts.empty_as_null => Value::Null,
-                    Some(s) => match types[*i] {
-                        ColType::Integer if opts.create => s.parse().map(Value::I64).unwrap_or(Value::Text(s)),
-                        ColType::Real if opts.create => s.parse().map(Value::F64).unwrap_or(Value::Text(s)),
-                        _ => Value::Text(s),
-                    },
-                });
-                format!("({})", cells.map(|v| conn.literal(&v)).collect::<Vec<_>>().join(", "))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        (format!("INSERT INTO {table} ({col_list}) VALUES {values}"), Some(rows.len() as u64))
+    let col_names: Vec<String> = targets.iter().map(|(_, n)| n.clone()).collect();
+    let col_list = col_names.iter().map(|n| conn.quote(n)).collect::<Vec<_>>().join(", ");
+    let cell_value = |r: &Row, i: usize| -> Value {
+        match r.get(i).cloned().flatten() {
+            None => Value::Null,
+            Some(s) if s.is_empty() && opts.empty_as_null => Value::Null,
+            Some(s) => match types[i] {
+                ColType::Integer if opts.create => s.parse().map(Value::I64).unwrap_or(Value::Text(s)),
+                ColType::Real if opts.create => s.parse().map(Value::F64).unwrap_or(Value::Text(s)),
+                _ => Value::Text(s),
+            },
+        }
     };
+    // SQL Server allows at most 1000 rows in one VALUES list.
+    let max_rows = if conn.dialect() == "mssql" { 1000 } else { 5000 };
+    let schema = opts.schema.as_deref().filter(|s| !s.is_empty());
 
     let mut src = RowSource::open(path, &kind, opts.has_header)?;
-    let (mut pending, mut stmts, mut committed): (Vec<Row>, Vec<(String, Option<u64>)>, u64) = (Vec::new(), Vec::new(), 0);
+    let mut chunk: Vec<Row> = Vec::with_capacity(CHUNK_ROWS);
+    let mut committed = 0u64;
     let fail = |e: DbError, committed: u64| DbError::msg(format!("{e} (import stopped; {committed} rows were already committed)"));
     loop {
         let row = src.next_row()?;
         let done = row.is_none();
         if let Some(r) = row {
-            pending.push(r);
+            chunk.push(r);
         }
-        if pending.len() == ROWS_PER_STATEMENT || (done && !pending.is_empty()) {
-            stmts.push(make_stmt(&pending));
-            pending.clear();
-        }
-        if stmts.len() == STATEMENTS_PER_TRANSACTION || (done && !stmts.is_empty()) {
+        if chunk.len() >= CHUNK_ROWS || (done && !chunk.is_empty()) {
             if cancel.load(Ordering::Relaxed) {
                 return Err(DbError::Cancelled);
             }
-            let n = conn.execute_batch(&stmts).await.map_err(|e| fail(e, committed))?;
+            let values: Vec<Vec<Value>> = chunk.iter().map(|r| targets.iter().map(|(i, _)| cell_value(r, *i)).collect()).collect();
+            let n = match conn.bulk_insert(schema, &opts.table, &col_names, &values).await.map_err(|e| fail(e, committed))? {
+                Some(n) => n,
+                None => {
+                    // No native bulk path: multi-row INSERTs sized by bytes, in one transaction per chunk.
+                    let mut stmts: Vec<(String, Option<u64>)> = Vec::new();
+                    let (mut sql, mut count) = (String::new(), 0u64);
+                    for r in &values {
+                        let tuple = format!("({})", r.iter().map(|v| conn.literal(v)).collect::<Vec<_>>().join(", "));
+                        if count > 0 && (sql.len() + tuple.len() > STATEMENT_BYTES || count as usize >= max_rows) {
+                            stmts.push((std::mem::take(&mut sql), Some(count)));
+                            count = 0;
+                        }
+                        if count == 0 {
+                            sql = format!("INSERT INTO {table} ({col_list}) VALUES ");
+                        } else {
+                            sql.push_str(", ");
+                        }
+                        sql.push_str(&tuple);
+                        count += 1;
+                    }
+                    if count > 0 {
+                        stmts.push((sql, Some(count)));
+                    }
+                    conn.execute_batch(&stmts).await.map_err(|e| fail(e, committed))?
+                }
+            };
             committed += n;
-            stmts.clear();
+            chunk.clear();
             progress(committed);
         }
         if done {

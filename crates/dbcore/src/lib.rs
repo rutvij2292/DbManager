@@ -154,6 +154,10 @@ pub trait Connection: Send + Sync {
     fn dialect(&self) -> &'static str;
     async fn ping(&self) -> Result<()>;
     async fn objects(&self) -> Result<Vec<ObjectRef>>;
+    /// Databases on the server this connection can open (empty when the engine has no such notion).
+    async fn databases(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo>;
     async fn query(&self, sql: &str) -> Result<QueryResult>;
     /// Stream the result of `sql` to `sink` in batches of up to `batch_rows` rows, so exports of
@@ -175,6 +179,17 @@ pub trait Connection: Send + Sync {
             }
         }
         Ok(total)
+    }
+    /// Fast bulk insert (Postgres `COPY`, SQLite prepared statements). Returns the rows inserted, or
+    /// `Ok(None)` when the driver has no faster path than ordinary INSERT statements. Each call is
+    /// its own transaction.
+    async fn bulk_insert(&self, _schema: Option<&str>, _table: &str, _columns: &[String], _rows: &[Vec<Value>]) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    /// Let the server write CSV itself (Postgres `COPY … TO STDOUT`). Returns the data rows written,
+    /// or `Ok(None)` when unsupported. `cancel` is polled between chunks.
+    async fn native_csv_export(&self, _sql: &str, _header: bool, _delimiter: char, _out: &mut (dyn std::io::Write + Send), _cancel: &(dyn Fn() -> bool + Send + Sync), _progress: &(dyn Fn(u64) + Send + Sync)) -> Result<Option<u64>> {
+        Ok(None)
     }
     /// Abort whatever is currently running on this connection (best effort; no-op if idle).
     async fn cancel(&self) -> Result<()> {

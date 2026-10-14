@@ -48,6 +48,8 @@ export const api = {
     invoke<string[]>("apply_structure", { connId, schema, table, changes, preview }),
   tableplusScan: () => invoke<TpEntry[]>("tableplus_scan"),
   tableplusImport: (ids: string[], passwords: boolean) => invoke<{ imported: number; passwords_copied: number; passwords_missing: number }>("tableplus_import", { ids, passwords }),
+  listDatabases: (connId: number) => invoke<string[]>("list_databases", { connId }),
+  switchDatabase: (connId: number, database: string) => invoke<void>("switch_database", { connId, database }),
   runQuery: (connId: number, sql: string) => invoke<Summary>("run_query", { connId, sql }),
   getRows: (queryId: number, offset: number, limit: number) => invoke<Val[][]>("get_rows", { queryId, offset, limit }),
   release: (queryId: number) => invoke<void>("release_query", { queryId }),

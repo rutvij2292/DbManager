@@ -214,8 +214,11 @@ export class Grid {
     input.onblur = () => finish(true);
   }
 
-  async setResult(s: Summary | null) {
-    if (this.summary) api.release(this.summary.query_id);
+  /** The result on show. */
+  get currentSummary() { return this.summary; }
+  /** `release: false` keeps the previous result alive in Rust (the owner still lists it, e.g. run-all results). */
+  async setResult(s: Summary | null, release = true) {
+    if (this.summary && release) api.release(this.summary.query_id);
     this.edits.clear(); this.deleted.clear(); this.inserted = [];
     this.summary = s;
     this.cache.clear();

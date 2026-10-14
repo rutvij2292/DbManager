@@ -5,6 +5,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) ins
 import { open } from "@tauri-apps/plugin-dialog";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
+import { search, searchKeymap } from "@codemirror/search";
 import { autocompletion, completionKeymap, pickedCompletion } from "@codemirror/autocomplete";
 import { createBuilder } from "./builder";
 import { showExport, showImport } from "./io";
@@ -29,6 +30,7 @@ import { createDiagram } from "./diagram";
 import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
 import { formatRows, type CopyFormat } from "./copyfmt";
+import { splitStatements, statementAt } from "./sqlsplit";
 import { loadHistory, addHistory, removeHistory, clearHistory, loadSaved, saveQuery, renameQuery, deleteQuery } from "./qstore";
 import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
 import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
@@ -50,10 +52,12 @@ document.addEventListener("focusin", (e) => {
 interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean; lastTab?: Tab | null; routines?: ObjectRef[]; log?: { at: number; ms: number; sql: string; err?: string }[] }
 /** A saved connection that is currently connected, with the databases opened on it. */
 interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[] }
+/** One statement's outcome from ⌘⇧Enter (run all): a row set (kept in Rust until the next run), a row count, or an error. */
+interface StmtResult { sql: string; summary: Summary | null; affected?: number; ms?: number; error?: string }
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; countSeq?: number;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; countSeq?: number;
 }
 
 /** The current workspace: the database the sidebar last selected or the active tab belongs to. */
@@ -205,13 +209,14 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       state: EditorState.create({
         doc: "",
         extensions: [
-          lineNumbers(), history(), syntaxHighlighting(sqlHighlight), sqlLang.of(langFor(c)),
+          lineNumbers(), history(), search({ top: true }), syntaxHighlighting(sqlHighlight), sqlLang.of(langFor(c)),
           autocompletion({ override: [makeCompletionSource(() => tab.conn?.schema ?? [])], activateOnTyping: true, icons: false }),
           EditorView.updateListener.of((u) => { for (const tr of u.transactions) { const c = tr.annotation(pickedCompletion); if (c) recordAccepted(c.label); } }),
           keymap.of([
             { key: "Mod-Enter", run: () => (runActive(), true) },
+            { key: "Mod-Shift-Enter", run: () => (runActive(true), true) },
             { key: "Mod-i", run: (v) => (formatEditor(v, tab.conn), true) },
-            ...completionKeymap, ...defaultKeymap, ...historyKeymap,
+            ...searchKeymap, ...completionKeymap, ...defaultKeymap, ...historyKeymap,
           ]),
         ],
       }),
@@ -322,6 +327,11 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     root.append(bar);
     if (tab.filterBar) root.append(tab.filterBar.el);
   }
+  if (kind === "query") {
+    tab.resultBar = document.createElement("div");
+    tab.resultBar.className = "hidden shrink-0 px-3 py-1.5 bg-canvas overflow-x-auto";
+    root.append(tab.resultBar);
+  }
   root.append(gridWrap, statusBar);
   tabs.push(tab);
   activate(tab); // also switches the workspace to this tab's connection
@@ -407,6 +417,7 @@ function closeTab(t: Tab) {
   tabs.splice(g, 1);
   t.grid.setResult(null);
   rememberSession(t, true);
+  releaseResults(t);
   t.editor?.destroy();
   if (t.conn && t.conn.lastTab === t) t.conn.lastTab = null;
   if (active === t) {
@@ -597,6 +608,7 @@ async function exec(t: Tab, sqlText: string) {
   if (!t.conn) { t.status.textContent = "Not connected — open a database first (⌘O)"; return; }
   if (t.panel && t.gridWrap) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
   if (t.running) { t.status.textContent = "A query is already running — ⌘. to cancel"; return; }
+  releaseResults(t);
   t.running = true; t.cancelled = false;
   if (t.countBtn) t.countBtn.style.display = "none";
   t.empty?.remove(); t.empty = undefined;
@@ -866,12 +878,9 @@ function currentSql(t: Tab): string {
   const view = t.editor!;
   const sel = view.state.selection.main;
   if (!sel.empty) return view.state.sliceDoc(sel.from, sel.to);
-  // Statement under the cursor (split on ;), falling back to the whole editor.
+  // The statement under the cursor (quote- and comment-aware split on ;), falling back to the whole editor.
   const doc = view.state.doc.toString();
-  const start = doc.lastIndexOf(";", Math.max(0, sel.head - 1)) + 1;
-  const end = doc.indexOf(";", sel.head);
-  const stmt = doc.slice(start, end < 0 ? doc.length : end).trim();
-  return stmt || doc.trim();
+  return statementAt(doc, sel.head)?.text ?? doc.trim();
 }
 
 /** ⌘E: show the query plan with optimizer suggestions; ⌘⇧E also runs the query (EXPLAIN ANALYZE). */
@@ -897,30 +906,134 @@ async function explainActive(analyze: boolean) {
   }
 }
 
-function runActive() {
+/** ⌘↵ runs the selection, or the statement under the cursor; ⌘⇧↵ runs every statement in the selection / editor. */
+function runActive(all = false) {
   const t = active;
   if (!t || t.kind === "diagram") return;
   if (t.kind === "table") return reload(t);
   const view = t.editor!;
   const sel = view.state.selection.main;
-  const text = sel.empty ? view.state.doc.toString() : view.state.sliceDoc(sel.from, sel.to);
+  const text = all ? (sel.empty ? view.state.doc.toString() : view.state.sliceDoc(sel.from, sel.to)) : currentSql(t);
   if (!text.trim()) return;
-  const run = () => {
-    t.baseSql = text; t.sort = detectSort(text); t.grid.sort = t.sort;
-    const started = Date.now();
-    exec(t, text).then(() => { if (t.conn) { addHistory(histKey(t.conn), { sql: text, at: started, ms: t.lastMs ?? Date.now() - started, ok: !t.failed }); if (sideView === "history") renderObjects(); } });
-  };
+  guardRun(t, text).then((ok) => { if (ok) (all ? execAll(t, text) : execOne(t, text)); });
+}
+
+function execOne(t: Tab, text: string) {
+  t.baseSql = text; t.sort = detectSort(text); t.grid.sort = t.sort;
+  const started = Date.now();
+  exec(t, text).then(() => { if (t.conn) { addHistory(histKey(t.conn), { sql: text, at: started, ms: t.lastMs ?? Date.now() - started, ok: !t.failed }); if (sideView === "history") renderObjects(); } });
+}
+
+/** Safety checks before typed SQL runs: read-only refuses writes, protected asks first, destructive statements always ask. */
+async function guardRun(t: Tab, text: string): Promise<boolean> {
   const level = t.conn ? safetyOf(t.conn.server) : "off";
-  if (level === "readonly" && !isReadOnlySql(text)) { toast(`${t.conn!.server.name} is read-only: this statement would change data and was not run.`, "error"); return; }
+  if (level === "readonly" && !isReadOnlySql(text)) { toast(`${t.conn!.server.name} is read-only: this statement would change data and was not run.`, "error"); return false; }
   const d = destructiveKind(text);
   if (!d && level === "protected" && !isReadOnlySql(text)) {
-    confirmDanger({ title: "Run this write on a protected connection?", body: `<b>${esc(t.conn!.server.name)}</b> is protected. This statement changes data or structure.`, confirmLabel: "Run statement", sql: [text.trim().slice(0, 600)] }).then((ok) => ok && run());
-    return;
+    return confirmDanger({ title: "Run this write on a protected connection?", body: `<b>${esc(t.conn!.server.name)}</b> is protected. This changes data or structure.`, confirmLabel: "Run", sql: [text.trim().slice(0, 600)] });
   }
-  if (!d) return run();
-  if (t.conn && (d.kind === "drop" || d.kind === "truncate") && blocked(t.conn.server, d.kind === "drop" ? "DROP statements" : "TRUNCATE")) return;
+  if (!d) return true;
+  if (t.conn && (d.kind === "drop" || d.kind === "truncate") && blocked(t.conn.server, d.kind === "drop" ? "DROP statements" : "TRUNCATE")) return false;
   const what = { drop: "drops an object", truncate: "empties a table", "delete-all": "deletes every row (no WHERE)", "update-all": "changes every row (no WHERE)" }[d.kind];
-  confirmDanger({ title: "Run this statement?", body: `This statement ${what}${t.conn ? ` on <b>${esc(t.conn.db ?? t.conn.name)}</b>` : ""}. It cannot be undone.`, confirmLabel: "Run statement", sql: [d.statement] }).then((ok) => ok && run());
+  return confirmDanger({ title: "Run this statement?", body: `This ${what}${t.conn ? ` on <b>${esc(t.conn.db ?? t.conn.name)}</b>` : ""}. It cannot be undone.`, confirmLabel: "Run statement", sql: [d.statement] });
+}
+
+// ---------- run all statements: one result per statement ----------
+const MAX_KEPT_RESULTS = 12; // row sets stay in Rust until the next run, so keep the number bounded
+
+function releaseResults(t: Tab) {
+  for (const r of t.results ?? []) if (r.summary && r.summary !== t.grid.currentSummary) api.release(r.summary.query_id).catch(() => {});
+  t.results = undefined; t.resultIdx = undefined;
+  t.resultBar?.classList.add("hidden");
+}
+
+async function execAll(t: Tab, text: string) {
+  const c = t.conn;
+  const stmts = splitStatements(text);
+  if (!c || !stmts.length) return;
+  if (stmts.length === 1) return execOne(t, stmts[0].text);
+  if (t.running) { t.status.textContent = "A query is already running — ⌘. to cancel"; return; }
+  releaseResults(t);
+  t.running = true; t.cancelled = false; t.failed = false;
+  t.empty?.remove(); t.empty = undefined;
+  if (t.gridWrap) { t.runBar = document.createElement("div"); t.runBar.className = "running-bar"; t.gridWrap.append(t.runBar); }
+  t.status.classList.remove("text-danger");
+  const results: StmtResult[] = [];
+  const started = Date.now();
+  let kept = 0;
+  for (const [i, st] of stmts.entries()) {
+    t.status.textContent = `Running statement ${i + 1} of ${stmts.length}… (⌘. to cancel)`;
+    const at = Date.now();
+    try {
+      const s = await api.runQuery(c.id, st.text);
+      logSql(c, st.text, s.elapsed_ms);
+      addHistory(histKey(c), { sql: st.text, at, ms: s.elapsed_ms, ok: true });
+      const rows = s.columns.length > 0 && kept < MAX_KEPT_RESULTS;
+      if (rows) kept++; else api.release(s.query_id).catch(() => {});
+      results.push({ sql: st.text, summary: rows ? s : null, affected: s.columns.length ? s.row_count : s.affected ?? 0, ms: s.elapsed_ms });
+    } catch (e) {
+      logSql(c, st.text, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0]);
+      addHistory(histKey(c), { sql: st.text, at, ms: 0, ok: false });
+      results.push({ sql: st.text, summary: null, error: String(e).replace(/^Error:\s*/, "") });
+      t.failed = true;
+      break;
+    }
+    if (t.cancelled) break;
+  }
+  t.running = false; t.runBar?.remove();
+  t.results = results;
+  const firstRows = results.findIndex((r) => r.summary);
+  const failed = results.findIndex((r) => r.error);
+  await showResult(t, failed >= 0 ? failed : firstRows >= 0 ? firstRows : results.length - 1);
+  const done = results.filter((r) => !r.error).length;
+  t.status.textContent = `${done} of ${stmts.length} statements ran · ${((Date.now() - started) / 1000).toFixed(2)} s${t.cancelled ? " · cancelled" : ""}`;
+  t.status.classList.toggle("text-danger", failed >= 0);
+  if (sideView === "history") renderObjects();
+}
+
+/** Show one of the results of the last run-all in the grid (or its message / error). */
+async function showResult(t: Tab, i: number) {
+  const r = t.results?.[i];
+  if (!r || !t.gridWrap) return;
+  t.resultIdx = i;
+  t.baseSql = r.sql; t.sort = []; t.grid.sort = [];
+  if (r.summary) {
+    if (t.panel) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
+    await t.grid.setResult(r.summary, false);
+  } else {
+    await t.grid.setResult(null, false);
+    const el = document.createElement("div");
+    el.className = "h-full overflow-auto p-5";
+    const head = document.createElement("div");
+    head.className = r.error ? "text-danger font-medium mb-2" : "text-soft mb-2";
+    head.textContent = r.error ? "This statement failed" : `${(r.affected ?? 0).toLocaleString()} row${r.affected === 1 ? "" : "s"} affected · ${r.ms} ms`;
+    const pre = document.createElement("pre");
+    pre.className = "mono text-[13px] whitespace-pre-wrap break-words select-text " + (r.error ? "text-danger" : "text-muted");
+    pre.textContent = r.error ?? r.sql;
+    el.append(head, pre);
+    t.panel = el;
+    t.gridWrap.replaceChildren(el);
+  }
+  renderResultBar(t);
+}
+
+function renderResultBar(t: Tab) {
+  const bar = t.resultBar, rs = t.results;
+  if (!bar || !rs || rs.length < 2) { bar?.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  rs.forEach((r, i) => {
+    const b = document.createElement("button");
+    const label = r.error ? "error" : r.summary ? `${(r.affected ?? 0).toLocaleString()} rows` : `${(r.affected ?? 0).toLocaleString()} affected`;
+    b.textContent = `${i + 1} · ${label}`;
+    b.title = r.sql;
+    b.setAttribute("aria-pressed", String(i === t.resultIdx));
+    if (r.error) b.style.color = "var(--danger)";
+    b.onclick = () => showResult(t, i);
+    seg.append(b);
+  });
+  bar.replaceChildren(seg);
 }
 
 function reload(t: Tab) {
@@ -1491,7 +1604,7 @@ function queryBar(tab: Tab): HTMLElement {
   pill.className = "pill ml-auto";
   pill.innerHTML = tab.conn ? `<span style="width:7px;height:7px;border-radius:4px;background:${envColor(tab.conn.env)}"></span>${esc(tab.conn.name)}${tab.conn.db ? `<span class="text-muted"> / ${esc(tab.conn.db)}</span>` : ""}` : "No connection";
   bar.append(
-    b(`${icon("play", 13)}<span>Run</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘↵</span>`, "Run the selection, or the whole editor (⌘Enter)", () => { activate(tab); runActive(); }, "btn btn-primary"),
+    b(`${icon("play", 13)}<span>Run</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘↵</span>`, "Run the selection or the statement under the cursor (⌘Enter). ⌘⇧Enter runs every statement.", () => { activate(tab); runActive(); }, "btn btn-primary"),
     b(`${icon("stop", 13)}<span>Stop</span>`, "Cancel the running query (⌘.)", () => { activate(tab); cancelActive(); }),
     sep(),
     b(`${icon("plan", 14)}<span>Explain</span>`, "Show the query plan and suggestions (⌘E)", () => { activate(tab); explainActive(false); }),
@@ -1764,7 +1877,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "d" && e.shiftKey) go(() => openDiagram(active?.kind === "table" ? active.table : undefined));
   else if (k === "k") go(openDatabasePicker);
   else if (k === "r") go(() => active && reload(active));
-  else if (k === "enter") go(runActive);
+  else if (k === "enter") go(() => runActive(e.shiftKey));
   else if (k === "e") go(() => explainActive(e.shiftKey));
   else if (k === "b") go(toggleBuilder);
   else if (e.key === ".") go(cancelActive);

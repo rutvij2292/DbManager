@@ -175,3 +175,14 @@ body { background: transparent; }
 .split-row { flex: none; height: 9px; cursor: row-resize; position: relative; background: var(--canvas); }
 .split-row::after { content: ""; position: absolute; left: 50%; top: 2px; width: 44px; height: 5px; margin-left: -22px; border-radius: 3px; background: var(--line-strong); transition: background .12s; }
 .split-row:hover::after, .split-row.drag::after { background: var(--accent); }
+
+/* Find & replace panel of the SQL editor */
+.cm-panels { background: var(--canvas); color: var(--ink); }
+.cm-panels-top { border-bottom: 1px solid var(--line); }
+.cm-panel.cm-search { font-size: 13px; padding: 6px 10px; }
+.cm-panel.cm-search input, .cm-panel.cm-search button { font: inherit; }
+.cm-panel.cm-search input.cm-textfield { background: var(--panel); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 6px; padding: 2px 8px; }
+.cm-panel.cm-search button { background: var(--raised); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+.cm-panel.cm-search label { color: var(--soft); }
+.cm-searchMatch { background: color-mix(in srgb, var(--warn) 28%, transparent); }
+.cm-searchMatch.cm-searchMatch-selected { background: color-mix(in srgb, var(--accent) 35%, transparent); }

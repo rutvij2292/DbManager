@@ -117,6 +117,10 @@ const handlers: Record<string, (a: any) => unknown> = {
   run_query_unused: () => ({ query_id: 1, columns: cols.map((name) => ({ name, type_name: name === "id" || name === "customer_id" ? "int" : name === "total" ? "decimal" : name === "placed_at" ? "datetime" : "varchar" })), row_count: rows.length, truncated: false, affected: null, elapsed_ms: 4 }),
   get_rows: (a) => currentRows.slice(a.offset, a.offset + a.limit),
   release_query: () => null,
+  list_routines: () => [{ schema: null, name: "order_total", kind: "function" }, { schema: null, name: "archive_orders", kind: "procedure" }, { schema: null, name: "orders_bi", kind: "trigger" }, { schema: null, name: "nightly_cleanup", kind: "event" }],
+  object_definition: (a) => `CREATE ${a.kind.toUpperCase()} ${a.name} ...;`,
+  set_read_only: () => null,
+  run_statements: () => null,
   explain: () => ({ op: "Query", detail: "", relation: null, est_rows: null, actual_rows: null, cost: null, time_ms: null, children: [
     { op: "Hash Join", detail: "Hash Cond: orders.customer_id = customers.id", relation: null, est_rows: 4800, actual_rows: 5000, cost: 410.2, time_ms: 18.4, children: [
       { op: "Seq Scan", detail: "Filter: status = 'paid'", relation: "orders", est_rows: 5000, actual_rows: 1250, cost: 288.0, time_ms: 11.2, children: [] },

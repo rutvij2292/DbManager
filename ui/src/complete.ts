@@ -16,6 +16,17 @@ const SNIPPETS: Completion[] = [
   snippetCompletion("UPDATE ${table}\nSET ${column} = ${value}\nWHERE ${condition};", { label: "upd", detail: "UPDATE", type: "text" }),
   snippetCompletion("DELETE FROM ${table}\nWHERE ${condition};", { label: "del", detail: "DELETE", type: "text" }),
   snippetCompletion("SELECT ${col}, COUNT(*)\nFROM ${table}\nGROUP BY ${col}\nORDER BY COUNT(*) DESC;", { label: "grp", detail: "group & count", type: "text" }),
+  snippetCompletion("SELECT ${a}.*, ${b}.*\nFROM ${table1} ${a}\nJOIN ${table2} ${b} ON ${b}.${fk} = ${a}.${pk};", { label: "jn", detail: "JOIN two tables", type: "text" }),
+  snippetCompletion("SELECT ${a}.*\nFROM ${table1} ${a}\nLEFT JOIN ${table2} ${b} ON ${b}.${fk} = ${a}.${pk}\nWHERE ${b}.${pk} IS NULL;", { label: "ljn", detail: "rows without a match", type: "text" }),
+  snippetCompletion("WITH ${name} AS (\n  SELECT ${*}\n  FROM ${table}\n)\nSELECT * FROM ${name};", { label: "cte", detail: "WITH … AS", type: "text" }),
+  snippetCompletion("SELECT ${col}, COUNT(*)\nFROM ${table}\nGROUP BY ${col}\nHAVING COUNT(*) > 1;", { label: "dup", detail: "find duplicates", type: "text" }),
+  snippetCompletion("SELECT * FROM ${table}\nORDER BY ${col} DESC\nLIMIT 100;", { label: "top", detail: "latest 100", type: "text" }),
+  snippetCompletion("CASE WHEN ${condition} THEN ${a} ELSE ${b} END", { label: "case", detail: "CASE expression", type: "text" }),
+  snippetCompletion("EXISTS (SELECT 1 FROM ${table} WHERE ${condition})", { label: "ex", detail: "EXISTS", type: "text" }),
+  snippetCompletion("SELECT COUNT(*) - COUNT(${col}) AS nulls FROM ${table};", { label: "nulls", detail: "count NULLs", type: "text" }),
+  snippetCompletion("CREATE TABLE ${name} (\n  id BIGINT PRIMARY KEY,\n  ${col} VARCHAR(255)\n);", { label: "ct", detail: "CREATE TABLE", type: "text" }),
+  snippetCompletion("CREATE INDEX ${name} ON ${table} (${columns});", { label: "idx", detail: "CREATE INDEX", type: "text" }),
+  snippetCompletion("ALTER TABLE ${table} ADD COLUMN ${col} ${type};", { label: "alt", detail: "ADD COLUMN", type: "text" }),
 ];
 
 const usage = (() => {

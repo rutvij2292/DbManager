@@ -26,7 +26,11 @@ export const api = {
   testConnection: (config: ConnConfig) => invoke<void>("test_connection", { config }),
   connectSaved: (id: string) => invoke<number>("connect_saved", { id }),
   schemaMap: (connId: number) => invoke<SchemaTable[]>("schema_map", { connId }),
-  selectAllSql: (connId: number, schema: string | null, name: string) => invoke<string>("select_all_sql", { connId, schema, name }),
+  selectAllSql: (connId: number, schema: string | null, name: string, limit?: number) => invoke<string>("select_all_sql", { connId, schema, name, limit }),
+  exportData: (connId: number, sql: string, path: string, options: ExportOptions, job: number) => invoke<number>("export_data", { connId, sql, path, options, job }),
+  importPreview: (path: string, hasHeader: boolean, delimiter?: string) => invoke<ImportPreview>("import_preview", { path, hasHeader, delimiter }),
+  importData: (connId: number, path: string, options: ImportOptions, job: number) => invoke<{ rows: number; created: boolean }>("import_data", { connId, path, options, job }),
+  cancelIo: (job: number) => invoke<void>("cancel_io", { job }),
   explain: (connId: number, sql: string, analyze: boolean) => invoke<PlanNode>("explain", { connId, sql, analyze }),
   applyChanges: (connId: number, schema: string | null, table: string, changes: Change[], preview: boolean) =>
     invoke<string[]>("apply_changes", { connId, schema, table, changes, preview }),
@@ -43,3 +47,8 @@ export function show(v: Val): string {
     default: return String(v.v);
   }
 }
+
+export type ExportFormat = "csv" | "tsv" | "json" | "jsonl" | "sql";
+export interface ExportOptions { format: ExportFormat; header: boolean; delimiter?: string; table?: string; batch_rows?: number }
+export interface ImportPreview { headers: string[]; sample: (string | null)[][]; types: ("integer" | "real" | "text")[]; delimiter: string; format: string }
+export interface ImportOptions { schema: string | null; table: string; create: boolean; has_header: boolean; delimiter?: string; mapping: (string | null)[]; empty_as_null: boolean }

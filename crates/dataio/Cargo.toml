@@ -1,0 +1,16 @@
+[package]
+name = "dataio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbcore = { path = "../dbcore" }
+serde.workspace = true
+serde_json.workspace = true
+csv = "1"
+
+[dev-dependencies]
+driver-sqlite = { path = "../driver-sqlite" }
+tokio.workspace = true
+driver-postgres = { path = "../driver-postgres" }
+driver-mysql = { path = "../driver-mysql" }

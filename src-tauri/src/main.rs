@@ -13,7 +13,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
 };
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// Hard cap on rows kept per result (the UI pages through them).
 const MAX_ROWS: usize = 200_000;
@@ -25,6 +25,8 @@ struct AppState {
     results: Mutex<HashMap<u64, QueryResult>>,
     /// ssh processes keeping tunnels open, keyed by connection id (killed on drop).
     tunnels: Mutex<HashMap<u64, tokio::process::Child>>,
+    /// Cancel flags of running import/export jobs.
+    jobs: Mutex<HashMap<u64, Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 impl AppState {
@@ -202,8 +204,53 @@ async fn schema_map(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<Sche
 }
 
 #[tauri::command]
-fn select_all_sql(state: State<'_, AppState>, conn_id: u64, schema: Option<String>, name: String) -> Result<String, String> {
-    Ok(state.conn(conn_id)?.select_all(schema.as_deref(), &name, 1000))
+fn select_all_sql(state: State<'_, AppState>, conn_id: u64, schema: Option<String>, name: String, limit: Option<usize>) -> Result<String, String> {
+    Ok(state.conn(conn_id)?.select_all(schema.as_deref(), &name, limit.unwrap_or(1000)))
+}
+
+#[derive(Serialize, Clone)]
+struct IoProgress {
+    job: u64,
+    rows: u64,
+}
+
+fn start_job(state: &AppState, job: u64) -> Arc<std::sync::atomic::AtomicBool> {
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state.jobs.lock().unwrap().insert(job, flag.clone());
+    flag
+}
+
+#[tauri::command]
+fn cancel_io(state: State<'_, AppState>, job: u64) {
+    if let Some(f) = state.jobs.lock().unwrap().get(&job) {
+        f.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Stream a query's full result to a file (no row cap, constant memory).
+#[tauri::command]
+async fn export_data(app: tauri::AppHandle, state: State<'_, AppState>, conn_id: u64, sql: String, path: String, options: dataio::ExportOptions, job: u64) -> Result<u64, String> {
+    let conn = state.conn(conn_id)?;
+    let flag = start_job(&state, job);
+    let a = app.clone();
+    let res = dataio::export(conn.as_ref(), &sql, std::path::Path::new(&path), &options, &move |rows| { let _ = a.emit("io-progress", IoProgress { job, rows }); }, &flag).await;
+    state.jobs.lock().unwrap().remove(&job);
+    res.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_preview(path: String, has_header: bool, delimiter: Option<char>) -> Result<dataio::Preview, String> {
+    dataio::preview(std::path::Path::new(&path), has_header, delimiter).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn import_data(app: tauri::AppHandle, state: State<'_, AppState>, conn_id: u64, path: String, options: dataio::ImportOptions, job: u64) -> Result<dataio::ImportReport, String> {
+    let conn = state.conn(conn_id)?;
+    let flag = start_job(&state, job);
+    let a = app.clone();
+    let res = dataio::import(conn.as_ref(), std::path::Path::new(&path), &options, &move |rows| { let _ = a.emit("io-progress", IoProgress { job, rows }); }, &flag).await;
+    state.jobs.lock().unwrap().remove(&job);
+    res.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -306,7 +353,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

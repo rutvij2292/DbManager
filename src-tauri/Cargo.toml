@@ -1,6 +1,6 @@
 [package]
 name = "lattice"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 [build-dependencies]
@@ -21,3 +21,4 @@ uuid = { version = "1", features = ["v4"] }
 driver-mssql = { path = "../crates/driver-mssql" }
 driver-redis = { path = "../crates/driver-redis" }
 driver-mongo = { path = "../crates/driver-mongo" }
+dataio = { path = "../crates/dataio" }

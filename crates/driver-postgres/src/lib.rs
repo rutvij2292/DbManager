@@ -8,7 +8,7 @@ use postgres_native_tls::MakeTlsConnector;
 /// PostgreSQL-protocol driver (also used for CockroachDB, Redshift, Greenplum).
 pub struct PostgresDriver;
 
-struct PgConn(Client, Option<MakeTlsConnector>);
+struct PgConn(Client, Option<MakeTlsConnector>, ConnConfig);
 
 #[async_trait]
 impl Driver for PostgresDriver {
@@ -16,46 +16,51 @@ impl Driver for PostgresDriver {
         "postgres"
     }
     async fn connect(&self, cfg: &ConnConfig) -> Result<Arc<dyn Connection>> {
-        let mut c = tokio_postgres::Config::new();
-        c.host(cfg.host.as_deref().unwrap_or("127.0.0.1"));
-        c.port(cfg.port.unwrap_or(5432));
-        c.user(cfg.user.as_deref().unwrap_or("postgres"));
-        if let Some(p) = &cfg.password {
-            c.password(p);
-        }
-        if let Some(d) = &cfg.database {
-            c.dbname(d);
-        }
-        c.connect_timeout(std::time::Duration::from_secs(10));
-        let mode = cfg.ssl.as_deref().unwrap_or("prefer");
-        let tls = || -> Result<MakeTlsConnector> {
-            let b = native_tls::TlsConnector::builder()
-                .danger_accept_invalid_certs(mode != "verify")
-                .danger_accept_invalid_hostnames(mode != "verify")
-                .build()
-                .map_err(DbError::msg)?;
-            Ok(MakeTlsConnector::new(b))
-        };
-        let mut used_tls: Option<MakeTlsConnector> = None;
-        let client = match mode {
-            "disable" => plain(&c).await?,
-            "prefer" => match tls() {
-                Ok(t) => match c.connect(t.clone()).await {
-                    Ok((client, conn)) => { spawn_conn(conn); used_tls = Some(t); client }
-                    Err(_) => plain(&c).await?, // server without TLS
-                },
-                Err(_) => plain(&c).await?,
-            },
-            _ => {
-                let t = tls()?;
-                let (client, conn) = c.connect(t.clone()).await.map_err(DbError::msg)?;
-                spawn_conn(conn);
-                used_tls = Some(t);
-                client
-            }
-        };
-        Ok(Arc::new(PgConn(client, used_tls)))
+        let (client, used_tls) = connect_client(cfg).await?;
+        Ok(Arc::new(PgConn(client, used_tls, cfg.clone())))
     }
+}
+
+async fn connect_client(cfg: &ConnConfig) -> Result<(Client, Option<MakeTlsConnector>)> {
+    let mut c = tokio_postgres::Config::new();
+    c.host(cfg.host.as_deref().unwrap_or("127.0.0.1"));
+    c.port(cfg.port.unwrap_or(5432));
+    c.user(cfg.user.as_deref().unwrap_or("postgres"));
+    if let Some(p) = &cfg.password {
+        c.password(p);
+    }
+    if let Some(d) = &cfg.database {
+        c.dbname(d);
+    }
+    c.connect_timeout(std::time::Duration::from_secs(10));
+    let mode = cfg.ssl.as_deref().unwrap_or("prefer");
+    let tls = || -> Result<MakeTlsConnector> {
+        let b = native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(mode != "verify")
+            .danger_accept_invalid_hostnames(mode != "verify")
+            .build()
+            .map_err(DbError::msg)?;
+        Ok(MakeTlsConnector::new(b))
+    };
+    let mut used_tls: Option<MakeTlsConnector> = None;
+    let client = match mode {
+        "disable" => plain(&c).await?,
+        "prefer" => match tls() {
+            Ok(t) => match c.connect(t.clone()).await {
+                Ok((client, conn)) => { spawn_conn(conn); used_tls = Some(t); client }
+                Err(_) => plain(&c).await?, // server without TLS
+            },
+            Err(_) => plain(&c).await?,
+        },
+        _ => {
+            let t = tls()?;
+            let (client, conn) = c.connect(t.clone()).await.map_err(DbError::msg)?;
+            spawn_conn(conn);
+            used_tls = Some(t);
+            client
+        }
+    };
+    Ok((client, used_tls))
 }
 
 fn spawn_conn<S, T>(conn: tokio_postgres::Connection<S, T>)
@@ -92,6 +97,55 @@ fn convert(type_name: &str, v: Option<&str>) -> Value {
 impl Connection for PgConn {
     fn dialect(&self) -> &'static str {
         "postgres"
+    }
+    async fn query_batches(&self, sql: &str, batch_rows: usize, sink: &mut RowSink) -> Result<u64> {
+        // A cursor needs a transaction; use a private connection so other tabs' queries on the
+        // shared client are never pulled into it.
+        let client = connect_client(&self.2).await?.0;
+        client.batch_execute("BEGIN READ ONLY").await.map_err(DbError::msg)?;
+        let body = sql.trim().trim_end_matches(';');
+        client.batch_execute(&format!("DECLARE lattice_export NO SCROLL CURSOR FOR {body}")).await.map_err(DbError::msg)?;
+        // Column types for typed conversion come from a prepare of the same statement.
+        let types: Vec<String> = match client.prepare(body).await {
+            Ok(st) => st.columns().iter().map(|c| c.type_().name().to_string()).collect(),
+            Err(_) => vec![],
+        };
+        let mut total = 0u64;
+        let mut columns: Vec<ColumnMeta> = Vec::new();
+        let mut sent_any = false;
+        loop {
+            let msgs = client.simple_query(&format!("FETCH FORWARD {batch_rows} FROM lattice_export")).await.map_err(DbError::msg)?;
+            let mut rows: Vec<Vec<Value>> = Vec::new();
+            for m in msgs {
+                if let SimpleQueryMessage::Row(row) = m {
+                    if columns.is_empty() {
+                        columns = row.columns().iter().enumerate().map(|(i, c)| ColumnMeta { name: c.name().to_string(), type_name: types.get(i).cloned().unwrap_or_default() }).collect();
+                    }
+                    rows.push((0..row.len()).map(|i| convert(types.get(i).map(String::as_str).unwrap_or(""), row.get(i))).collect());
+                }
+            }
+            if rows.is_empty() {
+                break;
+            }
+            if columns.is_empty() {
+                columns = types.iter().map(|t| ColumnMeta { name: String::new(), type_name: t.clone() }).collect();
+            }
+            total += rows.len() as u64;
+            sent_any = true;
+            let more = sink(&columns, rows)?;
+            if !more {
+                break;
+            }
+        }
+        if !sent_any {
+            // Empty result: still report the column names.
+            if let Ok(st) = client.prepare(body).await {
+                let cols: Vec<ColumnMeta> = st.columns().iter().map(|c| ColumnMeta { name: c.name().to_string(), type_name: c.type_().name().to_string() }).collect();
+                sink(&cols, vec![])?;
+            }
+        }
+        let _ = client.batch_execute("ROLLBACK").await;
+        Ok(total)
     }
     async fn cancel(&self) -> Result<()> {
         let token = self.0.cancel_token();

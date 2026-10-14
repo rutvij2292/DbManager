@@ -10,6 +10,10 @@ pub enum DbError {
     #[error("cancelled")]
     Cancelled,
 }
+/// Receiver of streamed result batches; return `Ok(false)` to stop early.
+/// (Explicit `for<'a>` because `async_trait` would otherwise pin the elided lifetime.)
+pub type RowSink<'s> = dyn for<'a> FnMut(&'a [ColumnMeta], Vec<Vec<Value>>) -> Result<bool> + Send + 's;
+
 pub type Result<T> = std::result::Result<T, DbError>;
 
 impl DbError {
@@ -128,6 +132,26 @@ pub trait Connection: Send + Sync {
     async fn objects(&self) -> Result<Vec<ObjectRef>>;
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo>;
     async fn query(&self, sql: &str) -> Result<QueryResult>;
+    /// Stream the result of `sql` to `sink` in batches of up to `batch_rows` rows, so exports of
+    /// huge tables use constant memory. The sink always sees the columns at least once (even for an
+    /// empty result); returning `Ok(false)` stops early. Returns the number of rows delivered.
+    /// The default buffers the whole result; drivers override it where streaming is possible.
+    async fn query_batches(&self, sql: &str, batch_rows: usize, sink: &mut RowSink) -> Result<u64> {
+        let QueryResult { columns, mut rows, .. } = self.query(sql).await?;
+        let total = rows.len() as u64;
+        if rows.is_empty() {
+            sink(&columns, vec![])?;
+            return Ok(0);
+        }
+        while !rows.is_empty() {
+            let rest = rows.split_off(batch_rows.min(rows.len()));
+            let chunk = std::mem::replace(&mut rows, rest);
+            if !sink(&columns, chunk)? {
+                break;
+            }
+        }
+        Ok(total)
+    }
     /// Abort whatever is currently running on this connection (best effort; no-op if idle).
     async fn cancel(&self) -> Result<()> {
         Err(DbError::msg("cancel is not supported for this driver"))

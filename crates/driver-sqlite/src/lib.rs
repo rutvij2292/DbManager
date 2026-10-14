@@ -61,6 +61,55 @@ impl Connection for SqliteConn {
     fn dialect(&self) -> &'static str {
         "sqlite"
     }
+    async fn query_batches(&self, sql: &str, batch_rows: usize, sink: &mut RowSink) -> Result<u64> {
+        type Msg = Result<(Vec<ColumnMeta>, Vec<Vec<Value>>)>;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(4);
+        let (conn, sql) = (self.0.clone(), sql.to_string());
+        let producer = tokio::task::spawn_blocking(move || {
+            let c = conn.lock().unwrap();
+            let run = || -> Result<()> {
+                let mut stmt = c.prepare(&sql).map_err(DbError::msg)?;
+                let n = stmt.column_count();
+                let columns: Vec<ColumnMeta> = stmt.columns().iter().map(|c| ColumnMeta { name: c.name().to_string(), type_name: c.decl_type().unwrap_or("").to_string() }).collect();
+                let mut rows = stmt.query([]).map_err(DbError::msg)?;
+                let mut batch = Vec::with_capacity(batch_rows);
+                while let Some(row) = rows.next().map_err(DbError::msg)? {
+                    let mut out = Vec::with_capacity(n);
+                    for i in 0..n {
+                        out.push(match row.get_ref(i).map_err(DbError::msg)? {
+                            ValueRef::Null => Value::Null,
+                            ValueRef::Integer(i) => Value::I64(i),
+                            ValueRef::Real(f) => Value::F64(f),
+                            ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+                            ValueRef::Blob(b) => Value::Bytes(b.to_vec()),
+                        });
+                    }
+                    batch.push(out);
+                    if batch.len() >= batch_rows {
+                        if tx.blocking_send(Ok((columns.clone(), std::mem::take(&mut batch)))).is_err() {
+                            return Ok(()); // consumer stopped
+                        }
+                    }
+                }
+                let _ = tx.blocking_send(Ok((columns, batch)));
+                Ok(())
+            };
+            if let Err(e) = run() {
+                let _ = tx.blocking_send(Err(e));
+            }
+        });
+        let mut total = 0u64;
+        while let Some(msg) = rx.recv().await {
+            let (cols, rows) = msg?;
+            total += rows.len() as u64;
+            if !sink(&cols, rows)? {
+                break;
+            }
+        }
+        drop(rx);
+        let _ = producer.await;
+        Ok(total)
+    }
     async fn cancel(&self) -> Result<()> {
         self.1.interrupt();
         Ok(())

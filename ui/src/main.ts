@@ -4,6 +4,7 @@ import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { autocompletion, completionKeymap, pickedCompletion } from "@codemirror/autocomplete";
 import { createBuilder } from "./builder";
+import { showExport, showImport } from "./io";
 import { lintSql, lintPlan } from "./lint";
 import { renderPlan, hintsPanel } from "./planview";
 import { makeCompletionSource, recordAccepted } from "./complete";
@@ -47,6 +48,8 @@ const app = document.getElementById("app")!;
 app.innerHTML = `
   <div class="titlebar h-10 shrink-0 bg-zinc-950 border-b border-zinc-800 flex items-end pl-20 pr-2 gap-1">
     <div id="tabs" class="flex items-end gap-1 overflow-x-auto flex-1"></div>
+    <button id="import" class="mb-1 px-2 text-[12px] text-zinc-400 hover:text-white" title="Import file… (⌘⌥I)">Import</button>
+    <button id="export" class="mb-1 px-2 text-[12px] text-zinc-400 hover:text-white" title="Export result… (⌘⌥E)">Export</button>
     <button id="newtab" class="mb-1 px-2 text-lg text-zinc-400 hover:text-white" title="New tab (⌘T)">+</button>
   </div>
   <div class="flex-1 flex min-h-0">
@@ -431,6 +434,35 @@ function palette() {
   draw();
 }
 
+/** ⌘⌥E: export the active tab's full result (not just the rows on screen) to a file. */
+async function exportActive() {
+  const t = active;
+  if (!t?.conn) return;
+  let sqlText: string;
+  if (t.kind === "table" && t.table) {
+    const o = t.conn.objects.find((x) => x.name === t.table);
+    sqlText = await api.selectAllSql(t.conn.id, o?.schema ?? null, t.table, 2_000_000_000);
+  } else if (t.kind === "query") sqlText = currentSql(t);
+  else return;
+  if (!sqlText.trim()) return;
+  showExport(t.conn.id, sqlText, t.table ?? "export", (m) => { t.status.textContent = m; });
+}
+
+/** ⌘⌥I: import CSV / TSV / JSON into a table. */
+async function importActive() {
+  const c = active?.conn ?? conn;
+  if (!c) return;
+  const t = active;
+  await showImport(c.id, c.objects, t?.kind === "table" ? t.table : undefined,
+    async (o) => (await api.describe(c.id, o.schema, o.name)).columns.map((x) => x.name),
+    async (msg) => {
+      if (t) t.status.textContent = msg;
+      await refreshObjects();
+      // Reload an open table tab that was just imported into.
+      for (const x of tabs) if (x.kind === "table" && x.conn === c && !x.grid.pendingCount) reload(x);
+    });
+}
+
 async function cancelActive() {
   const t = active;
   if (!t?.running || !t.conn) return;
@@ -445,6 +477,9 @@ window.addEventListener("keydown", (e) => {
   if (!e.metaKey) return;
   const k = e.key.toLowerCase();
   const go = (f: () => void) => { e.preventDefault(); f(); };
+  // ⌥ changes e.key on macOS, so match the physical key for the ⌘⌥ combos.
+  if (e.altKey && e.code === "KeyE") return go(exportActive);
+  if (e.altKey && e.code === "KeyI") return go(importActive);
   if (k === "t") go(() => makeTab("query", "Query"));
   else if (k === "w") go(() => active && closeTab(active));
   else if (k === "o" || k === "n") go(openConnections);
@@ -468,6 +503,8 @@ function cycle(d: number) {
   activate(tabs[(tabs.indexOf(active) + d + tabs.length) % tabs.length]);
 }
 
+$("import").onclick = importActive;
+$("export").onclick = exportActive;
 $("newtab").onclick = () => makeTab("query", "Query");
 $("open").onclick = openConnections;
 openConnections();

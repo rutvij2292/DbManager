@@ -171,6 +171,39 @@ impl Connection for MyConn {
         out.elapsed_ms = start.elapsed().as_millis();
         Ok(out)
     }
+    async fn query_batches(&self, sql: &str, batch_rows: usize, sink: &mut RowSink) -> Result<u64> {
+        let mut conn = self.pool.get_conn().await.map_err(DbError::msg)?;
+        let tid = conn.id();
+        self.running.lock().unwrap().push(tid);
+        let res = async {
+            let mut result = conn.query_iter(sql).await.map_err(DbError::msg)?;
+            let columns: Vec<ColumnMeta> = result.columns_ref().iter().map(|c| ColumnMeta { name: c.name_str().into_owned(), type_name: format!("{:?}", c.column_type()).trim_start_matches("MYSQL_TYPE_").to_lowercase() }).collect();
+            let types: Vec<ColumnType> = result.columns_ref().iter().map(|c| c.column_type()).collect();
+            let (mut batch, mut total) = (Vec::with_capacity(batch_rows), 0u64);
+            let mut stopped = false;
+            while let Some(row) = result.next().await.map_err(DbError::msg)? {
+                batch.push(row.unwrap().into_iter().zip(&types).map(|(v, t)| convert_col(v, *t)).collect::<Vec<_>>());
+                if batch.len() >= batch_rows {
+                    total += batch.len() as u64;
+                    if !sink(&columns, std::mem::take(&mut batch))? {
+                        stopped = true;
+                        break;
+                    }
+                }
+            }
+            if !stopped {
+                total += batch.len() as u64;
+                sink(&columns, batch)?;
+            } else {
+                // Drain so the connection can be reused cleanly.
+                drop(result);
+            }
+            Ok::<u64, DbError>(total)
+        }
+        .await;
+        self.running.lock().unwrap().retain(|t| *t != tid);
+        res
+    }
     async fn cancel(&self) -> Result<()> {
         let ids: Vec<u32> = self.running.lock().unwrap().clone();
         if ids.is_empty() {

@@ -112,7 +112,7 @@ impl Connection for PgConn {
         let client = connect_client(&self.2).await?.0;
         client.batch_execute("BEGIN READ ONLY").await.map_err(DbError::msg)?;
         let body = sql.trim().trim_end_matches(';');
-        client.batch_execute(&format!("DECLARE lattice_export NO SCROLL CURSOR FOR {body}")).await.map_err(DbError::msg)?;
+        client.batch_execute(&format!("DECLARE tabnix_export NO SCROLL CURSOR FOR {body}")).await.map_err(DbError::msg)?;
         // Column types for typed conversion come from a prepare of the same statement.
         let types: Vec<String> = match client.prepare(body).await {
             Ok(st) => st.columns().iter().map(|c| c.type_().name().to_string()).collect(),
@@ -122,7 +122,7 @@ impl Connection for PgConn {
         let mut columns: Vec<ColumnMeta> = Vec::new();
         let mut sent_any = false;
         loop {
-            let msgs = client.simple_query(&format!("FETCH FORWARD {batch_rows} FROM lattice_export")).await.map_err(DbError::msg)?;
+            let msgs = client.simple_query(&format!("FETCH FORWARD {batch_rows} FROM tabnix_export")).await.map_err(DbError::msg)?;
             let mut rows: Vec<Vec<Value>> = Vec::new();
             for m in msgs {
                 if let SimpleQueryMessage::Row(row) = m {

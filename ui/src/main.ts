@@ -17,7 +17,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { sql, SQLite, PostgreSQL, MySQL, MSSQL } from "@codemirror/lang-sql";
-import { buildOrder, nextSort, wrapForSort, type SortKey, type FilterRule } from "./builder-sql";
+import { buildOrder, nextSort, setSort, detectSort, countSql, wrapForSort, type SortKey, type FilterRule } from "./builder-sql";
 import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
@@ -28,15 +28,30 @@ import { pickDatabase } from "./dbpicker";
 import { createDiagram } from "./diagram";
 import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
+import { SYSTEM_DBS, canManageDatabases, canTruncateAll, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
+import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
+
+/**
+ * The webview offers its own "recent entries" dropdown on text inputs (palette, search, connection form).
+ * Switch that off everywhere; only the SQL editor and query builder have real autocompletion.
+ */
+document.addEventListener("focusin", (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) || el.closest(".cm-editor, [data-autocomplete]")) return;
+  el.setAttribute("autocomplete", "off");
+  el.setAttribute("autocorrect", "off");
+  el.setAttribute("autocapitalize", "off");
+  el.spellcheck = false;
+});
 
 /** One open database: its own backend connection, tables and completion schema. */
-interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean }
+interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean; lastTab?: Tab | null; log?: { at: number; ms: number; sql: string; err?: string }[] }
 /** A saved connection that is currently connected, with the databases opened on it. */
-interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[]; lastTab?: Tab | null }
+interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[] }
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; countBtn?: HTMLButtonElement; countSeq?: number;
 }
 
 /** The current workspace: the database the sidebar last selected or the active tab belongs to. */
@@ -48,7 +63,7 @@ let launcherOpen = false;
 /** Home-screen tag filter: "all", a tag name, or "__none" for connections without tags. */
 let launcherTag = "all";
 /** Tabs that belong to a connection. This is the only list the UI may iterate: connections never share tabs. */
-const serverTabs = (s: Server | null = activeServer): Tab[] => tabsOf(tabs, s);
+const wsTabs = (c: Conn | null = conn): Tab[] => tabsOf(tabs, c);
 const tabs: Tab[] = [];
 let active: Tab | null = null;
 let tabSeq = 0;
@@ -112,10 +127,11 @@ app.innerHTML = `
         <div id="tabs" class="flex items-end gap-0.5 overflow-x-auto flex-1 min-w-0 h-full"></div>
         <div class="flex items-center gap-0.5 pb-1.5">
           ${iconBtn("backup", "archive", "Back up this database… (⌘⌥B)")}${iconBtn("restore", "restore", "Restore a backup… (⌘⌥R)")}<span class="w-px h-4 bg-line-strong mx-1"></span>
-          ${iconBtn("import", "upload", "Import a file… (⌘⌥I)")}${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
+          ${iconBtn("import", "upload", "Import a file… (⌘⌥I)")}${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("sqllog-btn", "plan", "Show the SQL that was run (⌘J)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
         </div>
       </div>
       <main id="main" class="card flex-1 min-h-0 flex flex-col" style="border-top-left-radius:0"></main>
+      <div id="sqllog" class="hidden card shrink-0 mt-1.5 flex flex-col" style="height:176px"></div>
     </div>
   </div>
   <div id="palette" class="hidden fixed inset-0 flex items-start justify-center pt-24 z-50" style="background:color-mix(in srgb, var(--ink) 26%, transparent);backdrop-filter:blur(8px)">
@@ -130,16 +146,16 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 {
   const sb = $("sidebar"), grip = $("sb-grip");
   const clamp = (w: number) => Math.round(Math.min(520, Math.max(212, w)));
-  sb.style.width = clamp(+(localStorage.getItem("lattice.sidebarW") ?? 272)) + "px";
+  sb.style.width = clamp(+(localStorage.getItem("tabnix.sidebarW") ?? 272)) + "px";
   grip.onpointerdown = (e) => {
     e.preventDefault();
     grip.setPointerCapture(e.pointerId);
     grip.classList.add("drag");
     const left = sb.getBoundingClientRect().left;
-    grip.onpointermove = (ev) => { const w = clamp(ev.clientX - left); sb.style.width = w + "px"; localStorage.setItem("lattice.sidebarW", String(w)); };
+    grip.onpointermove = (ev) => { const w = clamp(ev.clientX - left); sb.style.width = w + "px"; localStorage.setItem("tabnix.sidebarW", String(w)); };
     grip.onpointerup = () => { grip.classList.remove("drag"); grip.onpointermove = grip.onpointerup = null; };
   };
-  grip.ondblclick = () => { sb.style.width = "272px"; localStorage.setItem("lattice.sidebarW", "272"); };
+  grip.ondblclick = () => { sb.style.width = "272px"; localStorage.setItem("tabnix.sidebarW", "272"); };
 }
 
 function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | null = conn): Tab {
@@ -155,9 +171,22 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     statusBar.innerHTML = `<span class="pill shrink-0" style="--hue:${engineVar(c.kind)};background:color-mix(in srgb, ${engineVar(c.kind)} 12%, transparent);color:var(--ink)"><span style="width:7px;height:7px;border-radius:4px;background:${engineVar(c.kind)}"></span>${esc(c.name)}${c.db ? `<span class="text-muted"> / ${esc(c.db)}</span>` : ""}</span>${risky ? `<span class="pill shrink-0" style="color:${envColor(c.env)};background:color-mix(in srgb, ${envColor(c.env)} 12%, transparent)">${esc(c.env!)}</span>` : ""}`;
   }
   statusBar.append(status);
-  const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [] };
+  const countBtn = document.createElement("button");
+  countBtn.className = "btn btn-ghost shrink-0";
+  countBtn.style.cssText = "height:24px;display:none";
+  statusBar.append(countBtn);
+  const tab: Tab = { id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [], countBtn };
   grid.sortable = kind !== "diagram" && !["redis", "mongo"].includes(c?.kind ?? "");
-  grid.onSort = (col, additive) => applySort(tab, col, additive);
+  grid.onSort = (col, additive, x, y) => {
+    if (additive) { applySort(tab, nextSort(tab.sort, col, true)); return; }
+    const cur = tab.sort.length === 1 && tab.sort[0].col === col ? tab.sort[0] : null;
+    contextMenu(x, y, [
+      { label: "Sort ascending", hint: cur && !cur.desc ? "✓" : "", action: () => applySort(tab, setSort(col, "asc")) },
+      { label: "Sort descending", hint: cur?.desc ? "✓" : "", action: () => applySort(tab, setSort(col, "desc")) },
+      { divider: true, label: "" },
+      { label: "Clear sort", disabled: !tab.sort.length, action: () => applySort(tab, setSort(col, "clear")) },
+    ]);
+  };
   grid.onCellMenu = (x, y, r, col) => cellMenu(tab, x, y, r, col);
   if (kind === "query") {
     root.append(queryBar(tab));
@@ -193,7 +222,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       split.onpointermove = (ev) => {
         const total = root.getBoundingClientRect().height || 1;
         const frac = Math.min(0.78, Math.max(0.12, (ev.clientY - ed.getBoundingClientRect().top) / total));
-        localStorage.setItem("lattice.editorFrac", String(frac));
+        localStorage.setItem("tabnix.editorFrac", String(frac));
         if (!tab.builder) ed.style.height = frac * 100 + "%";
       };
       split.onpointerup = () => { split.classList.remove("drag"); split.onpointermove = split.onpointerup = null; };
@@ -210,6 +239,23 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     empty.innerHTML = `<div style="color:var(--soft)">${ART_RESULTS}</div><div class="text-[16px] font-semibold mt-2">Results appear here</div><div class="text-soft">Write a query above and press <span class="kbd">⌘↵</span> to run it.</div>`;
     gridWrap.append(empty);
     tab.empty = empty;
+    const recent = c?.server ? loadSessions(sessionKey(c.server.id, c.db)).slice(0, 5) : [];
+    if (recent.length) {
+      tab.shown = recent;
+      const box = document.createElement("div");
+      box.className = "pointer-events-auto text-left mt-5 w-[min(560px,90%)]";
+      box.innerHTML = `<div class="text-[12px] uppercase tracking-wide text-muted mb-1.5 px-1">Recent queries on ${esc(c!.db ?? c!.name)}</div>`;
+      for (const r of recent) {
+        const row = document.createElement("button");
+        row.className = "w-full flex items-center gap-3 px-3 h-9 rounded-lg hover:bg-raised text-left";
+        row.title = r.sql;
+        row.innerHTML = `<span class="mono text-[13px] truncate flex-1 min-w-0"></span><span class="text-[12px] text-muted shrink-0">${ago(r.at)}</span>`;
+        (row.firstElementChild as HTMLElement).textContent = r.sql.replace(/\s+/g, " ");
+        row.onclick = () => { tab.editor?.dispatch({ changes: { from: 0, to: tab.editor.state.doc.length, insert: r.sql }, selection: { anchor: r.sql.length } }); tab.editor?.focus(); };
+        box.append(row);
+      }
+      empty.append(box);
+    }
   }
   tab.gridWrap = gridWrap;
   if (kind === "table") {
@@ -277,7 +323,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
 }
 
 /** The editor's share of a query tab (remembered between sessions). */
-const editorHeight = () => Math.round(Math.min(0.78, Math.max(0.12, +(localStorage.getItem("lattice.editorFrac") ?? 0.34))) * 100) + "%";
+const editorHeight = () => Math.round(Math.min(0.78, Math.max(0.12, +(localStorage.getItem("tabnix.editorFrac") ?? 0.34))) * 100) + "%";
 
 const quoteFor = (c: Conn | null) => (c?.kind === "mssql" ? (s: string) => "[" + s.replace(/]/g, "]]") + "]" : c && ["mysql", "mariadb"].includes(c.kind) ? (s: string) => "`" + s.replace(/`/g, "``") + "`" : (s: string) => '"' + s.replace(/"/g, '""') + '"');
 
@@ -306,38 +352,56 @@ function toggleBuilder() {
 }
 
 function activate(t: Tab) {
+  if (active && active !== t) active.grid.suspend(); // background tabs hold no row data in the webview
   active = t;
   launcherOpen = false;
   if (t.conn) {
     conn = t.conn; // the sidebar and dialogs follow the tab you are working in
     activeServer = t.conn.server;
-    t.conn.server.lastTab = t;
+    t.conn.lastTab = t;
   }
   $("main").replaceChildren(t.root);
+  t.grid.resume();
   renderTabs();
 }
 
-/** Switch the whole workspace (tabs, sidebar, current database) to another connection. */
-function switchServer(s: Server) {
-  activeServer = s;
+/** Switch the whole workspace (tabs, sidebar) to another open database. */
+function switchWorkspace(c: Conn) {
+  conn = c; activeServer = c.server;
   launcherOpen = false;
-  const target = tabForSwitch(tabs, s, s.lastTab);
+  const target = tabForSwitch(tabs, c, c.lastTab);
   if (target) { activate(target); return; }
-  conn = s.conns[0] ?? null;
   active = null;
   renderTabs();
   showHome();
 }
 
+/** Rail entry of a server with no database open yet, or any server: go to its current (else newest) database. */
+function switchServer(s: Server) {
+  if (s.conns.length) { switchWorkspace(s.conns.includes(conn!) ? conn! : s.conns[s.conns.length - 1]); return; }
+  activeServer = s; conn = null; active = null; launcherOpen = false;
+  renderTabs();
+  showHome();
+}
+
+/** Keep a query tab's text for the next new tab of this database. `closing` also drops the sessions this tab was showing. */
+function rememberSession(t: Tab, closing: boolean) {
+  if (t.kind !== "query" || !t.conn?.server || !t.editor) return;
+  const key = sessionKey(t.conn.server.id, t.conn.db);
+  if (closing && t.shown) { removeSessions(key, t.shown); t.shown = undefined; }
+  addSession(key, t.editor.state.doc.toString());
+}
+window.addEventListener("pagehide", () => { for (const t of tabs) rememberSession(t, false); });
+
 function closeTab(t: Tab) {
-  const server = t.conn?.server ?? null;
   const g = tabs.indexOf(t);
   if (g < 0) return;
   const next = nextAfterClose(tabs, t); // always a tab of the same connection, or null
   tabs.splice(g, 1);
   t.grid.setResult(null);
+  rememberSession(t, true);
   t.editor?.destroy();
-  if (server && server.lastTab === t) server.lastTab = null;
+  if (t.conn && t.conn.lastTab === t) t.conn.lastTab = null;
   if (active === t) {
     if (next) activate(next);
     else { active = null; renderTabs(); showHome(); }
@@ -346,8 +410,7 @@ function closeTab(t: Tab) {
 
 function renderTabs() {
   const el = $("tabs");
-  const mine = serverTabs();
-  const multiDb = (activeServer?.conns.length ?? 0) > 1;
+  const mine = wsTabs();
   el.replaceChildren(
     ...mine.map((t, i) => {
       const on = t === active;
@@ -358,8 +421,7 @@ function renderTabs() {
       if (t.conn) d.style.setProperty("--hue", t.conn.env === "production" ? "var(--env-production)" : engineVar(t.conn.kind));
       d.title = `${t.title}${t.conn?.db ? ` · ${t.conn.db}` : ""}${i < 9 ? `  (⌘${i + 1})` : ""}`;
       const tint = t.kind === "table" ? engineVar(t.conn?.kind) : t.kind === "diagram" ? "var(--eng-mssql)" : "var(--accent)";
-      d.innerHTML = `<span style="color:${tint}">${icon(t.kind === "table" ? "table" : t.kind === "diagram" ? "diagram" : "plan", 15)}</span><span class="truncate">${esc(t.title)}</span>` +
-        (multiDb && t.conn?.db ? `<span class="text-muted text-[12px] shrink-0 truncate" style="max-width:96px">${esc(t.conn.db)}</span>` : "");
+      d.innerHTML = `<span style="color:${tint}">${icon(t.kind === "table" ? "table" : t.kind === "diagram" ? "diagram" : "plan", 15)}</span><span class="truncate">${esc(t.title)}</span>` ;
       const x = document.createElement("button");
       x.innerHTML = icon("close", 12);
       x.setAttribute("aria-label", "Close tab");
@@ -373,30 +435,155 @@ function renderTabs() {
   );
   renderRail();
   renderObjects();
+  renderLog();
 }
 
 // ---------- connection rail: the narrow strip at the far left that switches between connections ----------
+/** Database name, numbered when the same database is open more than once on a connection. */
+function dbLabel(c: Conn): string {
+  const same = c.server.conns.filter((x) => x.db === c.db);
+  return `${c.db ?? c.server.name}${same.length > 1 ? ` #${same.indexOf(c) + 1}` : ""}`;
+}
+
 function renderRail() {
   const host = $("rail-items");
-  host.replaceChildren(...servers.map((s) => {
-    const on = s === activeServer && !launcherOpen;
-    const n = serverTabs(s).length;
+  // One entry per open database; a server with none open yet gets a single entry of its own.
+  const entries = servers.flatMap((s) => (s.conns.length ? s.conns.map((c) => ({ s, c })) : [{ s, c: null as Conn | null }]));
+  host.replaceChildren(...entries.map(({ s, c }) => {
+    const on = !launcherOpen && (c ? c === conn : s === activeServer);
+    const n = c ? wsTabs(c).length : 0;
+    const label = c ? dbLabel(c) : s.name;
     const b = document.createElement("button");
     b.className = "relative flex flex-col items-center gap-1 rounded-xl shrink-0 px-1 pt-2 pb-1.5 " + (on ? "glass-strong" : "hover:bg-raised");
     b.style.cssText = "width:66px;transition:background .12s";
-    b.setAttribute("aria-label", `${s.name}${on ? " (current)" : ""}`);
-    b.title = `${s.name} · ${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}\n${n} tab${n === 1 ? "" : "s"} · ${s.conns.length} database${s.conns.length === 1 ? "" : "s"} open`;
+    b.setAttribute("aria-label", `${label} on ${s.name}${on ? " (current)" : ""}`);
+    b.title = `${s.name}${c?.db ? ` / ${label}` : ""} · ${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}\n${c ? `${n} tab${n === 1 ? "" : "s"}` : "no database open"}`;
     b.innerHTML = engineBadge(s.kind, 36) +
-      `<span class="text-[11.5px] leading-[1.15] text-center w-full ${on ? "text-ink font-medium" : "text-soft"}" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word">${esc(s.name)}</span>` +
+      `<span class="text-[10.5px] leading-[1.15] text-center w-full truncate text-muted">${esc(s.name)}</span>` +
+      (c?.db ? `<span class="text-[11.5px] leading-[1.15] text-center w-full truncate -mt-0.5 ${on ? "text-ink font-medium" : "text-soft"}">${esc(label)}</span>` : "") +
       (on ? `<span class="absolute" style="left:-7px;top:18px;width:4px;height:24px;border-radius:0 3px 3px 0;background:var(--hue-active,var(--accent))"></span>` : "") +
       (s.env && s.env !== "local" ? `<span class="absolute" style="right:7px;top:5px;width:10px;height:10px;border-radius:5px;background:${envColor(s.env)};border:2px solid var(--panel)"></span>` : "") +
       (n > 1 ? `<span class="absolute text-[10.5px] font-semibold rounded-full bg-raised2 text-soft" style="right:4px;top:30px;min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 4px">${n}</span>` : "");
-    b.onclick = () => switchServer(s);
-    b.oncontextmenu = (e) => { e.preventDefault(); serverMenu(s, e.clientX, e.clientY); };
+    b.onclick = () => (c ? switchWorkspace(c) : switchServer(s));
+    b.oncontextmenu = (e) => { e.preventDefault(); c ? dbMenu(c, e.clientX, e.clientY) : serverMenu(s, e.clientX, e.clientY); };
     return b;
   }));
   const plus = $("addconn");
   plus.className = "relative flex flex-col items-center justify-center gap-0.5 rounded-xl " + (launcherOpen ? "glass-strong text-accent" : "text-muted hover:bg-raised hover:text-ink");
+}
+
+// ---------- SQL log: every statement that ran on the open database, newest at the bottom (⌘J) ----------
+let logOpen = localStorage.getItem("tabnix.logOpen") === "1";
+const LOG_MAX = 100, LOG_SQL_MAX = 4000; // in memory only, so it stays tiny
+
+function logSql(c: Conn, sql: string, ms: number, err?: string) {
+  const log = (c.log ??= []);
+  log.push({ at: Date.now(), ms, sql: sql.length > LOG_SQL_MAX ? sql.slice(0, LOG_SQL_MAX) + "…" : sql, err });
+  if (log.length > LOG_MAX) log.shift();
+  if (logOpen && conn === c) renderLog();
+}
+
+const SQL_TOKEN = /('(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|"")*"|`[^`]*`|--[^\n]*|\/\*[\s\S]*?\*\/|\b\d+(?:\.\d+)?\b|\b(?:select|from|where|and|or|not|in|is|null|like|between|join|left|right|inner|outer|full|cross|on|as|group|by|order|having|limit|offset|union|all|distinct|insert|into|values|update|set|delete|create|alter|drop|table|index|view|database|schema|asc|desc|case|when|then|else|end|exists|count|sum|avg|min|max|with|show|describe|explain|use|begin|commit|rollback)\b)/gi;
+
+/** Cheap tokenizer for the log: plain text nodes plus a few coloured spans, no editor instance. */
+function highlightSql(sql: string): Node[] {
+  const out: Node[] = [];
+  let last = 0;
+  for (const m of sql.matchAll(SQL_TOKEN)) {
+    if (m.index! > last) out.push(document.createTextNode(sql.slice(last, m.index)));
+    const t = m[0], span = document.createElement("span");
+    span.textContent = t;
+    span.style.color = /^['"`]/.test(t) ? (t[0] === "`" ? "inherit" : "var(--tok-string)") : t.startsWith("--") || t.startsWith("/*") ? "var(--tok-comment)" : /^\d/.test(t) ? "var(--tok-number)" : "var(--tok-keyword)";
+    if (/^[a-z]/i.test(t)) span.style.fontWeight = "600";
+    out.push(span);
+    last = m.index! + t.length;
+  }
+  if (last < sql.length) out.push(document.createTextNode(sql.slice(last)));
+  return out;
+}
+
+function renderLog() {
+  const host = $("sqllog");
+  host.classList.toggle("hidden", !logOpen);
+  $("sqllog-btn")?.classList.toggle("text-accent", logOpen);
+  if (!logOpen) return;
+  const entries = conn?.log ?? [];
+  const hl = localStorage.getItem("tabnix.logHl") !== "0";
+  const head = document.createElement("div");
+  head.className = "h-8 shrink-0 flex items-center gap-2 px-3 text-[12.5px] text-muted border-b border-line";
+  head.innerHTML = `<span class="font-medium text-soft">SQL log</span><span>${esc(conn?.db ?? conn?.name ?? "")}</span><span class="flex-1"></span>`;
+  const mk = (label: string, f: () => void) => { const b = document.createElement("button"); b.className = "btn btn-ghost"; b.style.height = "24px"; b.textContent = label; b.onclick = f; return b; };
+  head.append(
+    mk(hl ? "Highlight: on" : "Highlight: off", () => { localStorage.setItem("tabnix.logHl", hl ? "0" : "1"); renderLog(); }),
+    mk("Copy", () => { navigator.clipboard?.writeText(entries.map((e) => `-- ${new Date(e.at).toLocaleString()}\n${e.sql}`).join("\n\n")); toast("SQL log copied", "ok"); }),
+    mk("Clear", () => { if (conn) conn.log = []; renderLog(); }),
+    mk("Close", toggleLog),
+  );
+  const body = document.createElement("div");
+  body.className = "flex-1 min-h-0 overflow-auto px-3 py-2 mono text-[13px] select-text";
+  for (const e of entries) {
+    const stamp = document.createElement("div");
+    stamp.className = "text-ok";
+    stamp.textContent = `-- ${new Date(e.at).toLocaleTimeString()}${e.err ? ` · ${e.err}` : ` · ${e.ms} ms`}`;
+    if (e.err) stamp.className = "text-danger";
+    const q = document.createElement("div");
+    q.className = "whitespace-pre-wrap break-words mb-2";
+    if (hl) q.append(...highlightSql(e.sql)); else q.textContent = e.sql;
+    body.append(stamp, q);
+  }
+  if (!entries.length) body.innerHTML = `<div class="text-muted">Statements you run on this database will appear here.</div>`;
+  host.replaceChildren(head, body);
+  body.scrollTop = body.scrollHeight;
+}
+
+function toggleLog() {
+  logOpen = !logOpen;
+  localStorage.setItem("tabnix.logOpen", logOpen ? "1" : "0");
+  renderLog();
+}
+
+// ---------- total row count, only when asked: COUNT(*) can be slow on big tables, so it never runs by itself ----------
+const PAGE_ROWS = 1000; // what a table tab reads (see select_all_sql)
+
+function offerCount(t: Tab, s: Summary) {
+  const b = t.countBtn;
+  if (!b) return;
+  t.countSeq = (t.countSeq ?? 0) + 1; // a new result invalidates a count still running
+  const more = t.kind === "table" && !!t.table && !!t.conn && !["redis", "mongo"].includes(t.conn.kind) && s.columns.length > 0 && s.row_count >= PAGE_ROWS;
+  b.style.display = more ? "" : "none";
+  if (!more) return;
+  b.disabled = false;
+  b.textContent = "Count all rows";
+  b.title = "Run SELECT COUNT(*) for this table (can be slow on large tables)";
+  b.onclick = () => countRows(t);
+}
+
+async function countRows(t: Tab) {
+  const b = t.countBtn, c = t.conn;
+  if (!b || !c || !t.table) return;
+  const seq = t.countSeq;
+  b.disabled = true; b.textContent = "Counting…";
+  try {
+    const o = c.objects.find((x) => x.name === t.table);
+    const inner = await api.selectAllSql(c.id, o?.schema ?? null, t.table, 2_000_000_000, t.filterWhere);
+    const sql = countSql(inner);
+    if (!sql) throw new Error("can't count this object");
+    const r = await api.runQuery(c.id, sql);
+    logSql(c, sql, r.elapsed_ms);
+    const rows = await api.getRows(r.query_id, 0, 1);
+    api.release(r.query_id).catch(() => {});
+    const v = rows[0]?.[0];
+    const n = v && "v" in v ? Number(v.v) : NaN;
+    if (seq !== t.countSeq) return;
+    b.textContent = Number.isFinite(n) ? `${n.toLocaleString()} rows in total` : "Count unavailable";
+    b.title = `SELECT COUNT(*) took ${r.elapsed_ms} ms — click to count again`;
+    b.disabled = false;
+  } catch (e) {
+    if (seq !== t.countSeq) return;
+    b.textContent = "Count failed — retry";
+    b.title = String(e);
+    b.disabled = false;
+  }
 }
 
 async function exec(t: Tab, sqlText: string) {
@@ -404,25 +591,41 @@ async function exec(t: Tab, sqlText: string) {
   if (t.panel && t.gridWrap) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
   if (t.running) { t.status.textContent = "A query is already running — ⌘. to cancel"; return; }
   t.running = true; t.cancelled = false;
+  if (t.countBtn) t.countBtn.style.display = "none";
   t.empty?.remove(); t.empty = undefined;
   if (t.gridWrap) { t.runBar = document.createElement("div"); t.runBar.className = "running-bar"; t.gridWrap.append(t.runBar); }
   t.status.textContent = "Running… (⌘. to cancel)";
   try {
     const s: Summary = await api.runQuery(t.conn.id, sqlText);
+    logSql(t.conn, sqlText, s.elapsed_ms);
     await t.grid.setResult(s.columns.length ? s : null);
     t.status.textContent = s.columns.length
       ? `${s.row_count.toLocaleString()} rows${s.truncated ? " (truncated)" : ""} · ${s.elapsed_ms} ms`
       : `${s.affected ?? 0} rows affected · ${s.elapsed_ms} ms`;
+    offerCount(t, s);
     if (/^\s*(create|drop|alter)\b/i.test(sqlText)) refreshObjects();
   } catch (e) {
+    logSql(t.conn, sqlText, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0]);
     await t.grid.setResult(null);
-    t.status.textContent = t.cancelled ? "Query cancelled" : "Error: " + e;
+    t.status.textContent = t.cancelled ? "Query cancelled" : "Error: " + String(e).split("\n")[0];
+    t.status.title = String(e);
     t.status.classList.toggle("text-danger", !t.cancelled);
+    if (!t.cancelled && t.gridWrap) {
+      const el = document.createElement("div");
+      el.className = "h-full overflow-auto p-5";
+      const pre = document.createElement("pre");
+      pre.className = "mono text-[13px] text-danger whitespace-pre-wrap break-words select-text";
+      pre.textContent = String(e).replace(/^Error:\s*/, "");
+      el.append(pre);
+      t.panel = el;
+      t.gridWrap.replaceChildren(el);
+    }
     t.running = false; t.runBar?.remove();
     return;
   }
   t.running = false; t.runBar?.remove();
   t.status.classList.remove("text-danger");
+  t.status.title = "";
 }
 
 const orig = (g: Grid, r: number, i: number): Val => g.original(r)?.[i] ?? { t: "Null" };
@@ -573,11 +776,10 @@ function openDiagram(focus?: string) {
   loadDiagram(t);
 }
 
-/** Header click: update the sort and re-read. Table tabs sort on the server; query results re-run wrapped in a SELECT. */
-function applySort(t: Tab, col: string, additive: boolean) {
+/** Header sort: apply the new sort and re-read. Table tabs sort on the server; query results re-run wrapped in a SELECT. */
+function applySort(t: Tab, next: SortKey[]) {
   if (!t.conn) return;
   if (t.grid.pendingCount) { t.status.textContent = "Commit (⌘S) or discard pending changes before sorting"; return; }
-  const next = nextSort(t.sort, col, additive);
   if (t.kind === "table") { t.sort = next; t.grid.sort = next; reload(t); return; }
   if (t.kind === "query") {
     if (!t.baseSql) return;
@@ -654,7 +856,7 @@ function runActive() {
   const view = t.editor!;
   const sel = view.state.selection.main;
   const text = sel.empty ? view.state.doc.toString() : view.state.sliceDoc(sel.from, sel.to);
-  if (text.trim()) { t.baseSql = text; t.sort = []; t.grid.sort = []; exec(t, text); }
+  if (text.trim()) { t.baseSql = text; t.sort = detectSort(text); t.grid.sort = t.sort; exec(t, text); }
 }
 
 function reload(t: Tab) {
@@ -745,7 +947,7 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
 }
 
 /** Original line illustrations (two tones: the accent plus the apricot spark). */
-const ART_LATTICE = `<svg viewBox="0 0 150 110" width="150" height="110" fill="none" aria-hidden="true"><g fill="currentColor" opacity=".32">${[0, 1, 2, 3, 4].flatMap((i) => [0, 1, 2, 3].map((j) => `<circle cx="${14 + i * 30}" cy="${14 + j * 27}" r="3.2"/>`)).join("")}</g>
+const ART_TABNIX = `<svg viewBox="0 0 150 110" width="150" height="110" fill="none" aria-hidden="true"><g fill="currentColor" opacity=".32">${[0, 1, 2, 3, 4].flatMap((i) => [0, 1, 2, 3].map((j) => `<circle cx="${14 + i * 30}" cy="${14 + j * 27}" r="3.2"/>`)).join("")}</g>
   <g stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="44" y="26" width="62" height="54" rx="7" fill="var(--panel)"/><path d="M44 42h62M64 42v38M85 42v38M44 58h62" opacity=".75"/></g>
   <circle cx="134" cy="14" r="6" fill="var(--spark)"/><path d="M106 33 129 17" stroke="var(--spark)" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 const ART_RESULTS = `<svg viewBox="0 0 120 80" width="120" height="80" fill="none" aria-hidden="true"><g fill="var(--accent)" opacity=".14"><rect x="8" y="30" width="104" height="11" rx="5"/><rect x="8" y="48" width="104" height="11" rx="5"/><rect x="8" y="66" width="70" height="11" rx="5"/></g>
@@ -769,6 +971,7 @@ function renderObjects() {
     const sKey = "s:" + s.id, sOpen = q ? true : !collapsed.has(sKey);
     const children: HTMLElement[] = [];
     for (const c of s.conns) {
+      if (c !== conn) continue; // each database is its own workspace: the sidebar shows only the one on screen
       const items = c.objects.filter((o) => !q || o.name.toLowerCase().includes(q));
       if (q && !items.length && !(c.db ?? "").toLowerCase().includes(q)) continue;
       const dKey = "d:" + c.id, dOpen = q ? true : !collapsed.has(dKey);
@@ -799,9 +1002,9 @@ function renderObjects() {
       }
       if (!items.length && !q) { const l = document.createElement("div"); l.className = "pl-14 h-[26px] leading-[26px] text-muted"; l.textContent = c.loading ? "Reading tables…" : "No tables yet"; children.push(l); }
     }
-    const remaining = s.dbs.filter((d) => !s.conns.some((c) => c.db === d)).length;
-    if (!q && sOpen && remaining > 0 && s.dbs.length) {
+    if (!q && sOpen && s.dbs.length) {
       children.push(treeRow({ level: 1, ic: "plus", label: s.conns.length ? "Open another database…" : "Open a database…", muted: !!s.conns.length, strong: !s.conns.length, click: () => pickAndOpen(s) }));
+      if (canManageDatabases(s.kind)) children.push(treeRow({ level: 1, ic: "database", label: "New database…", muted: true, click: () => createDatabase(s) }));
     }
     if (q && !children.length) continue;
     any = true;
@@ -829,6 +1032,9 @@ function tableMenu(c: Conn, o: ObjectRef, x: number, y: number) {
     { label: "Copy name", action: () => { navigator.clipboard?.writeText(o.name); toast("Copied " + o.name, "ok"); } },
     { divider: true, label: "" },
     { label: "Refresh", action: () => refreshDatabase(c) },
+    { divider: true, label: "" },
+    { label: "Truncate…", danger: true, disabled: o.kind === "view" || ["redis", "mongo"].includes(c.kind), action: () => truncateTable(c, o) },
+    { label: o.kind === "view" ? "Drop view…" : "Drop table…", danger: true, disabled: ["redis", "mongo"].includes(c.kind), action: () => dropTable(c, o) },
   ]);
 }
 
@@ -843,7 +1049,13 @@ function dbMenu(c: Conn, x: number, y: number) {
     { label: "Import a file…", hint: "⌘⌥I", action: () => { conn = c; importActive(); } },
     { divider: true, label: "" },
     { label: "Refresh", action: () => refreshDatabase(c) },
-    { label: "Close this database", danger: true, action: () => closeDatabase(c) },
+    { label: "Open again in a new workspace", disabled: !c.server.dbs.length, action: () => openDatabaseOn(c.server, c.db!, true) },
+    { label: "New database…", disabled: !canManageDatabases(c.kind), action: () => createDatabase(c.server) },
+    { divider: true, label: "" },
+    { label: "Truncate all tables…", danger: true, disabled: !canTruncateAll(c.kind), action: () => truncateDatabase(c) },
+    { label: "Drop database…", danger: true, disabled: !canManageDatabases(c.kind) || !c.db || SYSTEM_DBS.has(c.db.toLowerCase()), action: () => dropDatabase(c.server, c.db!) },
+    { divider: true, label: "" },
+    { label: "Close this database", action: () => closeDatabase(c) },
   ]);
 }
 
@@ -851,6 +1063,7 @@ function serverMenu(s: Server, x: number, y: number) {
   contextMenu(x, y, [
     { label: "New query", disabled: !s.conns.length, action: () => makeTab("query", "Query", undefined, s.conns[0]) },
     { label: s.conns.length ? "Open another database…" : "Open a database…", disabled: !s.dbs.length, action: () => pickAndOpen(s) },
+    { label: "New database…", disabled: !canManageDatabases(s.kind), action: () => createDatabase(s) },
     { label: "Refresh", action: () => s.conns.forEach(refreshDatabase) },
     { divider: true, label: "" },
     { label: "Disconnect", danger: true, action: () => disconnectServer(s) },
@@ -860,7 +1073,7 @@ function serverMenu(s: Server, x: number, y: number) {
 // ---------- connection lifecycle ----------
 function afterWorkspaceChange() {
   renderTabs();
-  if (!serverTabs().length) { active = null; showHome(); }
+  if (!wsTabs().length) { active = null; showHome(); }
 }
 
 /** Register an open database under its server and load its tables. */
@@ -872,8 +1085,8 @@ async function addDatabase(s: Server, connId: number, db: string | null): Promis
   collapsed.delete("s:" + s.id); collapsed.delete("d:" + c.id);
   renderObjects();
   refreshDatabase(c);
-  if (!serverTabs(s).length) makeTab("query", "Query", undefined, c); // first tab of this connection
-  else renderTabs();
+  if (s.conns.length === 1) makeTab("query", "Query", undefined, c); // first database of this connection
+  else switchWorkspace(c); // every further database opens as its own workspace
   return c;
 }
 
@@ -895,21 +1108,107 @@ async function useConnection(id: number, p: Profile) {
   else { renderObjects(); await pickAndOpen(s); }
 }
 
-/** Choose a database on a server and open it next to the ones already open. */
+/** Choose a database on a server and open it as its own workspace (also one that is already open: a second, independent workspace). */
 async function pickAndOpen(s: Server) {
-  const free = s.dbs.filter((d) => !s.conns.some((c) => c.db === d));
-  if (!free.length) { toast("Every database on this server is already open.", "info"); return; }
-  const chosen = await pickDatabase(free, null);
-  if (chosen) openDatabaseOn(s, chosen);
+  if (!s.dbs.length) return;
+  const chosen = await pickDatabase(s.dbs, null, new Set(s.conns.map((c) => c.db ?? "")));
+  if (chosen) openDatabaseOn(s, chosen, s.conns.some((c) => c.db === chosen));
 }
 
-async function openDatabaseOn(s: Server, db: string) {
+/** `again` opens a further, independent workspace on a database that is already open. */
+async function openDatabaseOn(s: Server, db: string, again = false) {
   const have = s.conns.find((c) => c.db === db);
-  if (have) { conn = have; collapsed.delete("d:" + have.id); renderObjects(); return; }
+  if (have && !again) { collapsed.delete("d:" + have.id); switchWorkspace(have); return; }
   try {
     const id = await api.openDatabase(s.rootId, db);
     await addDatabase(s, id, db);
   } catch (e) { toast(`Couldn't open ${db}: ${e}`, "error"); }
+}
+
+// ---------- administration: new / drop database, truncate ----------
+/** A short-lived connection to a maintenance database, for statements that can't run from inside the database they touch. */
+async function withMaintenance<T>(s: Server, f: (id: number) => Promise<T>): Promise<T> {
+  if (s.kind === "mysql" || s.kind === "mariadb") return f(s.rootId);
+  const id = await api.openDatabase(s.rootId, s.kind === "mssql" ? "master" : "postgres");
+  try { return await f(id); } finally { api.disconnect(id).catch(() => {}); }
+}
+
+async function createDatabase(s: Server) {
+  const name = await promptName("New database", `On ${s.name}`, "Create");
+  if (!name) return;
+  const sql = createDatabaseSql(s.kind, name);
+  if (!sql) { toast("This engine can't create databases here.", "info"); return; }
+  try {
+    s.dbs = await withMaintenance(s, async (id) => { await api.runStatements(id, [sql]); return api.listDatabases(id); });
+    toast(`Created ${name}`, "ok");
+    await openDatabaseOn(s, name);
+  } catch (e) { toast(`Couldn't create ${name}: ${e}`, "error"); }
+}
+
+async function dropDatabase(s: Server, db: string) {
+  const prod = s.env === "production";
+  const ok = await confirmDanger({
+    title: `Drop database ${db}?`,
+    body: `This permanently deletes <b>${esc(db)}</b> and everything in it on <b>${esc(s.name)}</b>${prod ? " — a <b>production</b> connection" : ""}. It cannot be undone.`,
+    confirmLabel: "Drop database", typed: db, sql: dropDatabaseSql(s.kind, db),
+  });
+  if (!ok) return;
+  for (const c of s.conns.filter((x) => x.db === db)) closeDatabase(c); // every workspace on it, so nothing holds it open
+  try {
+    s.dbs = await withMaintenance(s, async (id) => {
+      try { await api.runStatements(id, dropDatabaseSql(s.kind, db)); }
+      catch (e) { if (s.kind !== "postgres") throw e; await api.runStatements(id, dropDatabaseSql(s.kind, db, false)); } // WITH (FORCE) needs PostgreSQL 13
+      return api.listDatabases(id);
+    });
+    toast(`Dropped ${db}`, "ok");
+  } catch (e) { toast(`Couldn't drop ${db}: ${e}`, "error"); }
+  renderObjects();
+  if (!s.conns.length) switchServer(s);
+}
+
+async function truncateDatabase(c: Conn) {
+  const tables = c.objects.filter((o) => o.kind === "table");
+  const sqls = truncateAllSql(c.kind, tables);
+  if (!sqls) { toast("Truncating every table isn't supported for this engine.", "info"); return; }
+  if (!sqls.length) { toast("There are no tables to truncate.", "info"); return; }
+  const ok = await confirmDanger({
+    title: `Truncate all tables in ${c.db ?? c.name}?`,
+    body: `Deletes <b>every row</b> of ${tables.length} table${tables.length === 1 ? "" : "s"} in <b>${esc(c.db ?? c.name)}</b> (views are untouched). The tables themselves stay. It cannot be undone.`,
+    confirmLabel: "Truncate all", typed: c.db ?? c.name, sql: sqls.length > 6 ? [...sqls.slice(0, 5), `… ${sqls.length - 5} more`] : sqls,
+  });
+  if (!ok) return;
+  try {
+    await api.runStatements(c.id, sqls);
+    for (const q of sqls) logSql(c, q, 0);
+    toast(`Truncated ${tables.length} table${tables.length === 1 ? "" : "s"}`, "ok");
+    reloadTablesOf(c);
+  } catch (e) { toast(`Truncate failed: ${e}`, "error"); }
+}
+
+async function truncateTable(c: Conn, o: ObjectRef) {
+  const sql = truncateTableSql(c.kind, o);
+  const ok = await confirmDanger({ title: `Truncate ${o.name}?`, body: `Deletes every row of <b>${esc(o.name)}</b>. The table stays. It cannot be undone.`, confirmLabel: "Truncate", typed: c.env === "production" ? o.name : undefined, sql: [sql] });
+  if (!ok) return;
+  try { await api.runStatements(c.id, [sql]); logSql(c, sql, 0); toast(`Truncated ${o.name}`, "ok"); reloadTablesOf(c); }
+  catch (e) { toast(`Truncate failed: ${e}`, "error"); }
+}
+
+async function dropTable(c: Conn, o: ObjectRef) {
+  const sql = dropTableSql(c.kind, o);
+  const ok = await confirmDanger({ title: `Drop ${o.kind === "view" ? "view" : "table"} ${o.name}?`, body: `Permanently removes <b>${esc(o.name)}</b>${o.kind === "view" ? "" : " and its data"}. It cannot be undone.`, confirmLabel: "Drop", typed: o.name, sql: [sql] });
+  if (!ok) return;
+  try {
+    await api.runStatements(c.id, [sql]);
+    logSql(c, sql, 0);
+    for (const t of [...tabs]) if (t.conn === c && t.table === o.name) closeTab(t);
+    toast(`Dropped ${o.name}`, "ok");
+    await refreshDatabase(c);
+  } catch (e) { toast(`Drop failed: ${e}`, "error"); }
+}
+
+/** Re-read the open table tabs of a database after its rows were deleted. */
+function reloadTablesOf(c: Conn) {
+  for (const t of tabs) if (t.kind === "table" && t.conn === c && !t.grid.pendingCount) reload(t);
 }
 
 function closeDatabase(c: Conn) {
@@ -917,7 +1216,11 @@ function closeDatabase(c: Conn) {
   // The server's root connection also keeps its SSH tunnel alive, so it stays until the server is disconnected.
   if (c.id !== c.server.rootId) api.disconnect(c.id).catch(() => {});
   c.server.conns = c.server.conns.filter((x) => x !== c);
-  if (conn === c) conn = c.server.conns[0] ?? servers.flatMap((x) => x.conns)[0] ?? null;
+  if (conn === c) {
+    const next = c.server.conns[c.server.conns.length - 1] ?? servers.flatMap((x) => x.conns)[0] ?? null;
+    if (next) switchWorkspace(next); else { conn = null; renderObjects(); }
+    return;
+  }
   renderObjects();
   afterWorkspaceChange();
 }
@@ -977,13 +1280,13 @@ async function showLauncher() {
   const [profiles, tp] = await Promise.all([api.listConnections().catch(() => [] as Profile[]), api.tableplusScan().catch(() => [])]);
   if (active || $("main").firstChild !== wrap) return; // user moved on while we were loading
   const importable = tp.filter((e) => e.kind && !e.already_imported);
-  const dismissed = localStorage.getItem("lattice.tpDismissed") === "1";
+  const dismissed = localStorage.getItem("tabnix.tpDismissed") === "1";
   wrap.innerHTML = `<div class="mx-auto px-10 pt-12 pb-10" style="max-width:860px">
     <div class="flex items-center gap-5">
-      <div class="flex-1"><div class="flex items-center gap-3.5 mb-3"><img src="/lattice-logo.svg" alt="" width="44" height="44" style="border-radius:11px;box-shadow:0 1px 2px rgb(19 34 48 / .18), 0 6px 16px rgb(11 116 160 / .25)"/><span class="text-[15px] font-semibold text-soft">Lattice</span></div>
+      <div class="flex-1"><div class="flex items-center gap-3.5 mb-3"><img src="/tabnix-logo.png" alt="" width="44" height="44" style="border-radius:11px;box-shadow:0 1px 2px rgb(19 34 48 / .18), 0 6px 16px rgb(11 116 160 / .25)"/><span class="text-[15px] font-semibold text-soft">Tabnix</span></div>
         <h1 class="text-[30px] font-semibold leading-[1.15] tracking-[-0.02em]">Where would you like to work?</h1>
         <p class="text-soft text-[15px] mt-1.5">Open a saved connection, or add a new one.</p></div>
-      <div class="hidden md:block text-muted shrink-0">${ART_LATTICE}</div>
+      <div class="hidden md:block text-muted shrink-0">${ART_TABNIX}</div>
     </div>
     ${importable.length && !dismissed ? `<div id="tpbanner" class="mt-7 flex items-center gap-4 rounded-xl px-4 py-3.5 bg-accent-soft" style="box-shadow: inset 3px 0 0 var(--accent)">
         <div class="flex-1"><div class="font-semibold">${importable.length} connection${importable.length === 1 ? "" : "s"} found in TablePlus</div>
@@ -1083,7 +1386,7 @@ async function showLauncher() {
   drawCards();
   const doImport = async () => { if (await showTablePlusImport(tp)) showLauncher(); };
   (wrap.querySelector("#tpgo") as HTMLElement | null)?.addEventListener("click", doImport);
-  (wrap.querySelector("#tpno") as HTMLElement | null)?.addEventListener("click", () => { localStorage.setItem("lattice.tpDismissed", "1"); showLauncher(); });
+  (wrap.querySelector("#tpno") as HTMLElement | null)?.addEventListener("click", () => { localStorage.setItem("tabnix.tpDismissed", "1"); showLauncher(); });
   (wrap.querySelector("#tpgo2") as HTMLElement | null)?.addEventListener("click", doImport);
   (wrap.querySelector("#newconn") as HTMLElement).onclick = openConnections;
 }
@@ -1116,7 +1419,9 @@ function openConnections() {
   showConnectionManager(async (id, profile: Profile) => { await useConnection(id, profile); });
 }
 
+let closePalette: (() => void) | null = null;
 function palette() {
+  closePalette?.();
   const p = $("palette"), inp = $<HTMLInputElement>("pinput"), list = $("plist");
   p.classList.remove("hidden"); inp.value = ""; inp.focus();
   let idx = 0, items: ObjectRef[] = [];
@@ -1131,16 +1436,20 @@ function palette() {
       d.onclick = () => choose(o);
       return d;
     }));
+    (list.children[idx] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
   };
-  const close = () => { p.classList.add("hidden"); inp.oninput = inp.onkeydown = null; };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+    else if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) { idx = Math.min(idx + 1, items.length - 1); draw(); e.preventDefault(); }
+    else if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) { idx = Math.max(idx - 1, 0); draw(); e.preventDefault(); }
+    else if (e.key === "Enter" && items[idx]) { e.preventDefault(); choose(items[idx]); }
+    else if (document.activeElement !== inp && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) inp.focus();
+  };
+  const close = () => { p.classList.add("hidden"); inp.oninput = null; window.removeEventListener("keydown", onKey, true); closePalette = null; };
+  closePalette = close;
   const choose = (o: ObjectRef) => { close(); openTable(o.name); };
-  inp.oninput = draw;
-  inp.onkeydown = (e) => {
-    if (e.key === "Escape") close();
-    else if (e.key === "ArrowDown") { idx = Math.min(idx + 1, items.length - 1); draw(); e.preventDefault(); }
-    else if (e.key === "ArrowUp") { idx = Math.max(idx - 1, 0); draw(); e.preventDefault(); }
-    else if (e.key === "Enter" && items[idx]) choose(items[idx]);
-  };
+  inp.oninput = () => { idx = 0; draw(); };
+  window.addEventListener("keydown", onKey, true);
   draw();
 }
 
@@ -1212,6 +1521,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "w") go(() => active && closeTab(active));
   else if (k === "o" || k === "n") go(openConnections);
   else if (k === "p") go(palette);
+  else if (k === "j") go(toggleLog);
   else if (k === "d" && e.shiftKey) go(() => openDiagram(active?.kind === "table" ? active.table : undefined));
   else if (k === "k") go(openDatabasePicker);
   else if (k === "r") go(() => active && reload(active));
@@ -1222,7 +1532,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
   else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
   else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => active!.grid.deleteSelected());
-  else if (/^[1-9]$/.test(k)) go(() => { const t = nthTab(tabs, activeServer, +k); if (t) activate(t); });
+  else if (/^[1-9]$/.test(k)) go(() => { const t = nthTab(tabs, conn, +k); if (t) activate(t); });
   else if (e.shiftKey && (e.key === "]" || e.key === "}")) go(() => cycle(1));
   else if (e.shiftKey && (e.key === "[" || e.key === "{")) go(() => cycle(-1));
   else if (k === "f" && active?.kind === "table" && active.filterBar) go(() => { if (active!.mode === "structure") setMode(active!, "data"); active!.filterBar!.toggle(); });
@@ -1243,6 +1553,7 @@ function cycle(d: number) {
   if (next) activate(next);
 }
 
+$("sqllog-btn").onclick = toggleLog;
 $("backup").onclick = backupActive;
 $("restore").onclick = restoreActive;
 $("import").onclick = importActive;
@@ -1258,3 +1569,8 @@ paintTheme();
 renderObjects();
 showLauncher();
 $("filter").oninput = renderObjects;
+
+// Memory profiling (scripts/memprofile.sh): this branch is removed from builds without VITE_PROFILE.
+if (import.meta.env.VITE_PROFILE) {
+  import("./profile").then((m) => m.install({ useConnection, exec, openTable: (n) => openTable(n), closeTab, activate, tabs, conn: () => conn }));
+}

@@ -22,8 +22,9 @@ pub struct BackupOptions {
     pub data: bool,
     #[serde(default = "yes")]
     pub views: bool,
-    #[serde(default)]
-    pub gzip: bool,
+        /// Wrap the script in a .zip (opens natively on Windows, macOS and Linux).
+    #[serde(default, alias = "gzip")]
+    pub zip: bool,
     /// Emit `DROP TABLE IF EXISTS` before each `CREATE TABLE`.
     #[serde(default)]
     pub add_drop: bool,
@@ -53,14 +54,14 @@ fn io(e: std::io::Error) -> DbError {
 
 enum Out {
     Plain(BufWriter<File>),
-    Gz(flate2::write::GzEncoder<BufWriter<File>>),
+    Zip(zip::ZipWriter<BufWriter<File>>),
 }
 impl Write for Out {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        match self { Out::Plain(w) => w.write(b), Out::Gz(w) => w.write(b) }
+        match self { Out::Plain(w) => w.write(b), Out::Zip(w) => w.write(b) }
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        match self { Out::Plain(w) => w.flush(), Out::Gz(w) => w.flush() }
+        match self { Out::Plain(w) => w.flush(), Out::Zip(w) => w.flush() }
     }
 }
 
@@ -74,12 +75,19 @@ fn id(schema: &Option<String>, name: &str, conn: &dyn Connection) -> String {
 /// Write a backup script of the connected database to `path`.
 pub async fn backup(conn: &dyn Connection, path: &Path, opts: &BackupOptions, progress: &(dyn Fn(BackupProgress) + Send + Sync), cancel: &AtomicBool) -> Result<BackupReport> {
     let file = BufWriter::with_capacity(1 << 20, File::create(path).map_err(io)?);
-    let mut out = if opts.gzip { Out::Gz(flate2::write::GzEncoder::new(file, flate2::Compression::fast())) } else { Out::Plain(file) };
+    let mut out = if opts.zip {
+        let mut z = zip::ZipWriter::new(file);
+        let inner = path.file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("backup");
+        let inner = if inner.ends_with(".sql") { inner.to_string() } else { format!("{inner}.sql") };
+        let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).compression_level(Some(1)).large_file(true);
+        z.start_file(inner, o).map_err(|e| DbError::msg(e))?;
+        Out::Zip(z)
+    } else { Out::Plain(file) };
     let result = write_backup(conn, &mut out, opts, progress, cancel).await;
-    // `finish()` (not try_finish + flush) writes the gzip trailer exactly once.
+    // `finish()` writes the zip central directory exactly once.
     let finished = match out {
         Out::Plain(mut w) => w.flush().map_err(io),
-        Out::Gz(w) => w.finish().map_err(io).and_then(|mut f| f.flush().map_err(io)),
+        Out::Zip(w) => w.finish().map_err(|e| DbError::msg(e)).and_then(|mut f| f.flush().map_err(io)),
     };
     match (result, finished) {
         (Ok(mut rep), Ok(())) => {
@@ -100,7 +108,7 @@ async fn write_backup(conn: &dyn Connection, out: &mut Out, opts: &BackupOptions
     let total = tables.len();
     let mut report = BackupReport { tables: total, ..Default::default() };
 
-    writeln!(out, "-- Lattice backup\n-- engine: {dialect}\n-- tables: {total}\n").map_err(io)?;
+    writeln!(out, "-- Tabnix backup\n-- engine: {dialect}\n-- tables: {total}\n").map_err(io)?;
     for s in conn.dump_prelude() {
         writeln!(out, "{s}").map_err(io)?;
     }

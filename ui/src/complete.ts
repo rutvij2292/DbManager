@@ -19,13 +19,13 @@ const SNIPPETS: Completion[] = [
 ];
 
 const usage = (() => {
-  try { return JSON.parse(localStorage.getItem("lattice.usage") ?? "{}") as Record<string, number>; } catch { return {}; }
+  try { return JSON.parse(localStorage.getItem("tabnix.usage") ?? "{}") as Record<string, number>; } catch { return {}; }
 })();
 let saveTimer: number | undefined;
 function bump(label: string) {
   usage[label] = (usage[label] ?? 0) + 1;
   clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => localStorage.setItem("lattice.usage", JSON.stringify(usage)), 1000);
+  saveTimer = window.setTimeout(() => localStorage.setItem("tabnix.usage", JSON.stringify(usage)), 1000);
 }
 const boostFor = (label: string) => Math.min(20, usage[label] ?? 0);
 

@@ -1,4 +1,4 @@
-//! Core types and driver traits for Lattice.
+//! Core types and driver traits for Tabnix.
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

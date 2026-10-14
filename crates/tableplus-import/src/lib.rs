@@ -51,12 +51,12 @@ struct Raw {
     color: String,
 }
 
-/// A TablePlus connection translated to Lattice's vocabulary.
+/// A TablePlus connection translated to Tabnix's vocabulary.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Imported {
     pub id: String,
     pub name: String,
-    /// Lattice driver kind, or `None` when this engine isn't supported yet.
+    /// Tabnix driver kind, or `None` when this engine isn't supported yet.
     pub kind: Option<String>,
     /// The driver name as TablePlus calls it.
     pub driver: String,
@@ -80,7 +80,7 @@ fn non_empty(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-/// Map TablePlus driver names onto Lattice kinds.
+/// Map TablePlus driver names onto Tabnix kinds.
 pub fn kind_of(driver: &str) -> Option<&'static str> {
     let d = driver.to_ascii_lowercase();
     Some(if d.contains("mariadb") {
@@ -111,7 +111,7 @@ pub fn kind_of(driver: &str) -> Option<&'static str> {
 /// TablePlus' `tLSMode`: 0 = off/automatic, 1 = preferred, 2 = required, 3+ = verify certificate.
 fn ssl_of(mode: i64) -> Option<String> {
     match mode {
-        i64::MIN..=1 => None, // leave Lattice's default (prefer)
+        i64::MIN..=1 => None, // leave Tabnix's default (prefer)
         2 => Some("require".into()),
         _ => Some("verify".into()),
     }

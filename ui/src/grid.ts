@@ -1,7 +1,10 @@
 import { api, show, type Summary, type Val } from "./api";
 import type { SortKey } from "./builder-sql";
+import { PageCache } from "./pagecache";
 
 const ROW_H = 30, PAGE = 200, MIN_W = 80, GUTTER = 52;
+/** Pages kept in memory (~2,400 rows); older ones are dropped and fetched again from Rust if scrolled back to. */
+const MAX_PAGES = 12;
 
 type Kind = "num" | "text" | "time" | "bool" | "json";
 /** Rough value family of a column, from its declared type. Drives alignment, width and the header glyph. */
@@ -24,8 +27,11 @@ export class Grid {
   private head = document.createElement("div");
   private spacer = document.createElement("div");
   private rowsLayer = document.createElement("div");
-  private cache = new Map<number, Val[][]>();
+  private cache = new PageCache<Val[][]>(MAX_PAGES);
   private loading = new Set<number>();
+  /** A grid that isn't on screen keeps its result in Rust only; rows are fetched again when it comes back. */
+  private suspended = false;
+  private inflight = new Set<Promise<void>>();
   private widths: number[] = [];
   private sel = -1;
   private summary: Summary | null = null;
@@ -36,7 +42,7 @@ export class Grid {
   /** Header click-to-sort; set `sortable` to show the affordance. `additive` = shift-click. */
   sortable = false;
   sort: SortKey[] = [];
-  onSort: (col: string, additive: boolean) => void = () => {};
+  onSort: (col: string, additive: boolean, x: number, y: number) => void = () => {};
   /** Right-click on a cell (row index, column index) — the owner builds the menu. */
   onCellMenu: (x: number, y: number, row: number, col: number) => void = () => {};
   /** Column widths the user dragged, remembered by column name across re-sorts and reloads. */
@@ -72,7 +78,7 @@ export class Grid {
   /** Original (pre-edit) values of a loaded row, used to key UPDATE/DELETE by primary key. */
   original(r: number): Val[] | undefined {
     const n = this.summary?.row_count ?? 0;
-    return r < n ? this.cache.get(Math.floor(r / PAGE))?.[r % PAGE] : undefined;
+    return r < n ? this.cache.peek(Math.floor(r / PAGE))?.[r % PAGE] : undefined;
   }
   /** The value currently shown in a cell (staged edit if any). */
   valueAt(r: number, c: number): Val | undefined {
@@ -178,13 +184,14 @@ export class Grid {
       const rank = this.sort.findIndex((x) => x.col === c.name);
       const key = rank >= 0 ? this.sort[rank] : null;
       if (key) h.style.color = "var(--ink)";
-      h.title = `${c.name}  ${c.type_name}${this.sortable ? "\nClick to sort · Shift-click to add a second sort" : ""}`;
-      h.innerHTML = `<span style="font-size:11px;font-weight:500;font-family:var(--font-mono);color:${GLYPH_COLOR[k]}">${GLYPH[k]}</span><span class="truncate"></span>` +
-        (key ? `<span class="shrink-0 inline-flex items-center gap-0.5" style="color:var(--accent);font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" style="transform:rotate(${key.desc ? 180 : 0}deg)"><path d="M5 1.5 9 8H1z"/></svg>${this.sort.length > 1 ? rank + 1 : ""}</span>` : "");
+      h.title = `${c.name}  ${c.type_name}${this.sortable ? "\nClick to choose ascending / descending · Shift-click to add a second sort" : ""}`;
+      h.innerHTML = `<span class="shrink-0" style="font-size:15px;line-height:1;font-weight:600;font-family:var(--font-mono);color:${GLYPH_COLOR[k]}">${GLYPH[k]}</span><span class="truncate"></span>` +
+        (key ? `<span class="shrink-0 inline-flex items-center gap-0.5" style="color:var(--accent);font-size:11px"><svg width="13" height="13" viewBox="0 0 10 10" fill="currentColor" style="transform:rotate(${key.desc ? 180 : 0}deg)"><path d="M5 1.5 9 8H1z"/></svg>${this.sort.length > 1 ? rank + 1 : ""}</span>` : "");
       (h.children[1] as HTMLElement).textContent = c.name;
       if (this.sortable) {
         h.style.cursor = "pointer";
-        h.onclick = (e) => this.onSort(c.name, e.shiftKey);
+        h.onclick = (e) => this.onSort(c.name, e.shiftKey, e.clientX, e.clientY);
+        h.oncontextmenu = (e) => { e.preventDefault(); this.onSort(c.name, false, e.clientX, e.clientY); };
         if (!key) h.onmouseenter = () => (h.style.background = "color-mix(in srgb, var(--accent) 7%, var(--grid-head))");
         if (!key) h.onmouseleave = () => (h.style.background = "");
       }
@@ -237,15 +244,15 @@ export class Grid {
 
   private render() {
     const s = this.summary;
-    if (!s) return;
+    if (!s || this.suspended) return;
     const first = Math.max(0, Math.floor(this.body.scrollTop / ROW_H) - 5);
     const last = Math.min(this.total(), Math.ceil((this.body.scrollTop + this.body.clientHeight) / ROW_H) + 5);
-    for (let p = Math.floor(first / PAGE); p <= Math.floor(Math.max(first, last - 1) / PAGE); p++) this.ensure(p);
+    for (let p = Math.floor(first / PAGE); p <= Math.floor(Math.max(first, last - 1) / PAGE); p++) this.cache.touch(p) || this.ensure(p);
     this.rowsLayer.style.top = first * ROW_H + "px";
     const frag = document.createDocumentFragment();
     for (let r = first; r < last; r++) {
       const isNew = r >= s.row_count;
-      const row = isNew ? this.inserted[r - s.row_count] : this.cache.get(Math.floor(r / PAGE))?.[r % PAGE];
+      const row = isNew ? this.inserted[r - s.row_count] : this.cache.peek(Math.floor(r / PAGE))?.[r % PAGE];
       const div = document.createElement("div");
       const gone = this.deleted.has(r);
       const selected = r === this.sel;
@@ -291,14 +298,43 @@ export class Grid {
     this.rowsLayer.replaceChildren(frag);
   }
 
-  private async ensure(page: number) {
+  private ensure(page: number) {
     if (this.cache.has(page) || this.loading.has(page) || !this.summary) return;
     const s = this.summary;
     this.loading.add(page);
-    const rows = await api.getRows(s.query_id, page * PAGE, PAGE).catch(() => []);
-    this.loading.delete(page);
-    if (this.summary !== s) return;
-    this.cache.set(page, rows);
+    const p: Promise<void> = api.getRows(s.query_id, page * PAGE, PAGE).catch(() => []).then((rows) => {
+      this.loading.delete(page);
+      this.inflight.delete(p);
+      if (this.summary !== s || this.suspended) return;
+      this.cache.set(page, rows, this.pinnedPages());
+      this.render();
+    });
+    this.inflight.add(p);
+  }
+  /** Tab went to the background: free the fetched rows and the row DOM (pages with staged edits stay, a commit needs them). */
+  suspend() {
+    if (this.suspended) return;
+    this.suspended = true;
+    const keep = this.pinnedPages();
+    for (const p of [...this.cache.keys()]) if (!keep.has(p)) this.cache.drop(p);
+    this.loading.clear();
+    this.rowsLayer.replaceChildren();
+  }
+  /** Tab is on screen again: draw it, fetching the visible pages. */
+  resume() {
+    if (!this.suspended) return;
+    this.suspended = false;
     this.render();
   }
+  /** Pages holding staged edits or deletes: a commit needs their original rows, so they are never evicted. */
+  private pinnedPages() {
+    const pinned = new Set<number>();
+    for (const r of this.edits.keys()) pinned.add(Math.floor(r / PAGE));
+    for (const r of this.deleted) pinned.add(Math.floor(r / PAGE));
+    return pinned;
+  }
+  /** Resolves once every page requested so far has arrived (used by the memory profiler). */
+  async idle() { while (this.inflight.size) await Promise.all([...this.inflight]); }
+  /** Number of result pages currently held in memory. */
+  get cachedPages() { return this.cache.size; }
 }

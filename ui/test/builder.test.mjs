@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSql, emptyModel, suggestJoin } from "../.test-build/builder-sql.mjs";
+import { buildSql, emptyModel, suggestJoin, detectSort } from "../.test-build/builder-sql.mjs";
 
 const dq = (s) => `"${s}"`;
 const r = (table, col, schema = null) => ({ table, schema, col });
@@ -100,10 +100,25 @@ test("sorting: shift-click adds keys, flips them, then drops them", () => {
 test("sorting a query result wraps it, and refuses what it can't wrap safely", () => {
   const q = (s) => `\`${s}\``;
   const sort = [{ col: "total", desc: true }];
-  assert.equal(wrapForSort("SELECT id, total FROM orders WHERE x = 1;  ", sort, q), "SELECT * FROM (SELECT id, total FROM orders WHERE x = 1) AS lattice_sorted ORDER BY `total` DESC");
+  assert.equal(wrapForSort("SELECT id, total FROM orders WHERE x = 1;  ", sort, q), "SELECT * FROM (SELECT id, total FROM orders WHERE x = 1) AS tabnix_sorted ORDER BY `total` DESC");
   assert.ok(wrapForSort("WITH t AS (SELECT 1 AS a) SELECT * FROM t", sort, q));
   assert.equal(wrapForSort("UPDATE t SET a = 1", sort, q), null, "not a SELECT");
   assert.equal(wrapForSort("SELECT 1; SELECT 2", sort, q), null, "two statements");
   assert.equal(wrapForSort("SELECT 1", [], q), null, "nothing to sort by");
   assert.equal(wrapForSort("  ;; ", sort, q), null);
+});
+
+test("detectSort reads plain-column ORDER BY from a typed query", () => {
+  assert.deepEqual(detectSort("SELECT * FROM sales_master ORDER BY sales_master.created_at DESC LIMIT 10 ;"), [{ col: "created_at", desc: true }]);
+  assert.deepEqual(detectSort("select * from t order by `a`, b desc, \"c\" asc;"), [{ col: "a", desc: false }, { col: "b", desc: true }, { col: "c", desc: false }]);
+  assert.deepEqual(detectSort("SELECT * FROM t"), []);
+  assert.deepEqual(detectSort("SELECT * FROM t ORDER BY 1"), [], "ordinals are ignored");
+  assert.deepEqual(detectSort("SELECT * FROM t ORDER BY lower(name)"), [], "expressions are ignored");
+});
+
+test("countSql wraps a single SELECT and refuses anything else", async () => {
+  const { countSql } = await import("../.test-build/builder-sql.mjs");
+  assert.equal(countSql("SELECT * FROM t WHERE a = 1 LIMIT 5;"), "SELECT COUNT(*) AS total FROM (SELECT * FROM t WHERE a = 1 LIMIT 5) AS tabnix_count");
+  assert.equal(countSql("DELETE FROM t"), null);
+  assert.equal(countSql("select 1; select 2"), null);
 });

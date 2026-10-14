@@ -10,7 +10,7 @@ const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:]/g, "").r
 
 export const BACKUP_KINDS = ["sqlite", "mysql", "mariadb", "postgres", "cockroach", "redshift", "greenplum"];
 
-/** Back up the connected database to a SQL file (optionally gzipped). */
+/** Back up the connected database to a SQL file (optionally zipped). */
 export function showBackup(connId: number, connName: string, dbName: string, objects: ObjectRef[], done: (msg: string) => void) {
   const tables = objects.filter((o) => o.kind === "table");
   const label = (t: ObjectRef) => (t.schema && t.schema !== "public" ? t.schema + "." : "") + t.name;
@@ -27,7 +27,7 @@ export function showBackup(connId: number, connName: string, dbName: string, obj
         <label class="flex items-center gap-2"><input id="o-structure" type="checkbox" checked/> Structure</label>
         <label class="flex items-center gap-2"><input id="o-data" type="checkbox" checked/> Data</label>
         <label class="flex items-center gap-2"><input id="o-views" type="checkbox" checked/> Views</label>
-        <label class="flex items-center gap-2"><input id="o-gzip" type="checkbox" checked/> Compress (.gz)</label>
+        <label class="flex items-center gap-2"><input id="o-zip" type="checkbox" checked/> Compress (.zip)</label>
         <label class="flex items-center gap-2" style="grid-column:1/3"><input id="o-drop" type="checkbox"/> Add <span class="mono text-[13px]">DROP TABLE IF EXISTS</span> before each table <span class="text-muted">(replaces tables when restoring)</span></label>
       </div>
       <div id="msg" class="px-5 text-danger min-h-4"></div>
@@ -47,8 +47,9 @@ export function showBackup(connId: number, connName: string, dbName: string, obj
     const structure = m.q<HTMLInputElement>("#o-structure").checked, data = m.q<HTMLInputElement>("#o-data").checked;
     if (!structure && !data) { m.q("#msg").textContent = "Choose structure, data, or both."; return; }
     if (!checked.size) { m.q("#msg").textContent = "Choose at least one table."; return; }
-    const gzip = m.q<HTMLInputElement>("#o-gzip").checked;
-    const path = await save({ defaultPath: `${dbName}_${stamp()}.sql${gzip ? ".gz" : ""}`, filters: [{ name: gzip ? "Compressed SQL" : "SQL", extensions: gzip ? ["gz"] : ["sql"] }] });
+    const zip = m.q<HTMLInputElement>("#o-zip").checked;
+    const views = m.q<HTMLInputElement>("#o-views").checked, addDrop = m.q<HTMLInputElement>("#o-drop").checked; // read now: the form is replaced by the progress view below
+    const path = await save({ defaultPath: `${dbName}_${stamp()}${zip ? ".zip" : ".sql"}`, filters: [{ name: zip ? "Zip archive" : "SQL", extensions: zip ? ["zip"] : ["sql"] }] });
     if (!path) return;
     const job = jobSeq++;
     m.q("#body").innerHTML = `<div class="p-8 text-center"><div id="cur" class="mb-1 text-soft">Starting…</div><div id="rows" class="text-2xl mono mb-3">0 rows</div>
@@ -64,7 +65,7 @@ export function showBackup(connId: number, connName: string, dbName: string, obj
     try {
       const r = await api.backupDatabase(connId, path, {
         tables: checked.size === tables.length ? null : tables.filter((t) => checked.has(label(t))).map((t) => ({ schema: t.schema, name: t.name })),
-        structure, data, views: m.q<HTMLInputElement>("#o-views").checked, gzip, add_drop: m.q<HTMLInputElement>("#o-drop").checked,
+        structure, data, views, zip, add_drop: addDrop,
       }, job);
       done(`Backed up ${r.tables} table${r.tables === 1 ? "" : "s"}, ${r.rows.toLocaleString()} rows (${mb(r.bytes)}) to ${path}`);
     } catch (e) {
@@ -75,9 +76,9 @@ export function showBackup(connId: number, connName: string, dbName: string, obj
   draw();
 }
 
-/** Restore a SQL script (plain or .gz) into the connected database. */
+/** Restore a SQL script (plain, .zip or .gz) into the connected database. */
 export async function showRestore(connId: number, connName: string, dbName: string, env: string | null | undefined, done: (msg: string) => void) {
-  const path = await open({ multiple: false, filters: [{ name: "SQL backup", extensions: ["sql", "gz"] }, { name: "All", extensions: ["*"] }] });
+  const path = await open({ multiple: false, filters: [{ name: "SQL backup", extensions: ["sql", "zip", "gz"] }, { name: "All", extensions: ["*"] }] });
   if (typeof path !== "string") return;
   const prod = env === "production";
   const m = modal(`
@@ -97,6 +98,7 @@ export async function showRestore(connId: number, connName: string, dbName: stri
   m.q("#x").onclick = m.close;
   if (prod) m.q<HTMLInputElement>("#ack").onchange = () => { m.q<HTMLButtonElement>("#go").disabled = !m.q<HTMLInputElement>("#ack").checked; };
   m.q("#go").onclick = async () => {
+    const keepGoing = !!m.q<HTMLInputElement>("#keep")?.checked; // read before the form is replaced by the progress view
     const job = jobSeq++;
     m.q("#body").innerHTML = `<div class="p-6 text-center"><div id="cur" class="mb-1 text-soft">Reading the script…</div><div id="pct" class="text-2xl mono mb-3">0%</div>
       <div class="h-1.5 rounded bg-raised overflow-hidden mx-4 mb-4"><div id="bar" class="h-1.5 bg-accent" style="width:0%"></div></div><button id="cancel" class="btn">Cancel</button></div>`;
@@ -109,7 +111,7 @@ export async function showRestore(connId: number, connName: string, dbName: stri
     });
     m.q("#cancel").onclick = () => { api.cancelIo(job); m.q("#cancel").textContent = "Cancelling…"; };
     try {
-      const r = await api.restoreDatabase(connId, path, { stop_on_error: !m.q<HTMLInputElement>("#keep")?.checked }, job);
+      const r = await api.restoreDatabase(connId, path, { stop_on_error: !keepGoing }, job);
       un();
       if (!r.failed) { done(`Restored: ${r.statements.toLocaleString()} statements${r.copied_rows ? `, ${r.copied_rows.toLocaleString()} rows copied` : ""}.`); m.close(); return; }
       m.q("#body").innerHTML = `<div class="flex flex-col gap-2"><div class="font-medium text-warn">Finished with ${r.failed} error${r.failed === 1 ? "" : "s"} in ${r.statements.toLocaleString()} statements.</div>

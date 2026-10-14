@@ -47,8 +47,34 @@ fn preview(s: &str) -> String {
     if one.chars().count() > 160 { format!("{}…", one.chars().take(160).collect::<String>()) } else { one }
 }
 
-/// Run a SQL script (plain or gzip) against the connection.
+/// Unpack the first entry of a .zip backup to a temporary file (zip entries borrow their archive, so they can't be streamed out directly).
+fn unzip_to_temp(path: &Path) -> Result<std::path::PathBuf> {
+    let mut archive = zip::ZipArchive::new(File::open(path).map_err(DbError::msg)?).map_err(DbError::msg)?;
+    let mut entry = archive.by_index(0).map_err(DbError::msg)?;
+    let tmp = std::env::temp_dir().join(format!("tabnix-restore-{}-{}.sql", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+    let mut out = std::io::BufWriter::new(File::create(&tmp).map_err(DbError::msg)?);
+    std::io::copy(&mut entry, &mut out).map_err(DbError::msg)?;
+    std::io::Write::flush(&mut out).map_err(DbError::msg)?;
+    Ok(tmp)
+}
+
+fn is_zip(path: &Path) -> bool {
+    let mut magic = [0u8; 4];
+    File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"PK\x03\x04"
+}
+
+/// Run a SQL script (plain, .gz or .zip) against the connection.
 pub async fn restore(conn: &dyn Connection, path: &Path, opts: &RestoreOptions, progress: &(dyn Fn(RestoreProgress) + Send + Sync), cancel: &AtomicBool) -> Result<RestoreReport> {
+    if is_zip(path) {
+        let tmp = unzip_to_temp(path)?;
+        let res = restore_script(conn, &tmp, opts, progress, cancel).await;
+        let _ = std::fs::remove_file(&tmp);
+        return res;
+    }
+    restore_script(conn, path, opts, progress, cancel).await
+}
+
+async fn restore_script(conn: &dyn Connection, path: &Path, opts: &RestoreOptions, progress: &(dyn Fn(RestoreProgress) + Send + Sync), cancel: &AtomicBool) -> Result<RestoreReport> {
     let (reader, total) = open(path)?;
     let mut script = ScriptReader::new(reader, conn.dialect());
     let mut session: Option<Box<dyn Session>> = conn.open_session().await?;

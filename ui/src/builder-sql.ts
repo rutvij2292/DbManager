@@ -141,8 +141,34 @@ export function nextSort(sort: SortKey[], col: string, additive: boolean): SortK
   return [{ col, desc: false }];
 }
 
+/** The plain-column `ORDER BY` of a typed query, so the result header can show it. Anything fancier (expressions, ordinals) is ignored. */
+export function detectSort(sql: string): SortKey[] {
+  const m = [...sql.replace(/--.*$/gm, "").matchAll(/\border\s+by\b/gi)].pop();
+  if (!m) return [];
+  const rest = sql.replace(/--.*$/gm, "").slice(m.index! + m[0].length).split(/;|\b(?:limit|offset|fetch|for|union|intersect|except)\b|\)/i)[0];
+  const keys: SortKey[] = [];
+  for (const term of rest.split(",")) {
+    const t = term.trim().match(/^((?:[`"\[]?[\w$]+[`"\]]?\.)*)[`"\[]?([\w$]+)[`"\]]?\s*(asc|desc)?(?:\s+nulls\s+(?:first|last))?$/i);
+    if (!t || /^\d+$/.test(t[2])) return [];
+    keys.push({ col: t[2], desc: t[3]?.toLowerCase() === "desc" });
+  }
+  return keys;
+}
+
+/** `SELECT COUNT(*)` over a plain SELECT, for the on-demand total. Null when the text isn't a single SELECT. */
+export function countSql(sql: string): string | null {
+  const base = sql.replace(/[\s;]+$/g, "").trim();
+  if (!/^(select|with|\()/i.test(base) || base.includes(";")) return null;
+  return `SELECT COUNT(*) AS total FROM (${base}) AS tabnix_count`;
+}
+
+/** Explicit sort from the header menu: this column ascending / descending, or no sort when it is the current one and cleared. */
+export function setSort(col: string, dir: "asc" | "desc" | "clear"): SortKey[] {
+  return dir === "clear" ? [] : [{ col, desc: dir === "desc" }];
+}
+
 /**
- * Wrap a query so its rows come back sorted: `SELECT * FROM (<query>) AS lattice_sorted ORDER BY …`.
+ * Wrap a query so its rows come back sorted: `SELECT * FROM (<query>) AS tabnix_sorted ORDER BY …`.
  * Returns null when the text can't safely be wrapped (not a single SELECT/WITH/VALUES statement).
  */
 export function wrapForSort(sql: string, sort: SortKey[], q: Quote): string | null {
@@ -150,5 +176,5 @@ export function wrapForSort(sql: string, sort: SortKey[], q: Quote): string | nu
   if (!base || !sort.length) return null;
   if (!/^(select|with|values|\()/i.test(base)) return null;
   if (base.includes(";")) return null; // several statements (or a ';' inside a literal): don't guess
-  return `SELECT * FROM (${base}) AS lattice_sorted ORDER BY ${buildOrder(sort, q)}`;
+  return `SELECT * FROM (${base}) AS tabnix_sorted ORDER BY ${buildOrder(sort, q)}`;
 }

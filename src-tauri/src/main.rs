@@ -157,7 +157,7 @@ fn read_profiles(app: &tauri::AppHandle) -> Result<Vec<Profile>, String> {
 }
 
 fn keychain(id: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("dev.rutvij.lattice", id).map_err(|e| e.to_string())
+    keyring::Entry::new("dev.rutvij.tabnix", id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -389,7 +389,7 @@ async fn backup_database(app: tauri::AppHandle, state: State<'_, AppState>, conn
     res.map_err(|e| e.to_string())
 }
 
-/// Run a SQL script (plain or gzip) against the connected database.
+/// Run a SQL script (plain, .gz or .zip) against the connected database.
 #[tauri::command]
 async fn restore_database(app: tauri::AppHandle, state: State<'_, AppState>, conn_id: u64, path: String, options: dbbackup::RestoreOptions, job: u64) -> Result<dbbackup::RestoreReport, String> {
     let conn = state.conn(conn_id)?;
@@ -462,6 +462,26 @@ async fn run_query(state: State<'_, AppState>, conn_id: u64, sql: String) -> Res
     Ok(summary)
 }
 
+/// Run several statements in order on one session (MySQL needs this for `SET FOREIGN_KEY_CHECKS`), stopping at the first error.
+/// Used for administration: truncating every table, dropping a database.
+#[tauri::command]
+async fn run_statements(state: State<'_, AppState>, conn_id: u64, sqls: Vec<String>) -> Result<(), String> {
+    let conn = state.conn(conn_id)?;
+    match conn.open_session().await.map_err(|e| e.to_string())? {
+        Some(mut session) => {
+            for sql in &sqls {
+                session.execute(sql).await.map_err(|e| e.to_string())?;
+            }
+        }
+        None => {
+            for sql in &sqls {
+                conn.query(sql).await.map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Abort the query currently running on a connection.
 #[tauri::command]
 async fn cancel_query(state: State<'_, AppState>, conn_id: u64) -> Result<(), String> {
@@ -511,7 +531,7 @@ async fn apply_structure(
 }
 
 #[tauri::command]
-fn get_rows(state: State<'_, AppState>, query_id: u64, offset: usize, limit: usize) -> Result<Vec<Vec<Value>>, String> {
+async fn get_rows(state: State<'_, AppState>, query_id: u64, offset: usize, limit: usize) -> Result<Vec<Vec<Value>>, String> {
     let results = state.results.lock().unwrap();
     let r = results.get(&query_id).ok_or("result expired")?;
     let end = (offset + limit).min(r.rows.len());
@@ -521,6 +541,40 @@ fn get_rows(state: State<'_, AppState>, query_id: u64, offset: usize, limit: usi
 #[tauri::command]
 fn release_query(state: State<'_, AppState>, query_id: u64) {
     state.results.lock().unwrap().remove(&query_id);
+}
+
+/// Memory-profiling hook (see scripts/memprofile.sh). Without the `profile` feature these do nothing.
+#[tauri::command]
+async fn profile_scenario() -> Option<String> {
+    #[cfg(feature = "profile")]
+    return std::env::var("TABNIX_PROFILE").ok();
+    #[cfg(not(feature = "profile"))]
+    None
+}
+
+/// Path of the SQLite fixture the scenarios open (`TABNIX_PROFILE_DB`).
+#[tauri::command]
+async fn profile_fixture() -> Option<String> {
+    #[cfg(feature = "profile")]
+    return std::env::var("TABNIX_PROFILE_DB").ok();
+    #[cfg(not(feature = "profile"))]
+    None
+}
+
+#[tauri::command]
+async fn profile_log(msg: String) {
+    #[cfg(feature = "profile")]
+    println!("LOG {msg}");
+    #[cfg(not(feature = "profile"))]
+    let _ = msg;
+}
+
+#[tauri::command]
+async fn profile_ready(name: String) {
+    #[cfg(feature = "profile")]
+    println!("READY {name}");
+    #[cfg(not(feature = "profile"))]
+    let _ = name;
 }
 
 fn main() {
@@ -536,7 +590,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, run_statements, get_rows, release_query])
         .run(tauri::generate_context!())
-        .expect("error while running Lattice");
+        .expect("error while running Tabnix");
 }

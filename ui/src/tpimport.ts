@@ -4,7 +4,7 @@ import { esc, modal, toast } from "./ui";
 
 const where = (c: TpEntry) => c.path ?? c.socket ?? [c.user && `${c.user}@`, c.host, c.port && `:${c.port}`, c.database && `/${c.database}`].filter(Boolean).join("");
 
-/** Dialog that brings saved TablePlus connections into Lattice. Resolves true if anything was imported. */
+/** Dialog that brings saved TablePlus connections into Tabnix. Resolves true if anything was imported. */
 export function showTablePlusImport(entries: TpEntry[]): Promise<boolean> {
   return new Promise((resolve) => {
     const supported = entries.filter((e) => e.kind);

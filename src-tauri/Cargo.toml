@@ -1,10 +1,14 @@
 [package]
-name = "lattice"
-version = "0.11.0"
+name = "tabnix"
+version = "0.12.0"
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[features]
+# Self-driving memory scenarios for scripts/memprofile.sh; never enabled in shipped builds.
+profile = []
 
 [dependencies]
 tauri = { version = "2", features = [] }

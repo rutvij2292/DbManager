@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Lattice",
-  "version": "0.11.0",
-  "identifier": "dev.rutvij.lattice",
+  "productName": "Tabnix",
+  "version": "0.12.0",
+  "identifier": "dev.rutvij.tabnix",
   "build": {
     "beforeDevCommand": "npm --prefix ../ui run dev",
     "beforeBuildCommand": "npm --prefix ../ui run build",
@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [
-      { "label": "main", "title": "Lattice", "width": 1280, "height": 800, "minWidth": 800, "minHeight": 500,
+      { "label": "main", "title": "Tabnix", "width": 1280, "height": 800, "minWidth": 800, "minHeight": 500,
         "titleBarStyle": "Overlay", "hiddenTitle": true }
     ],
     "security": { "csp": null }

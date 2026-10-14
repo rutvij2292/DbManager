@@ -1,6 +1,6 @@
 //! Needs servers (see LOG.md):
-//!   LATTICE_MYSQL_PORT=53307 cargo test -p dbbackup --test live -- --ignored --nocapture mysql
-//!   LATTICE_PG_PORT=55432    cargo test -p dbbackup --test live -- --ignored --nocapture postgres
+//!   TABNIX_MYSQL_PORT=53307 cargo test -p dbbackup --test live -- --ignored --nocapture mysql
+//!   TABNIX_PG_PORT=55432    cargo test -p dbbackup --test live -- --ignored --nocapture postgres
 use dbbackup::*;
 use dbcore::*;
 use std::sync::atomic::AtomicBool;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 const NO_CANCEL: AtomicBool = AtomicBool::new(false);
 
 fn tmp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("lattice-backup-live-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("tabnix-backup-live-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d.join(name)
 }
@@ -21,7 +21,7 @@ async fn rows(c: &Arc<dyn Connection>, sql: &str) -> Vec<Vec<Value>> {
 }
 
 async fn mysql(db: &str) -> Arc<dyn Connection> {
-    let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(env_port("LATTICE_MYSQL_PORT")), user: Some("root".into()), password: Some("pw".into()), database: Some(db.into()), ssl: Some("disable".into()), ..Default::default() };
+    let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(env_port("TABNIX_MYSQL_PORT")), user: Some("root".into()), password: Some("pw".into()), database: Some(db.into()), ssl: Some("disable".into()), ..Default::default() };
     driver_mysql::MysqlDriver.connect(&cfg).await.unwrap()
 }
 
@@ -44,11 +44,11 @@ and a second line -- not a comment', '2026-03-04 05:06:07', X'00FF10'),
         src.query(q).await.unwrap();
     }
 
-    for gzip in [false, true] {
-        let f = tmp(if gzip { "m.sql.gz" } else { "m.sql" });
-        let o = BackupOptions { tables: None, structure: true, data: true, views: true, gzip, add_drop: true };
+    for zip in [false, true] {
+        let f = tmp(if zip { "m.zip" } else { "m.sql" });
+        let o = BackupOptions { tables: None, structure: true, data: true, views: true, zip, add_drop: true };
         let rep = backup(src.as_ref(), &f, &o, &|_| {}, &NO_CANCEL).await.unwrap();
-        assert_eq!((rep.tables, rep.rows), (2, 6), "gzip={gzip}");
+        assert_eq!((rep.tables, rep.rows), (2, 6), "zip={zip}");
 
         let dst = mysql("dst").await;
         for q in ["DROP VIEW IF EXISTS order_totals", "DROP TABLE IF EXISTS items", "DROP TABLE IF EXISTS orders"] {
@@ -57,7 +57,7 @@ and a second line -- not a comment', '2026-03-04 05:06:07', X'00FF10'),
         let r = restore(dst.as_ref(), &f, &RestoreOptions { stop_on_error: true }, &|_| {}, &NO_CANCEL).await.unwrap();
         assert_eq!(r.failed, 0, "{:?}", r.errors);
         for q in ["SELECT * FROM orders ORDER BY id", "SELECT * FROM items ORDER BY id", "SELECT * FROM order_totals ORDER BY status"] {
-            assert_eq!(rows(&src, q).await, rows(&dst, q).await, "{q} gzip={gzip}");
+            assert_eq!(rows(&src, q).await, rows(&dst, q).await, "{q} zip={zip}");
         }
         // Structure came through: the foreign key (with cascade), the index, and AUTO_INCREMENT continuing.
         let d = dst.describe(None, "items").await.unwrap();
@@ -83,7 +83,7 @@ async fn mysql_restores_a_script_with_delimiter_blocks() {
 }
 
 async fn postgres(db: &str) -> Arc<dyn Connection> {
-    let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(env_port("LATTICE_PG_PORT")), user: Some("postgres".into()), password: Some("pw".into()), database: Some(db.into()), ssl: Some("disable".into()), ..Default::default() };
+    let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(env_port("TABNIX_PG_PORT")), user: Some("postgres".into()), password: Some("pw".into()), database: Some(db.into()), ssl: Some("disable".into()), ..Default::default() };
     driver_postgres::PostgresDriver.connect(&cfg).await.unwrap()
 }
 
@@ -110,12 +110,12 @@ and a second line -- not a comment', '2026-03-04 05:06:07+00', '\x00ff10', ARRAY
         src.query(q).await.unwrap_or_else(|e| panic!("{q}: {e}"));
     }
 
-    for gzip in [false, true] {
-        let f = tmp(if gzip { "p.sql.gz" } else { "p.sql" });
-        let o = BackupOptions { tables: None, structure: true, data: true, views: true, gzip, add_drop: false };
+    for zip in [false, true] {
+        let f = tmp(if zip { "p.zip" } else { "p.sql" });
+        let o = BackupOptions { tables: None, structure: true, data: true, views: true, zip, add_drop: false };
         let rep = backup(src.as_ref(), &f, &o, &|_| {}, &NO_CANCEL).await.unwrap();
-        assert_eq!((rep.tables, rep.rows), (2, 6), "gzip={gzip}");
-        if !gzip {
+        assert_eq!((rep.tables, rep.rows), (2, 6), "zip={zip}");
+        if !zip {
             let text = std::fs::read_to_string(&f).unwrap();
             assert!(text.contains("COPY ") && text.contains("FROM stdin;"), "data should use COPY");
             assert!(text.contains("CREATE TYPE \"public\".\"status\"") && text.contains("CREATE SCHEMA IF NOT EXISTS \"shop\""));
@@ -135,7 +135,7 @@ and a second line -- not a comment', '2026-03-04 05:06:07+00', '\x00ff10', ARRAY
             "SELECT id, order_id, sku FROM shop.items ORDER BY id",
             "SELECT * FROM public.order_totals ORDER BY status",
         ] {
-            assert_eq!(rows(&src, q).await, rows(&dst, q).await, "{q} gzip={gzip}");
+            assert_eq!(rows(&src, q).await, rows(&dst, q).await, "{q} zip={zip}");
         }
         // Structure: constraints, partial index, FK with cascade, enum, schema.
         let d = dst.describe(Some("public"), "orders").await.unwrap();

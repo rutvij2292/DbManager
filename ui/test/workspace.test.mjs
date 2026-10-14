@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { tabsOf, nextAfterClose, nthTab, cycleTab, tabForSwitch } from "../.test-build/workspace.mjs";
 
 const A = { name: "A" }, B = { name: "B" };
-const tab = (id, server) => ({ id, conn: server ? { server } : null });
+const tab = (id, server) => ({ id, conn: server ?? null });
 // Interleaved on purpose: the global list mixes both connections.
 const a1 = tab("a1", A), b1 = tab("b1", B), a2 = tab("a2", A), b2 = tab("b2", B), a3 = tab("a3", A);
 const all = [a1, b1, a2, b2, a3];
@@ -23,7 +23,7 @@ test("closing a tab never hands focus to another connection's tab", () => {
   assert.equal(nextAfterClose([a1, a2, b1], b1), null);
   for (const t of all) {
     const n = nextAfterClose(all, t);
-    if (n) assert.equal(n.conn.server, t.conn.server, `closing ${t.id} must stay inside its connection`);
+    if (n) assert.equal(n.conn, t.conn, `closing ${t.id} must stay inside its connection`);
   }
 });
 
@@ -40,7 +40,7 @@ test("next / previous tab wraps inside one connection", () => {
   assert.equal(cycleTab(all, a1, -1).id, "a3");
   assert.equal(cycleTab(all, b2, 1).id, "b1");
   assert.equal(cycleTab(all, null, 1), null);
-  for (const t of all) for (const d of [1, -1, 2, -2]) assert.equal(cycleTab(all, t, d).conn.server, t.conn.server);
+  for (const t of all) for (const d of [1, -1, 2, -2]) assert.equal(cycleTab(all, t, d).conn, t.conn);
 });
 
 test("switching connection restores its last tab, or its newest, and never a foreign one", () => {

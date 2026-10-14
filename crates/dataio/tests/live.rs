@@ -1,4 +1,4 @@
-//! Needs servers: LATTICE_PG_PORT=55432 LATTICE_MYSQL_PORT=53306 cargo test -p dataio --test live -- --ignored --nocapture
+//! Needs servers: TABNIX_PG_PORT=55432 TABNIX_MYSQL_PORT=53306 cargo test -p dataio --test live -- --ignored --nocapture
 use dataio::*;
 use dbcore::*;
 use std::sync::atomic::AtomicBool;
@@ -14,7 +14,7 @@ async fn roundtrip(c: Arc<dyn Connection>, setup: &[&str], gen_sql: &str, label:
     for s in setup {
         c.query(s).await.unwrap();
     }
-    let dir = std::env::temp_dir().join(format!("lattice-live-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tabnix-live-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join(format!("{label}.csv"));
     c.query(gen_sql).await.unwrap();
@@ -55,7 +55,7 @@ async fn roundtrip(c: Arc<dyn Connection>, setup: &[&str], gen_sql: &str, label:
 #[tokio::test]
 #[ignore]
 async fn postgres_roundtrip() {
-    let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(port("LATTICE_PG_PORT")), user: Some("postgres".into()), password: Some("pw".into()), database: Some("app".into()), ..Default::default() };
+    let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(port("TABNIX_PG_PORT")), user: Some("postgres".into()), password: Some("pw".into()), database: Some("app".into()), ..Default::default() };
     let c = driver_postgres::PostgresDriver.connect(&cfg).await.unwrap();
     roundtrip(
         c,
@@ -69,7 +69,7 @@ async fn postgres_roundtrip() {
 #[tokio::test]
 #[ignore]
 async fn mysql_roundtrip() {
-    let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port("LATTICE_MYSQL_PORT")), user: Some("root".into()), password: Some("pw".into()), database: Some("app".into()), ssl: Some("disable".into()), ..Default::default() };
+    let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port("TABNIX_MYSQL_PORT")), user: Some("root".into()), password: Some("pw".into()), database: Some("app".into()), ssl: Some("disable".into()), ..Default::default() };
     let c = driver_mysql::MysqlDriver.connect(&cfg).await.unwrap();
     roundtrip(
         c,

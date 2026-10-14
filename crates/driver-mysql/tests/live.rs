@@ -1,11 +1,11 @@
-//! Needs a server: LATTICE_MYSQL_PORT=53306 cargo test -p driver-mysql -- --ignored
+//! Needs a server: TABNIX_MYSQL_PORT=53306 cargo test -p driver-mysql -- --ignored
 use dbcore::*;
 use driver_mysql::MysqlDriver;
 
 #[tokio::test]
 #[ignore]
 async fn live_roundtrip() {
-    let port: u16 = std::env::var("LATTICE_MYSQL_PORT").expect("LATTICE_MYSQL_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_MYSQL_PORT").expect("TABNIX_MYSQL_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("root".into()), password: Some("pw".into()), database: Some("app".into()), ssl: Some("disable".into()), ..Default::default() };
     let c = MysqlDriver.connect(&cfg).await.unwrap();
     c.query("DROP TABLE IF EXISTS t").await.unwrap();
@@ -34,7 +34,7 @@ async fn live_roundtrip() {
 #[tokio::test]
 #[ignore]
 async fn live_cancel() {
-    let port: u16 = std::env::var("LATTICE_MYSQL_PORT").expect("LATTICE_MYSQL_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_MYSQL_PORT").expect("TABNIX_MYSQL_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("root".into()), password: Some("pw".into()), database: Some("app".into()), ssl: Some("disable".into()), ..Default::default() };
     let c = MysqlDriver.connect(&cfg).await.unwrap();
     let c2 = c.clone();
@@ -51,7 +51,7 @@ async fn live_cancel() {
 #[tokio::test]
 #[ignore]
 async fn live_structure() {
-    let port: u16 = std::env::var("LATTICE_MYSQL_PORT").expect("LATTICE_MYSQL_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_MYSQL_PORT").expect("TABNIX_MYSQL_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("root".into()), password: Some("pw".into()), database: Some("app".into()), ssl: Some("disable".into()), ..Default::default() };
     let c = MysqlDriver.connect(&cfg).await.unwrap();
     for s in ["DROP TABLE IF EXISTS s_child", "DROP TABLE IF EXISTS s_parent", "CREATE TABLE s_parent(id int PRIMARY KEY, code varchar(10))",
@@ -86,7 +86,7 @@ async fn live_structure() {
 #[tokio::test]
 #[ignore]
 async fn live_connection_without_database_lists_and_switches() {
-    let port: u16 = std::env::var("LATTICE_MYSQL_PORT").expect("LATTICE_MYSQL_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_MYSQL_PORT").expect("TABNIX_MYSQL_PORT").parse().unwrap();
     let base = ConnConfig { kind: "mysql".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("root".into()), password: Some("pw".into()), ssl: Some("disable".into()), ..Default::default() };
     let c = MysqlDriver.connect(&base).await.unwrap();
     let dbs = c.databases().await.unwrap();

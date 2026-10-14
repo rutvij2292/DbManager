@@ -1,11 +1,11 @@
-//! Needs a server: LATTICE_PG_PORT=55432 cargo test -p driver-postgres -- --ignored
+//! Needs a server: TABNIX_PG_PORT=55432 cargo test -p driver-postgres -- --ignored
 use dbcore::*;
 use driver_postgres::PostgresDriver;
 
 #[tokio::test]
 #[ignore]
 async fn live_roundtrip() {
-    let port: u16 = std::env::var("LATTICE_PG_PORT").expect("LATTICE_PG_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_PG_PORT").expect("TABNIX_PG_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("postgres".into()), password: Some("pw".into()), database: Some("app".into()), ..Default::default() };
     let c = PostgresDriver.connect(&cfg).await.unwrap();
     c.query("DROP TABLE IF EXISTS t").await.unwrap();
@@ -37,7 +37,7 @@ async fn live_roundtrip() {
 #[tokio::test]
 #[ignore]
 async fn live_cancel() {
-    let port: u16 = std::env::var("LATTICE_PG_PORT").expect("LATTICE_PG_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_PG_PORT").expect("TABNIX_PG_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("postgres".into()), password: Some("pw".into()), database: Some("app".into()), ..Default::default() };
     let c = PostgresDriver.connect(&cfg).await.unwrap();
     let c2 = c.clone();
@@ -53,7 +53,7 @@ async fn live_cancel() {
 #[tokio::test]
 #[ignore]
 async fn live_structure() {
-    let port: u16 = std::env::var("LATTICE_PG_PORT").expect("LATTICE_PG_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_PG_PORT").expect("TABNIX_PG_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "postgres".into(), host: Some("127.0.0.1".into()), port: Some(port), user: Some("postgres".into()), password: Some("pw".into()), database: Some("app".into()), ..Default::default() };
     let c = PostgresDriver.connect(&cfg).await.unwrap();
     for s in ["DROP TABLE IF EXISTS s_child", "DROP TABLE IF EXISTS s_parent", "CREATE TABLE s_parent(id int PRIMARY KEY, code text)",

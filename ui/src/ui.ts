@@ -34,11 +34,11 @@ export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "
 
 export type Theme = "light" | "dark";
 export function currentTheme(): Theme {
-  return (localStorage.getItem("lattice.theme") as Theme) || "light";
+  return (localStorage.getItem("tabnix.theme") as Theme) || "light";
 }
 export function applyTheme(t: Theme) {
   document.documentElement.classList.toggle("dark", t === "dark");
-  localStorage.setItem("lattice.theme", t);
+  localStorage.setItem("tabnix.theme", t);
 }
 
 export interface MenuItem { label: string; hint?: string; danger?: boolean; disabled?: boolean; divider?: boolean; action?: () => void }

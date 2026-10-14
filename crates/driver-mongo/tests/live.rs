@@ -1,11 +1,11 @@
-//! Needs a server: LATTICE_MONGO_PORT=57017 cargo test -p driver-mongo -- --ignored
+//! Needs a server: TABNIX_MONGO_PORT=57017 cargo test -p driver-mongo -- --ignored
 use dbcore::*;
 use driver_mongo::MongoDriver;
 
 #[tokio::test]
 #[ignore]
 async fn live_roundtrip() {
-    let port: u16 = std::env::var("LATTICE_MONGO_PORT").expect("LATTICE_MONGO_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_MONGO_PORT").expect("TABNIX_MONGO_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "mongo".into(), host: Some("127.0.0.1".into()), port: Some(port), database: Some("app".into()), ..Default::default() };
     let c = MongoDriver.connect(&cfg).await.unwrap();
     c.ping().await.unwrap();

@@ -10,12 +10,12 @@ async fn db() -> Arc<dyn Connection> {
     SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap()
 }
 fn tmp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("lattice-backup-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("tabnix-backup-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d.join(name)
 }
 fn bo() -> BackupOptions {
-    BackupOptions { tables: None, structure: true, data: true, views: true, gzip: false, add_drop: false }
+    BackupOptions { tables: None, structure: true, data: true, views: true, zip: false, add_drop: false }
 }
 
 async fn seed(c: &Arc<dyn Connection>) {
@@ -42,15 +42,15 @@ async fn rows(c: &Arc<dyn Connection>, sql: &str) -> Vec<Vec<Value>> {
 }
 
 #[tokio::test]
-async fn sqlite_backup_restores_identically_plain_and_gzip() {
+async fn sqlite_backup_restores_identically_plain_and_zip() {
     let src = db().await;
     seed(&src).await;
-    for gzip in [false, true] {
-        let f = tmp(if gzip { "b.sql.gz" } else { "b.sql" });
-        let rep = backup(src.as_ref(), &f, &BackupOptions { gzip, ..bo() }, &|_| {}, &NO_CANCEL).await.unwrap();
-        assert_eq!((rep.tables, rep.rows), (2, 5), "gzip={gzip}");
-        if gzip {
-            assert_eq!(&std::fs::read(&f).unwrap()[..2], &[0x1f, 0x8b], "really gzip");
+    for zip in [false, true] {
+        let f = tmp(if zip { "b.sql.gz" } else { "b.sql" });
+        let rep = backup(src.as_ref(), &f, &BackupOptions { zip, ..bo() }, &|_| {}, &NO_CANCEL).await.unwrap();
+        assert_eq!((rep.tables, rep.rows), (2, 5), "zip={zip}");
+        if zip {
+            assert_eq!(&std::fs::read(&f).unwrap()[..2], &[0x50, 0x4b], "really zip");
         } else {
             let text = std::fs::read_to_string(&f).unwrap();
             assert!(text.contains("CREATE TABLE") && text.contains("INSERT INTO \"person\""));
@@ -61,7 +61,7 @@ async fn sqlite_backup_restores_identically_plain_and_gzip() {
         assert_eq!(r.failed, 0, "{:?}", r.errors);
 
         for q in ["SELECT * FROM country ORDER BY id", "SELECT * FROM person ORDER BY id", "SELECT * FROM person_names ORDER BY name"] {
-            assert_eq!(rows(&src, q).await, rows(&dst, q).await, "{q} (gzip={gzip})");
+            assert_eq!(rows(&src, q).await, rows(&dst, q).await, "{q} (zip={zip})");
         }
         // Structure survived too: the index, the trigger, the foreign key.
         let d = dst.describe(None, "person").await.unwrap();
@@ -125,7 +125,7 @@ async fn backup_of_a_large_table_streams_and_restores() {
     src.query("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 100000) INSERT INTO big SELECT n, 'row-' || n, n * 0.5 FROM r").await.unwrap();
     let f = tmp("big.sql.gz");
     let t = std::time::Instant::now();
-    let rep = backup(src.as_ref(), &f, &BackupOptions { gzip: true, ..bo() }, &|_| {}, &NO_CANCEL).await.unwrap();
+    let rep = backup(src.as_ref(), &f, &BackupOptions { zip: true, ..bo() }, &|_| {}, &NO_CANCEL).await.unwrap();
     let backup_ms = t.elapsed().as_millis();
     assert_eq!(rep.rows, 100_000);
     let dst = db().await;

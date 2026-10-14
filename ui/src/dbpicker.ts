@@ -4,7 +4,7 @@ import { esc, modal } from "./ui";
 const SYSTEM = new Set(["information_schema", "performance_schema", "mysql", "sys", "template0", "template1", "admin", "local", "config", "master", "model", "msdb", "tempdb"]);
 
 /** Searchable list of the databases on the server. Resolves with the chosen name, or null if dismissed. */
-export function pickDatabase(databases: string[], current: string | null | undefined): Promise<string | null> {
+export function pickDatabase(databases: string[], current: string | null | undefined, opened: Set<string> = new Set()): Promise<string | null> {
   return new Promise((resolve) => {
     const m = modal(`
       <div class="px-4 pt-3 pb-2 border-b border-line">
@@ -30,7 +30,7 @@ export function pickDatabase(databases: string[], current: string | null | undef
       shown = [...user, ...(showSystem || term ? sys : [])];
       idx = Math.min(idx, Math.max(0, shown.length - 1));
       const row = (d: string, i: number) => `<div data-i="${i}" class="flex items-center gap-2.5 px-4 h-8 cursor-default ${i === idx ? "bg-accent text-white" : "hover:bg-canvas"}">
-        <span class="${i === idx ? "" : "text-muted"}">${icon("database", 14)}</span><span class="truncate">${esc(d)}</span>${d === current ? `<span class="ml-auto text-[12px] ${i === idx ? "" : "text-muted"}">current</span>` : ""}</div>`;
+        <span class="${i === idx ? "" : "text-muted"}">${icon("database", 14)}</span><span class="truncate">${esc(d)}</span>${d === current ? `<span class="ml-auto text-[12px] ${i === idx ? "" : "text-muted"}">current</span>` : opened.has(d) ? `<span class="ml-auto text-[12px] ${i === idx ? "" : "text-muted"}">open · opens another workspace</span>` : ""}</div>`;
       list.innerHTML = user.map((d, i) => row(d, i)).join("") +
         (sys.length && !showSystem && !term ? `<div id="sys" class="px-4 h-8 flex items-center gap-1.5 text-muted cursor-default hover:text-ink">${icon("chevron", 11)}<span>${sys.length} system databases</span></div>` : "") +
         (showSystem || term ? sys.map((d, i) => row(d, user.length + i)).join("") : "") +

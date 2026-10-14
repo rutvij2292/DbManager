@@ -1,18 +1,18 @@
 /**
- * Tab selection rules. Every tab belongs to exactly one connection ("server") and the UI may only
+ * Tab selection rules. Every tab belongs to exactly one workspace (an open database) and the UI may only
  * ever look at the tabs of the connection on screen. Keeping these rules here, away from the DOM,
  * lets tests prove a tab can never leak across connections.
  */
-export interface Tabbed { conn: { server: unknown } | null }
+export interface Tabbed { conn: unknown | null }
 
 /** The tabs of one connection, in order. Tabs without a connection belong to nobody. */
 export function tabsOf<T extends Tabbed>(all: readonly T[], server: unknown): T[] {
-  return server ? all.filter((t) => t.conn?.server === server) : [];
+  return server ? all.filter((t) => t.conn === server) : [];
 }
 
 /** After closing `closing`, which tab of the SAME connection takes over (the one now in its slot, else the last). */
 export function nextAfterClose<T extends Tabbed>(all: readonly T[], closing: T): T | null {
-  const server = closing.conn?.server;
+  const server = closing.conn;
   const mine = tabsOf(all, server);
   const i = mine.indexOf(closing);
   const left = mine.filter((t) => t !== closing);
@@ -27,7 +27,7 @@ export function nthTab<T extends Tabbed>(all: readonly T[], server: unknown, n: 
 /** Next / previous tab (wrapping) within the current tab's own connection. */
 export function cycleTab<T extends Tabbed>(all: readonly T[], current: T | null, delta: number): T | null {
   if (!current) return null;
-  const mine = tabsOf(all, current.conn?.server);
+  const mine = tabsOf(all, current.conn);
   if (!mine.length) return null;
   return mine[(mine.indexOf(current) + delta + mine.length) % mine.length];
 }

@@ -1,11 +1,11 @@
-//! Needs a server: LATTICE_REDIS_PORT=56379 cargo test -p driver-redis -- --ignored
+//! Needs a server: TABNIX_REDIS_PORT=56379 cargo test -p driver-redis -- --ignored
 use dbcore::*;
 use driver_redis::RedisDriver;
 
 #[tokio::test]
 #[ignore]
 async fn live_roundtrip() {
-    let port: u16 = std::env::var("LATTICE_REDIS_PORT").expect("LATTICE_REDIS_PORT").parse().unwrap();
+    let port: u16 = std::env::var("TABNIX_REDIS_PORT").expect("TABNIX_REDIS_PORT").parse().unwrap();
     let cfg = ConnConfig { kind: "redis".into(), host: Some("127.0.0.1".into()), port: Some(port), ..Default::default() };
     let c = RedisDriver.connect(&cfg).await.unwrap();
     c.query("FLUSHDB").await.unwrap();

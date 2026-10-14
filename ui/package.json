@@ -1,12 +1,12 @@
 {
-  "name": "lattice-ui",
+  "name": "tabnix-ui",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.12.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "esbuild src/builder-sql.ts --format=esm --outfile=.test-build/builder-sql.mjs --log-level=error && esbuild src/structure.ts --bundle --platform=node --format=esm --outfile=.test-build/structure.mjs --log-level=error && esbuild src/diagram-layout.ts --format=esm --outfile=.test-build/diagram-layout.mjs --log-level=error && esbuild src/workspace.ts --format=esm --outfile=.test-build/workspace.mjs --log-level=error && node --test test/"
+    "test": "esbuild src/builder-sql.ts --format=esm --outfile=.test-build/builder-sql.mjs --log-level=error && esbuild src/structure.ts --bundle --platform=node --format=esm --outfile=.test-build/structure.mjs --log-level=error && esbuild src/diagram-layout.ts --format=esm --outfile=.test-build/diagram-layout.mjs --log-level=error && esbuild src/workspace.ts --format=esm --outfile=.test-build/workspace.mjs --log-level=error && esbuild src/dbadmin.ts --bundle --platform=node --format=esm --outfile=.test-build/dbadmin.mjs --log-level=error && esbuild src/pagecache.ts --format=esm --outfile=.test-build/pagecache.mjs --log-level=error && esbuild src/qhistory.ts --format=esm --outfile=.test-build/qhistory.mjs --log-level=error && node --test test/"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4",

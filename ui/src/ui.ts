@@ -70,3 +70,16 @@ export function contextMenu(x: number, y: number, items: MenuItem[]) {
   window.addEventListener("blur", close);
   window.addEventListener("wheel", close, { capture: true, passive: true });
 }
+
+/** A stable colour per tag, so "Work" looks the same on the home screen, in the form and in filters. */
+const TAG_HUES = ["--accent", "--spark", "--eng-mongo", "--eng-mssql", "--eng-redis", "--eng-pg", "--eng-sqlite", "--eng-maria"];
+export function tagHue(tag: string): string {
+  let h = 0;
+  for (const c of tag.trim().toLowerCase()) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `var(${TAG_HUES[h % TAG_HUES.length]})`;
+}
+export function tagChip(tag: string, extra = ""): string {
+  const hue = tagHue(tag);
+  return `<span class="inline-flex items-center gap-1.5 shrink-0 ${extra}" style="height:20px;padding:0 8px;border-radius:999px;font-size:12px;font-weight:500;color:var(--ink);background:color-mix(in srgb, ${hue} 14%, transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb, ${hue} 30%, transparent)"><span style="width:6px;height:6px;border-radius:3px;background:${hue}"></span>${esc(tag)}</span>`;
+}
+export const STARTER_TAGS = ["Work", "Practice", "Projects"];

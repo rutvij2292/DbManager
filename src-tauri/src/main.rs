@@ -140,6 +140,9 @@ struct Profile {
     /// Accent colour (hex) shown on the connection.
     #[serde(default)]
     color: Option<String>,
+    /// Free-form labels (work, practice, client name…) used to group connections.
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 fn profiles_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -220,7 +223,7 @@ async fn tableplus_import(app: tauri::AppHandle, ids: Vec<String>, passwords: bo
         profiles.push(Profile {
             id: c.id.clone(), name: c.name.clone(), kind, host: c.host, port: c.port, user: c.user, database: c.database, path: c.path,
             ssl: c.ssl, ssh_host: c.ssh_host, ssh_port: c.ssh_port, ssh_user: c.ssh_user, ssh_key: c.ssh_key,
-            socket: c.socket, environment: c.environment, color: c.color,
+            socket: c.socket, environment: c.environment, color: c.color, tags: vec![],
         });
         sum.imported += 1;
         if passwords {

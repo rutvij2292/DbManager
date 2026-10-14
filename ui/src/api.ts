@@ -5,7 +5,7 @@ export interface Col { name: string; type_name: string }
 export interface Summary { query_id: number; columns: Col[]; row_count: number; truncated: boolean; affected: number | null; elapsed_ms: number }
 export interface ObjectRef { schema: string | null; name: string; kind: string }
 export interface SchemaTable { schema: string | null; name: string; columns: string[] }
-export interface Profile { id: string; name: string; kind: string; host?: string | null; port?: number | null; user?: string | null; database?: string | null; path?: string | null; ssl?: string | null; ssh_host?: string | null; ssh_port?: number | null; ssh_user?: string | null; ssh_key?: string | null; socket?: string | null; environment?: string | null; color?: string | null }
+export interface Profile { id: string; name: string; kind: string; host?: string | null; port?: number | null; user?: string | null; database?: string | null; path?: string | null; ssl?: string | null; ssh_host?: string | null; ssh_port?: number | null; ssh_user?: string | null; ssh_key?: string | null; socket?: string | null; environment?: string | null; color?: string | null; tags?: string[] }
 export interface ColumnInfo { name: string; type_name: string; nullable: boolean; primary_key: boolean; default: string | null }
 export interface PlanNode { op: string; detail: string; relation: string | null; est_rows: number | null; actual_rows: number | null; cost: number | null; time_ms: number | null; children: PlanNode[] }
 export type Change =

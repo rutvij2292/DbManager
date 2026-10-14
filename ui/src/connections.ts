@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type ConnConfig, type Profile } from "./api";
+import { esc, tagChip, STARTER_TAGS } from "./ui";
 
 interface Kind { id: string; label: string; port?: number; file?: boolean }
 const KINDS: Kind[] = [
@@ -29,6 +30,14 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
       </div>
       <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[13.5px]">
         <label>Name <input name="name" class="${field}" placeholder="Local Postgres"/></label>
+        <div>
+          <div class="mb-1">Tags <span class="text-muted">· group connections, e.g. Work or Practice</span></div>
+          <div id="tagbox" class="${field} flex flex-wrap items-center gap-1.5" style="height:auto;min-height:32px;padding-top:4px;padding-bottom:4px">
+            <span id="tagchips" class="contents"></span>
+            <input id="taginput" class="flex-1 min-w-[120px] bg-transparent outline-none" style="height:22px" placeholder="Add a tag, then press Enter"/>
+          </div>
+          <div id="tagsug" class="flex flex-wrap gap-1.5 mt-1.5"></div>
+        </div>
         <label>Type <select name="kind" class="${field}">${KINDS.map((k) => `<option value="${k.id}">${k.label}</option>`).join("")}</select></label>
         <div id="net" class="flex flex-col gap-2 overflow-auto">
           <div class="flex gap-2"><label class="flex-1">Host <input name="host" class="${field}" value="127.0.0.1"/></label>
@@ -92,7 +101,32 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
       ssh_key: on ? el("ssh_key").value || undefined : undefined,
     };
   };
+  // ---- tags
+  let tags: string[] = [];
+  let known: string[] = [...STARTER_TAGS];
+  const drawTags = () => {
+    q("#tagchips").innerHTML = tags.map((t, i) => `<button type="button" data-rm="${i}" class="inline-flex" title="Remove ${esc(t)}">${tagChip(t)}</button>`).join("");
+    q("#tagchips").querySelectorAll<HTMLElement>("[data-rm]").forEach((b) => (b.onclick = () => { tags.splice(+b.dataset.rm!, 1); drawTags(); }));
+    const free = known.filter((k) => !tags.some((t) => t.toLowerCase() === k.toLowerCase()));
+    q("#tagsug").innerHTML = free.length ? `<span class="text-muted text-[12.5px] mr-0.5">Use:</span>` + free.map((k) => `<button type="button" data-add="${esc(k)}" class="opacity-80 hover:opacity-100">${tagChip(k)}</button>`).join("") : "";
+    q("#tagsug").querySelectorAll<HTMLElement>("[data-add]").forEach((b) => (b.onclick = () => { addTag(b.dataset.add!); }));
+  };
+  const addTag = (raw: string) => {
+    const t = raw.trim().replace(/\s+/g, " ").slice(0, 24);
+    if (t && !tags.some((x) => x.toLowerCase() === t.toLowerCase())) tags.push(t);
+    (q("#taginput") as HTMLInputElement).value = "";
+    drawTags();
+  };
+  const tagInput = q<HTMLInputElement>("#taginput");
+  tagInput.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTag(tagInput.value); }
+    else if (e.key === "Backspace" && !tagInput.value && tags.length) { tags.pop(); drawTags(); }
+  };
+  tagInput.onblur = () => { if (tagInput.value.trim()) addTag(tagInput.value); };
+
   const toProfile = (): Profile => ({
+    tags: [...tags],
     id: current?.id ?? "",
     name: el("name").value || kindOf().label,
     kind: el("kind").value,
@@ -109,6 +143,8 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   });
   const fill = (p: Profile | null) => {
     current = p;
+    tags = [...(p?.tags ?? [])];
+    drawTags();
     el("name").value = p?.name ?? "";
     el("kind").value = p?.kind ?? "postgres";
     el("host").value = p?.host ?? "127.0.0.1";
@@ -128,6 +164,8 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   };
   const refresh = async () => {
     const list = await api.listConnections();
+    known = [...new Set([...list.flatMap((x) => x.tags ?? []), ...STARTER_TAGS])];
+    drawTags();
     q("#list").replaceChildren(...list.map((p) => {
       const d = document.createElement("div");
       d.className = "px-2 py-1.5 rounded cursor-default hover:bg-raised " + (p.id === current?.id ? "bg-raised2" : "");

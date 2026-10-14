@@ -5,11 +5,11 @@
 const T = (v: string) => ({ t: "Text", v }), I = (v: number) => ({ t: "I64", v }), F = (v: number) => ({ t: "F64", v }), N = { t: "Null" };
 
 const profiles = [
-  { id: "p1", name: "Shop – local", kind: "mysql", host: "127.0.0.1", port: 3306, user: "root", database: null, environment: "local", color: null },
-  { id: "p2", name: "Analytics warehouse", kind: "postgres", host: "db.analytics.internal", port: 5432, user: "analyst", database: "warehouse", environment: "staging", color: null, ssh_host: "bastion.example.com" },
-  { id: "p3", name: "Billing – production", kind: "postgres", host: "billing-primary.example.com", port: 5432, user: "app_ro", database: "billing", environment: "production", color: null },
-  { id: "p4", name: "Session cache", kind: "redis", host: "127.0.0.1", port: 6379, environment: "local", color: null },
-  { id: "p5", name: "notes.sqlite", kind: "sqlite", path: "/Users/dev/notes.sqlite", environment: "local", color: null },
+  { id: "p1", name: "Shop – local", kind: "mysql", host: "127.0.0.1", port: 3306, user: "root", database: null, environment: "local", color: null, tags: ["Practice"] },
+  { id: "p2", name: "Analytics warehouse", kind: "postgres", host: "db.analytics.internal", port: 5432, user: "analyst", database: "warehouse", environment: "staging", color: null, ssh_host: "bastion.example.com", tags: ["Work"] },
+  { id: "p3", name: "Billing – production", kind: "postgres", host: "billing-primary.example.com", port: 5432, user: "app_ro", database: "billing", environment: "production", color: null, tags: ["Work", "Clients"] },
+  { id: "p4", name: "Session cache", kind: "redis", host: "127.0.0.1", port: 6379, environment: "local", color: null, tags: ["Projects"] },
+  { id: "p5", name: "notes.sqlite", kind: "sqlite", path: "/Users/dev/notes.sqlite", environment: "local", color: null, tags: ["Practice", "Projects"] },
 ];
 
 const tables = [
@@ -60,7 +60,23 @@ const er = {
   ].map(([name, from, fc, to]) => ({ name, from_table: from, from_columns: [fc], to_table: to, to_columns: ["id"] })),
   truncated: false, total_tables: 11,
 };
+// Tiny event bus so progress dialogs can be shown mid-way.
+const callbacks = new Map<number, (e: unknown) => void>();
+const listeners = new Map<string, number[]>();
+let cbId = 1;
+const emit = (event: string, payload: unknown) => (listeners.get(event) ?? []).forEach((id) => callbacks.get(id)?.({ event, id, payload }));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function fakeJob(job: number, total: number, steps = 24, ms = 110) {
+  for (let i = 1; i <= steps; i++) { await sleep(ms); emit("io-progress", { job, rows: Math.round((total * i) / steps) }); }
+  return total;
+}
 const handlers: Record<string, (a: any) => unknown> = {
+  "plugin:dialog|open": () => "/Users/dev/Downloads/customers_2026.csv",
+  "plugin:dialog|save": () => "/Users/dev/Documents/orders_2026-10-14.csv",
+  export_data: async (a) => fakeJob(a.job, 1_240_000),
+  import_preview: () => ({ headers: ["id", "name", "email", "country", "signup_date", "lifetime_value", "notes"], types: ["integer", "text", "text", "text", "text", "real", "text"], delimiter: ",", format: "delimited",
+    sample: [["1", "Ada Lovelace", "ada@example.com", "UK", "2024-03-02", "1280.50", "Early adopter"], ["2", "Grace Hopper", "grace@example.com", "US", "2024-03-09", "940.00", null], ["3", "Linus T.", "linus@example.com", "FI", "2024-04-11", "55.25", "Asked for a refund"]] }),
+  import_data: async (a) => ({ rows: await fakeJob(a.job, 482_000), created: !!a.options?.create }),
   er_schema: (a) => {
     if (!a.focus) return er;
     const keep = new Set([a.focus]);
@@ -110,12 +126,13 @@ const handlers: Record<string, (a: any) => unknown> = {
 export function installMock() {
   (window as any).__TAURI_INTERNALS__ = {
     invoke: async (cmd: string, args: any) => {
+      if (cmd === "plugin:event|listen") { const l = listeners.get(args.event) ?? []; l.push(args.handler); listeners.set(args.event, l); return args.handler; }
       if (cmd.startsWith("plugin:event|")) return 0;
       const h = handlers[cmd];
       if (!h) throw new Error(`mock: no handler for ${cmd}`);
       return h(args ?? {});
     },
-    transformCallback: () => 0,
+    transformCallback: (cb: (e: unknown) => void) => { const id = cbId++; callbacks.set(id, cb); return id; },
     unregisterCallback: () => {},
     convertFileSrc: (p: string) => p,
   };

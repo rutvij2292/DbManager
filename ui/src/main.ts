@@ -20,7 +20,7 @@ import { sql, SQLite, PostgreSQL, MySQL, MSSQL } from "@codemirror/lang-sql";
 import { api, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
-import { applyTheme, currentTheme, esc, toast, contextMenu } from "./ui";
+import { applyTheme, currentTheme, esc, toast, contextMenu, tagChip, tagHue as tagHueOf } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { tabsOf, nextAfterClose, nthTab, cycleTab, tabForSwitch } from "./workspace";
 import { pickDatabase } from "./dbpicker";
@@ -44,6 +44,8 @@ const servers: Server[] = [];
 /** The connection whose workspace is on screen. Tabs, sidebar and shortcuts only ever see this one. */
 let activeServer: Server | null = null;
 let launcherOpen = false;
+/** Home-screen tag filter: "all", a tag name, or "__none" for connections without tags. */
+let launcherTag = "all";
 /** Tabs that belong to a connection. This is the only list the UI may iterate: connections never share tabs. */
 const serverTabs = (s: Server | null = activeServer): Tab[] => tabsOf(tabs, s);
 const tabs: Tab[] = [];
@@ -906,44 +908,98 @@ async function showLauncher() {
         <div class="flex-1"><div class="font-semibold">${importable.length} connection${importable.length === 1 ? "" : "s"} found in TablePlus</div>
         <div class="text-soft">Bring them over instead of typing hosts and users again.</div></div>
         <button id="tpno" class="btn btn-ghost">Not now</button><button id="tpgo" class="btn btn-primary">Import from TablePlus</button></div>` : ""}
-    <div id="rows" class="mt-7 grid gap-3" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"></div>
+    <div id="tagfilter" class="mt-7 flex flex-wrap items-center gap-2"></div>
+    <div id="rows" class="mt-5"></div>
     <div class="mt-6 flex items-center gap-2">
       <button id="newconn" class="btn">${icon("plus", 15)}<span>New connection</span><span class="kbd">⌘N</span></button>
       ${tp.length && (!importable.length || dismissed) ? `<button id="tpgo2" class="btn btn-ghost">Import from TablePlus</button>` : ""}
     </div></div>`;
   const rows = wrap.querySelector("#rows") as HTMLElement;
+  const filterHost = wrap.querySelector("#tagfilter") as HTMLElement;
   if (!profiles.length) {
-    rows.style.display = "block";
+    filterHost.remove();
     rows.innerHTML = `<div class="card px-6 py-10 text-center"><div class="inline-flex text-muted mb-2">${icon("database", 28)}</div>
       <div class="text-[16px] font-semibold">No saved connections yet</div><div class="text-soft mt-1">Add a connection, or import the ones you already have.</div></div>`;
   }
   const sorted = [...profiles].sort((a, b) => a.name.localeCompare(b.name));
-  for (const p of sorted) {
+  const tagList = [...new Set(sorted.flatMap((p) => p.tags ?? []))].sort((a, b) => a.localeCompare(b));
+  const untagged = sorted.filter((p) => !p.tags?.length);
+  if (launcherTag !== "all" && launcherTag !== "__none" && !tagList.includes(launcherTag)) launcherTag = "all";
+  if (launcherTag === "__none" && !untagged.length) launcherTag = "all";
+
+  const card = (p: Profile): HTMLElement => {
     const row = document.createElement("div");
     const hue = engineVar(p.kind);
-    row.className = "group relative flex items-center gap-3.5 rounded-xl px-4 h-[78px] cursor-default overflow-hidden";
+    row.className = "group relative flex items-center gap-3.5 rounded-xl px-4 h-[88px] cursor-default overflow-hidden";
     row.style.cssText = `background:var(--panel);box-shadow:var(--shadow-1), inset 0 0 0 1px color-mix(in srgb, ${hue} 16%, var(--line));transition:box-shadow .15s, transform .15s var(--ease-out)`;
     row.onmouseenter = () => { row.style.boxShadow = `var(--shadow-2), inset 0 0 0 1px color-mix(in srgb, ${hue} 38%, var(--line))`; row.style.transform = "translateY(-1px)"; };
     row.onmouseleave = () => { row.style.boxShadow = `var(--shadow-1), inset 0 0 0 1px color-mix(in srgb, ${hue} 16%, var(--line))`; row.style.transform = ""; };
     const where = p.path ?? [p.user && `${p.user}@`, p.host, p.port && `:${p.port}`, p.database && `/${p.database}`].filter(Boolean).join("");
     const edge = p.environment === "production" ? `<span class="absolute inset-y-0 left-0" style="width:4px;background:repeating-linear-gradient(135deg,var(--env-production) 0 3px,transparent 3px 6px);opacity:.8"></span>` : p.environment === "staging" ? `<span class="absolute inset-y-0 left-0" style="width:3px;background:var(--env-staging)"></span>` : "";
-    row.innerHTML = `${edge}${engineBadge(p.kind, 42)}
-      <div class="min-w-0 flex-1"><div class="font-semibold text-[15px] truncate">${esc(p.name)}</div><div class="mono text-[12.5px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div></div>
-      <div class="relative shrink-0" style="width:96px;height:30px">
-        ${servers.some((sv) => sv.id === p.id) ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:var(--ok);background:var(--ok-soft)"><span style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>connected</span>` : p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)};background:color-mix(in srgb, ${envColor(p.environment)} 13%, transparent)">${esc(p.environment)}</span>` : ""}
-        <button class="btn btn-primary absolute right-0 top-0 opacity-0 group-hover:opacity-100 focus:opacity-100">Connect</button>
-      </div>`;
     const live = servers.find((sv) => sv.id === p.id);
-    if (live) row.querySelector("button")!.textContent = "Open";
+    row.innerHTML = `${edge}${engineBadge(p.kind, 42)}
+      <div class="min-w-0 flex-1"><div class="font-semibold text-[15px] truncate">${esc(p.name)}</div><div class="mono text-[12.5px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div>
+        ${p.tags?.length ? `<div class="flex gap-1.5 mt-1.5 overflow-hidden">${p.tags.slice(0, 3).map((t) => tagChip(t)).join("")}${p.tags.length > 3 ? `<span class="text-muted text-[12px] leading-5">+${p.tags.length - 3}</span>` : ""}</div>` : ""}</div>
+      <div class="relative shrink-0 self-start mt-3.5" style="width:96px;height:30px">
+        ${live ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:var(--ok);background:var(--ok-soft)"><span style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>connected</span>` : p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)};background:color-mix(in srgb, ${envColor(p.environment)} 13%, transparent)">${esc(p.environment)}</span>` : ""}
+        <button class="btn btn-primary absolute right-0 top-0 opacity-0 group-hover:opacity-100 focus:opacity-100">${live ? "Open" : "Connect"}</button>
+      </div>`;
     const go = async () => {
       const btn = row.querySelector("button")!;
       btn.textContent = live ? "Opening…" : "Connecting…"; btn.setAttribute("disabled", "");
-      try { await connectProfile(p); } catch (e) { toast(`Couldn't connect to ${p.name}: ${e}`, "error"); btn.textContent = "Connect"; btn.removeAttribute("disabled"); }
+      try { await connectProfile(p); } catch (e) { toast(`Couldn't connect to ${p.name}: ${e}`, "error"); btn.textContent = live ? "Open" : "Connect"; btn.removeAttribute("disabled"); }
     };
     row.ondblclick = go;
     row.querySelector("button")!.addEventListener("click", go);
-    rows.append(row);
-  }
+    row.oncontextmenu = (e) => { e.preventDefault(); contextMenu(e.clientX, e.clientY, [{ label: live ? "Open" : "Connect", action: go }, { label: "Edit connection or tags…", action: openConnections }]); };
+    return row;
+  };
+  const grid = (list: Profile[]) => {
+    const g = document.createElement("div");
+    g.className = "grid gap-3";
+    g.style.gridTemplateColumns = "repeat(auto-fill,minmax(340px,1fr))";
+    g.append(...list.map(card));
+    return g;
+  };
+
+  const drawCards = () => {
+    if (!profiles.length) return;
+    rows.replaceChildren();
+    const grouped = launcherTag === "all" && tagList.length > 0;
+    if (!grouped) {
+      const list = launcherTag === "all" ? sorted : launcherTag === "__none" ? untagged : sorted.filter((p) => p.tags?.some((t) => t === launcherTag));
+      rows.append(grid(list));
+      return;
+    }
+    // Grouped view: each connection sits under its first tag; the chips on the card show all of them.
+    const sections: [string | null, Profile[]][] = [...tagList.map((t): [string, Profile[]] => [t, sorted.filter((p) => p.tags?.[0] === t)]), [null, untagged]];
+    for (const [tag, list] of sections) {
+      if (!list.length) continue;
+      const head = document.createElement("div");
+      head.className = "flex items-center gap-3 mt-7 mb-3 first:mt-0";
+      head.innerHTML = tag ? `${tagChip(tag)}<span class="text-muted text-[13px]">${list.length} connection${list.length === 1 ? "" : "s"}</span>` : `<span class="text-soft text-[13px] font-medium">Untagged</span><span class="text-muted text-[13px]">${list.length}</span>`;
+      rows.append(head, grid(list));
+    }
+  };
+  const drawFilter = () => {
+    if (!profiles.length || !tagList.length) { filterHost.replaceChildren(); return; }
+    const chip = (key: string, label: string, n: number, inner?: string) => {
+      const on = launcherTag === key;
+      const b = document.createElement("button");
+      b.className = "inline-flex items-center gap-2 rounded-full px-3 h-8 text-[13.5px] font-medium " + (on ? "bg-accent-soft text-ink" : "text-soft hover:bg-raised");
+      b.style.boxShadow = on ? "inset 0 0 0 1.5px var(--accent)" : "inset 0 0 0 1px var(--line-strong)";
+      b.innerHTML = `${inner ?? ""}<span>${esc(label)}</span><span class="text-muted text-[12px]">${n}</span>`;
+      b.onclick = () => { launcherTag = key; drawFilter(); drawCards(); };
+      return b;
+    };
+    filterHost.replaceChildren(
+      chip("all", "All", sorted.length),
+      ...tagList.map((t) => chip(t, t, sorted.filter((p) => p.tags?.includes(t)).length, `<span style="width:8px;height:8px;border-radius:4px;background:${tagHueOf(t)}"></span>`)),
+      ...(untagged.length ? [chip("__none", "Untagged", untagged.length)] : []),
+    );
+  };
+  drawFilter();
+  drawCards();
   const doImport = async () => { if (await showTablePlusImport(tp)) showLauncher(); };
   (wrap.querySelector("#tpgo") as HTMLElement | null)?.addEventListener("click", doImport);
   (wrap.querySelector("#tpno") as HTMLElement | null)?.addEventListener("click", () => { localStorage.setItem("lattice.tpDismissed", "1"); showLauncher(); });

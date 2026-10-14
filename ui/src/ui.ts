@@ -8,10 +8,12 @@ export function modal(inner: string, width = 560) {
   o.innerHTML = `<div class="glass-strong rounded-2xl flex flex-col max-h-[86vh]" style="width:${width}px;max-width:94vw">${inner}</div>`;
   document.body.append(o);
   const close = () => { o.remove(); window.removeEventListener("keydown", onKey, true); };
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  /** Set by a dialog that wants to handle Esc itself (e.g. while recording a shortcut). */
+  const api = { o, close, blockEsc: undefined as (() => boolean) | undefined, q: <T extends HTMLElement>(s: string) => o.querySelector(s) as T };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !api.blockEsc?.()) close(); };
   window.addEventListener("keydown", onKey, true);
   o.addEventListener("mousedown", (e) => { if (e.target === o) close(); });
-  return { o, close, q: <T extends HTMLElement>(s: string) => o.querySelector(s) as T };
+  return api;
 }
 
 let toastTimer: number | undefined;

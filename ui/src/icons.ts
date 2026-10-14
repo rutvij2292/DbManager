@@ -6,6 +6,7 @@ const P: Record<string, string> = {
   key: '<circle cx="5.2" cy="10.8" r="2.6"/><path d="m7.1 9 5.6-5.6M10.6 5.5l1.6 1.6M12 4.1l1.4 1.4"/>',
   collection: '<path d="M2.5 5.2 8 2.5l5.5 2.7L8 8 2.5 5.2Z"/><path d="m2.5 8 5.5 2.7L13.5 8M2.5 10.8 8 13.5l5.5-2.7"/>',
   search: '<circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3.3 3.3"/>',
+  gear: '<path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6"/><circle cx="10" cy="4.5" r="1.5"/><circle cx="6" cy="11.5" r="1.5"/>',
   plus: '<path d="M8 3v10M3 8h10"/>',
   minus: '<path d="M3 8h10"/>',
   close: '<path d="m4 4 8 8M12 4l-8 8"/>',

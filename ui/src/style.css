@@ -69,7 +69,7 @@
   --shadow-pop: var(--shadow-2);
 }
 
-html, body { background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 14px; line-height: 1.4; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+html, body { background: var(--canvas); color: var(--ink); font-family: var(--ui-font, var(--font-sans)); font-size: 14px; line-height: 1.4; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
 input, select, textarea { font: inherit; }
@@ -80,10 +80,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* CodeMirror, themed through the tokens above */
 .cm-editor { height: 100%; background: var(--panel); color: var(--ink); }
 .cm-editor.cm-focused { outline: none; }
-.cm-gutters { background: var(--panel) !important; border: none !important; color: var(--muted) !important; font-size: 12px; }
+.cm-gutters { background: var(--panel) !important; border: none !important; color: var(--muted) !important; font-size: calc(var(--editor-size, 13.5px) - 1.5px); }
 .cm-activeLineGutter { background: transparent !important; color: var(--soft) !important; }
 .cm-activeLine { background: color-mix(in srgb, var(--accent) 4%, transparent) !important; }
-.cm-content, .cm-scroller { font-family: var(--font-mono); font-size: 13.5px; line-height: 1.6; }
+.cm-content, .cm-scroller { font-family: var(--editor-font, var(--font-mono)); font-size: var(--editor-size, 13.5px); line-height: 1.6; }
 .cm-cursor { border-left-color: var(--accent) !important; }
 .cm-selectionBackground, .cm-editor .cm-selectionBackground { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }
 .cm-tooltip { background: var(--panel) !important; border: 1px solid var(--line-strong) !important; border-radius: 8px !important; box-shadow: var(--shadow); overflow: hidden; }

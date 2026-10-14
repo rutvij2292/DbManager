@@ -22,6 +22,7 @@ import { buildOrder, nextSort, setSort, detectSort, countSql, wrapForSort, type 
 import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
+import { applyAppearance, capturing, matchAction, showSettings } from "./settings";
 import { applyTheme, currentTheme, esc, toast, contextMenu, tagChip, tagHue as tagHueOf } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { tabsOf, nextAfterClose, nthTab, cycleTab, tabForSwitch } from "./workspace";
@@ -103,6 +104,7 @@ async function formatEditor(view: EditorView, c: Conn | null) {
 
 const app = document.getElementById("app")!;
 applyTheme(currentTheme());
+applyAppearance();
 const iconBtn = (id: string, ic: string, title: string) => `<button id="${id}" class="btn btn-ghost" style="width:28px;padding:0;justify-content:center" title="${title}" aria-label="${title}">${icon(ic, 16)}</button>`;
 app.innerHTML = `
   <div class="h-full flex gap-2 p-2">
@@ -111,6 +113,7 @@ app.innerHTML = `
       <div id="rail-items" class="flex-1 overflow-y-auto overflow-x-visible flex flex-col items-center gap-1 py-1 w-full px-1.5"></div>
       <div class="flex flex-col items-center gap-1 py-2.5">
         <button id="addconn" class="flex flex-col items-center justify-center gap-0.5 rounded-xl" style="width:66px;height:50px" title="Connect to another database (⌘N)" aria-label="Connect to another database">${icon("plus", 18)}<span class="text-[11.5px]">Connect</span></button>
+        <button id="settings" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Settings (⌘,)" aria-label="Settings">${icon("gear", 15)}</button>
         <button id="theme" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Switch theme (⌘⇧L)" aria-label="Switch theme"></button>
       </div>
     </nav>
@@ -1896,42 +1899,36 @@ async function cancelActive() {
 // Keyboard shortcuts (TablePlus-style)
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && active?.running) { e.preventDefault(); cancelActive(); return; }
-  if (!e.metaKey) return;
+  if (capturing) return;
   const k = e.key.toLowerCase();
   const inText = e.target instanceof HTMLElement && !!e.target.closest("input, textarea, .cm-editor, [contenteditable]");
-  if (!inText && !e.altKey && !e.shiftKey && active && active.kind !== "diagram") {
+  if (e.metaKey && !inText && !e.altKey && !e.shiftKey && active && active.kind !== "diagram") {
     if (k === "c" && active.grid.selectedCount > 0) { e.preventDefault(); copyRows(active, "tsv"); return; }
     if (k === "a" && active.grid.columns.length) { e.preventDefault(); active.grid.selectAll(); return; }
   }
-  const go = (f: () => void) => { e.preventDefault(); f(); };
-  // ⌥ changes e.key on macOS, so match the physical key for the ⌘⌥ combos.
-  if (e.altKey && e.code === "KeyE") return go(exportActive);
-  if (e.altKey && e.code === "KeyI") return go(importActive);
-  if (e.altKey && e.code === "KeyB") return go(backupActive);
-  if (e.altKey && e.code === "KeyR") return go(restoreActive);
-  if (k === "t") go(newQuery);
-  else if (k === "w") go(() => active && closeTab(active));
-  else if (k === "o" || k === "n") go(openConnections);
-  else if (k === "p") go(palette);
-  else if (k === "j") go(toggleLog);
-  else if (k === "d" && e.shiftKey) go(() => openDiagram(active?.kind === "table" ? active.table : undefined));
-  else if (k === "k") go(openDatabasePicker);
-  else if (k === "r") go(() => active && reload(active));
-  else if (k === "enter") go(() => runActive(e.shiftKey));
-  else if (k === "e") go(() => explainActive(e.shiftKey));
-  else if (k === "b") go(toggleBuilder);
-  else if (e.key === ".") go(cancelActive);
-  else if (k === "s" && e.shiftKey && active?.kind === "query") go(favoriteCurrentQuery);
-  else if (k === "s" && active?.kind === "table") go(() => commitChanges(active!));
-  else if (k === "i" && active?.kind === "table") go(() => active!.grid.addRow());
-  else if (e.key === "Backspace" && active?.kind === "table" && !(e.target instanceof HTMLInputElement)) go(() => deleteRow(active!));
-  else if (/^[1-9]$/.test(k)) go(() => { const t = nthTab(tabs, conn, +k); if (t) activate(t); });
-  else if (e.shiftKey && (e.key === "]" || e.key === "}")) go(() => cycle(1));
-  else if (e.shiftKey && (e.key === "[" || e.key === "{")) go(() => cycle(-1));
-  else if (k === "f" && active?.kind === "table" && active.filterBar) go(() => { if (active!.mode === "structure") setMode(active!, "data"); active!.filterBar!.toggle(); });
-  else if (k === "l" && e.shiftKey) go(toggleTheme);
-  else if (k === "l") go(() => $("filter").focus());
+  if (e.metaKey && !e.altKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) { e.preventDefault(); const t = nthTab(tabs, conn, +e.code.slice(5)); if (t) activate(t); return; }
+  const id = matchAction(e);
+  const h = id && handlers[id];
+  if (h && h(e) !== false) e.preventDefault();
 });
+
+/** What each rebindable shortcut does (ids and default keys live in settings.ts). Returning false leaves the key event alone. */
+const handlers: Record<string, (e: KeyboardEvent) => unknown> = {
+  newQuery, openConnections, newConnection: openConnections, palette, toggleLog, cancel: cancelActive, builder: toggleBuilder,
+  settings: showSettings, theme: () => toggleTheme(), dbPicker: openDatabasePicker, export: exportActive, import: importActive, backup: backupActive, restore: restoreActive,
+  closeTab: () => active && closeTab(active),
+  diagram: () => openDiagram(active?.kind === "table" ? active.table : undefined),
+  reload: () => active && reload(active),
+  run: () => runActive(false), runAll: () => runActive(true),
+  explain: () => explainActive(false), explainAnalyze: () => explainActive(true),
+  focusFilter: () => $("filter").focus(),
+  nextTab: () => cycle(1), prevTab: () => cycle(-1),
+  favorite: () => active?.kind === "query" ? favoriteCurrentQuery() : false,
+  commit: () => active?.kind === "table" ? commitChanges(active) : false,
+  addRow: () => active?.kind === "table" ? active.grid.addRow() : false,
+  deleteRow: (e) => active?.kind === "table" && !(e.target instanceof HTMLInputElement) ? deleteRow(active) : false,
+  filterTable: () => { if (active?.kind !== "table" || !active.filterBar) return false; if (active.mode === "structure") setMode(active, "data"); active.filterBar.toggle(); },
+};
 
 /** New query tab in the current database of the current connection. */
 function newQuery() {
@@ -1956,8 +1953,9 @@ $("open").onclick = openConnections;
 $("addconn").onclick = () => showLauncher();
 $("diagram").onclick = () => openDiagram();
 const paintTheme = () => { $("theme").innerHTML = icon(currentTheme() === "dark" ? "sun" : "moon", 15); };
-const toggleTheme = () => { applyTheme(currentTheme() === "dark" ? "light" : "dark"); paintTheme(); };
+const toggleTheme = () => { applyTheme(currentTheme() === "dark" ? "light" : "dark"); applyAppearance(); paintTheme(); };
 $("theme").onclick = toggleTheme;
+$("settings").onclick = showSettings;
 paintTheme();
 renderObjects();
 showLauncher();

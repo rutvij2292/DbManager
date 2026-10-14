@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use dbcore::{ColumnMeta, ConnConfig, Connection, Driver, ObjectInfo, ObjectRef, QueryResult, SchemaTable, Value};
+use dbcore::{ColumnMeta, ConnConfig, Connection, Driver, ObjectInfo, ObjectRef, PlanNode, QueryResult, SchemaTable, Value};
 use driver_mysql::MysqlDriver;
 use driver_postgres::PostgresDriver;
 use driver_sqlite::SqliteDriver;
@@ -180,6 +180,11 @@ async fn run_query(state: State<'_, AppState>, conn_id: u64, sql: String) -> Res
 }
 
 #[tauri::command]
+async fn explain(state: State<'_, AppState>, conn_id: u64, sql: String, analyze: bool) -> Result<PlanNode, String> {
+    state.conn(conn_id)?.explain(&sql, analyze).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_rows(state: State<'_, AppState>, query_id: u64, offset: usize, limit: usize) -> Result<Vec<Vec<Value>>, String> {
     let results = state.results.lock().unwrap();
     let r = results.get(&query_id).ok_or("result expired")?;
@@ -205,7 +210,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
 }

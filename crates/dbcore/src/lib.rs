@@ -79,6 +79,19 @@ pub struct SchemaTable {
     pub columns: Vec<String>,
 }
 
+/// Dialect-neutral query plan node, rendered by the UI as a tree.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlanNode {
+    pub op: String,
+    pub detail: String,
+    pub relation: Option<String>,
+    pub est_rows: Option<f64>,
+    pub actual_rows: Option<f64>,
+    pub cost: Option<f64>,
+    pub time_ms: Option<f64>,
+    pub children: Vec<PlanNode>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectInfo {
     pub columns: Vec<ColumnInfo>,
@@ -104,6 +117,10 @@ pub trait Connection: Send + Sync {
     async fn objects(&self) -> Result<Vec<ObjectRef>>;
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo>;
     async fn query(&self, sql: &str) -> Result<QueryResult>;
+    /// Query plan for `sql`; `analyze` actually executes it where supported.
+    async fn explain(&self, _sql: &str, _analyze: bool) -> Result<PlanNode> {
+        Err(DbError::msg("EXPLAIN is not supported for this driver"))
+    }
     /// Quote an identifier for this dialect.
     fn quote(&self, ident: &str) -> String {
         format!("\"{}\"", ident.replace('"', "\"\""))

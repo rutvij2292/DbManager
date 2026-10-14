@@ -121,6 +121,35 @@ impl Connection for PgConn {
         res.elapsed_ms = start.elapsed().as_millis();
         Ok(res)
     }
+    async fn explain(&self, sql: &str, analyze: bool) -> Result<PlanNode> {
+        let opts = if analyze { "ANALYZE, FORMAT JSON" } else { "FORMAT JSON" };
+        let r = self.query(&format!("EXPLAIN ({opts}) {sql}")).await?;
+        let text = r.rows.first().map(|r| r[0].display()).ok_or_else(|| DbError::msg("empty plan"))?;
+        let json: serde_json::Value = serde_json::from_str(&text).map_err(DbError::msg)?;
+        fn node(v: &serde_json::Value) -> PlanNode {
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(String::from);
+            let f = |k: &str| v.get(k).and_then(|x| x.as_f64());
+            let mut detail = Vec::new();
+            for k in ["Index Name", "Filter", "Index Cond", "Hash Cond", "Join Type", "Sort Key"] {
+                if let Some(x) = v.get(k) {
+                    detail.push(format!("{k}: {}", x.as_str().map(String::from).unwrap_or_else(|| x.to_string())));
+                }
+            }
+            let loops = f("Actual Loops").unwrap_or(1.0);
+            PlanNode {
+                op: s("Node Type").unwrap_or_default(),
+                detail: detail.join(" · "),
+                relation: s("Relation Name"),
+                est_rows: f("Plan Rows"),
+                actual_rows: f("Actual Rows").map(|r| r * loops),
+                cost: f("Total Cost"),
+                time_ms: f("Actual Total Time").map(|t| t * loops),
+                children: v.get("Plans").and_then(|p| p.as_array()).map(|a| a.iter().map(node).collect()).unwrap_or_default(),
+            }
+        }
+        let plan = json.get(0).and_then(|p| p.get("Plan")).ok_or_else(|| DbError::msg("unexpected plan format"))?;
+        Ok(node(plan))
+    }
     async fn schema_map(&self) -> Result<Vec<SchemaTable>> {
         let r = self.query("SELECT table_schema, table_name, column_name FROM information_schema.columns WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY table_schema, table_name, ordinal_position").await?;
         let mut out: Vec<SchemaTable> = Vec::new();

@@ -90,6 +90,26 @@ impl Connection for SqliteConn {
             .map(|r| r[0].display());
         Ok(ObjectInfo { columns, indexes, ddl })
     }
+    async fn explain(&self, sql: &str, _analyze: bool) -> Result<PlanNode> {
+        let r = self.query(&format!("EXPLAIN QUERY PLAN {sql}")).await?;
+        // Rows are (id, parent, notused, detail); parent 0 is the root.
+        let rows: Vec<(i64, i64, String)> = r
+            .rows
+            .iter()
+            .map(|r| (if let Value::I64(i) = r[0] { i } else { 0 }, if let Value::I64(i) = r[1] { i } else { 0 }, r[3].display()))
+            .collect();
+        fn build(parent: i64, rows: &[(i64, i64, String)]) -> Vec<PlanNode> {
+            rows.iter()
+                .filter(|r| r.1 == parent)
+                .map(|(id, _, d)| {
+                    let op = d.split_whitespace().next().unwrap_or("").to_string();
+                    let relation = d.split(" TABLE ").nth(1).and_then(|t| t.split_whitespace().next()).map(String::from);
+                    PlanNode { op, detail: d.clone(), relation, children: build(*id, rows), ..Default::default() }
+                })
+                .collect()
+        }
+        Ok(PlanNode { op: "Query".into(), children: build(0, &rows), ..Default::default() })
+    }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
         let conn = self.0.clone();
         let sql = sql.to_string();
@@ -113,5 +133,16 @@ mod tests {
         assert_eq!(c.objects().await.unwrap()[0].name, "t");
         let d = c.describe(None, "t").await.unwrap();
         assert!(d.columns[0].primary_key && !d.columns[1].nullable);
+    }
+
+    #[tokio::test]
+    async fn explain_shows_scan_vs_index() {
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), path: None, host: None, port: None, user: None, password: None, database: None }).await.unwrap();
+        c.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)").await.unwrap();
+        let scan = c.explain("SELECT * FROM t WHERE name = 'a'", false).await.unwrap();
+        assert!(scan.children[0].detail.starts_with("SCAN"), "{:?}", scan.children[0].detail);
+        c.query("CREATE INDEX t_name ON t(name)").await.unwrap();
+        let idx = c.explain("SELECT * FROM t WHERE name = 'a'", false).await.unwrap();
+        assert!(idx.children[0].detail.contains("USING"), "{:?}", idx.children[0].detail);
     }
 }

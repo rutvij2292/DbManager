@@ -8,3 +8,4 @@ dbcore = { path = "../dbcore" }
 async-trait.workspace = true
 tokio.workspace = true
 tokio-postgres = "0.7"
+serde_json.workspace = true

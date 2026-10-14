@@ -3,6 +3,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { autocompletion, completionKeymap, pickedCompletion } from "@codemirror/autocomplete";
+import { lintSql, lintPlan } from "./lint";
+import { renderPlan, hintsPanel } from "./planview";
 import { makeCompletionSource, recordAccepted } from "./complete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { sql, SQLite, PostgreSQL, MySQL } from "@codemirror/lang-sql";
@@ -14,7 +16,7 @@ interface Conn { id: number; name: string; kind: string; objects: ObjectRef[]; s
 interface Tab {
   id: number; title: string; kind: "query" | "table";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; editor?: EditorView; status: HTMLElement;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; editor?: EditorView; status: HTMLElement;
 }
 
 let conn: Conn | null = null;
@@ -96,6 +98,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
   const gridWrap = document.createElement("div");
   gridWrap.className = "flex-1 min-h-0";
   gridWrap.append(grid.el);
+  tab.gridWrap = gridWrap;
   root.append(gridWrap, status);
   tabs.push(tab);
   activate(tab);
@@ -148,6 +151,7 @@ function renderTabs() {
 
 async function exec(t: Tab, sqlText: string) {
   if (!t.conn) { t.status.textContent = "Not connected — open a database first (⌘O)"; return; }
+  if (t.panel && t.gridWrap) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
   t.status.textContent = "Running…";
   try {
     const s: Summary = await api.runQuery(t.conn.id, sqlText);
@@ -163,6 +167,41 @@ async function exec(t: Tab, sqlText: string) {
     return;
   }
   t.status.classList.remove("text-red-400");
+}
+
+function currentSql(t: Tab): string {
+  const view = t.editor!;
+  const sel = view.state.selection.main;
+  if (!sel.empty) return view.state.sliceDoc(sel.from, sel.to);
+  // Statement under the cursor (split on ;), falling back to the whole editor.
+  const doc = view.state.doc.toString();
+  const start = doc.lastIndexOf(";", Math.max(0, sel.head - 1)) + 1;
+  const end = doc.indexOf(";", sel.head);
+  const stmt = doc.slice(start, end < 0 ? doc.length : end).trim();
+  return stmt || doc.trim();
+}
+
+/** ⌘E: show the query plan with optimizer suggestions; ⌘⇧E also runs the query (EXPLAIN ANALYZE). */
+async function explainActive(analyze: boolean) {
+  const t = active;
+  if (!t || t.kind !== "query" || !t.gridWrap) return;
+  const sqlText = currentSql(t);
+  if (!sqlText) return;
+  const hints = lintSql(sqlText);
+  const show = (el: HTMLElement) => {
+    t.panel = el;
+    t.gridWrap!.replaceChildren(el);
+  };
+  if (!t.conn) return show(hintsPanel(hints));
+  t.status.textContent = analyze ? "Analyzing…" : "Explaining…";
+  try {
+    const plan = await api.explain(t.conn.id, sqlText, analyze);
+    show(renderPlan(plan, [...hints, ...lintPlan(plan)]));
+    t.status.textContent = "Query plan — press ⌘Enter to return to results";
+  } catch (e) {
+    show(hintsPanel(hints));
+    t.status.textContent = "Explain failed: " + e;
+  }
 }
 
 function runActive() {
@@ -264,6 +303,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "p") go(palette);
   else if (k === "r") go(() => active && reload(active));
   else if (k === "enter") go(runActive);
+  else if (k === "e") go(() => explainActive(e.shiftKey));
   else if (/^[1-9]$/.test(k)) go(() => tabs[+k - 1] && activate(tabs[+k - 1]));
   else if (e.shiftKey && (e.key === "]" || e.key === "}")) go(() => cycle(1));
   else if (e.shiftKey && (e.key === "[" || e.key === "{")) go(() => cycle(-1));

@@ -99,6 +99,28 @@ impl Connection for MyConn {
         out.elapsed_ms = start.elapsed().as_millis();
         Ok(out)
     }
+    async fn explain(&self, sql: &str, _analyze: bool) -> Result<PlanNode> {
+        let r = self.query(&format!("EXPLAIN {sql}")).await?;
+        let col = |name: &str| r.columns.iter().position(|c| c.name.eq_ignore_ascii_case(name));
+        let (t, ty, key, rows, extra) = (col("table"), col("type"), col("key"), col("rows"), col("Extra"));
+        let get = |row: &Vec<Value>, i: Option<usize>| i.map(|i| row[i].clone()).unwrap_or(Value::Null);
+        let nodes: Vec<PlanNode> = r
+            .rows
+            .iter()
+            .map(|row| {
+                let access = get(row, ty).display();
+                let key_s = get(row, key);
+                PlanNode {
+                    op: if access == "ALL" { "Full Table Scan".into() } else { format!("Access {access}") },
+                    detail: format!("key: {} · {}", if key_s == Value::Null { "none".into() } else { key_s.display() }, get(row, extra).display()),
+                    relation: Some(get(row, t).display()).filter(|s| s != "NULL"),
+                    est_rows: match get(row, rows) { Value::I64(n) => Some(n as f64), _ => None },
+                    ..Default::default()
+                }
+            })
+            .collect();
+        Ok(PlanNode { op: "Query".into(), children: nodes, ..Default::default() })
+    }
     async fn schema_map(&self) -> Result<Vec<SchemaTable>> {
         let r = self.query("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position").await?;
         let mut out: Vec<SchemaTable> = Vec::new();

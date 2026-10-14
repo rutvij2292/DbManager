@@ -137,6 +137,9 @@ struct Profile {
     /// local / staging / production — shown as a badge.
     #[serde(default)]
     environment: Option<String>,
+    /// Block truncate / drop on this connection. Unset means "on for production connections".
+    #[serde(default)]
+    protect: Option<bool>,
     /// Accent colour (hex) shown on the connection.
     #[serde(default)]
     color: Option<String>,
@@ -223,7 +226,7 @@ async fn tableplus_import(app: tauri::AppHandle, ids: Vec<String>, passwords: bo
         profiles.push(Profile {
             id: c.id.clone(), name: c.name.clone(), kind, host: c.host, port: c.port, user: c.user, database: c.database, path: c.path,
             ssl: c.ssl, ssh_host: c.ssh_host, ssh_port: c.ssh_port, ssh_user: c.ssh_user, ssh_key: c.ssh_key,
-            socket: c.socket, environment: c.environment, color: c.color, tags: vec![],
+            socket: c.socket, environment: c.environment, protect: None, color: c.color, tags: vec![],
         });
         sum.imported += 1;
         if passwords {
@@ -440,6 +443,16 @@ async fn list_objects(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<Ob
 }
 
 #[tauri::command]
+async fn list_routines(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<ObjectRef>, String> {
+    state.conn(conn_id)?.routines().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn object_definition(state: State<'_, AppState>, conn_id: u64, kind: String, schema: Option<String>, name: String) -> Result<String, String> {
+    state.conn(conn_id)?.object_definition(&kind, schema.as_deref(), &name).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn describe(state: State<'_, AppState>, conn_id: u64, schema: Option<String>, name: String) -> Result<ObjectInfo, String> {
     state.conn(conn_id)?.describe(schema.as_deref(), &name).await.map_err(|e| e.to_string())
 }
@@ -590,7 +603,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, run_query, run_statements, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, list_routines, object_definition, run_query, run_statements, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Tabnix");
 }

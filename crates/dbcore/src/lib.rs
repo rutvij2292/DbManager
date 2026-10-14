@@ -266,6 +266,62 @@ pub trait Connection: Send + Sync {
         relations.retain(|r| ids.contains(&r.from_table) && ids.contains(&r.to_table));
         Ok(ErSchema { truncated: focus.is_none() && total > tables.len(), total_tables: total, tables, relations })
     }
+    // ---- routines, triggers, events ------------------------------------------------------------
+    /// Functions, procedures, triggers and (MySQL) scheduled events of the current database, as `ObjectRef`s with
+    /// kind `function` | `procedure` | `trigger` | `event`. Engines without them return nothing.
+    async fn routines(&self) -> Result<Vec<ObjectRef>> {
+        let one = |kind: &str, r: QueryResult, schema_col: Option<usize>, name_col: usize| -> Vec<ObjectRef> {
+            r.rows.iter().map(|row| ObjectRef { schema: schema_col.map(|i| row[i].display()), name: row[name_col].display(), kind: kind.to_string() }).collect()
+        };
+        let mut out = Vec::new();
+        match self.dialect() {
+            "mysql" => {
+                for r in self.query("SELECT routine_type, routine_name FROM information_schema.routines WHERE routine_schema = DATABASE() ORDER BY routine_name").await?.rows {
+                    out.push(ObjectRef { schema: None, name: r[1].display(), kind: r[0].display().to_lowercase() });
+                }
+                out.extend(one("trigger", self.query("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = DATABASE() ORDER BY trigger_name").await?, None, 0));
+                // The events table is absent or restricted on some servers; a missing list is not an error.
+                if let Ok(r) = self.query("SELECT event_name FROM information_schema.events WHERE event_schema = DATABASE() ORDER BY event_name").await {
+                    out.extend(one("event", r, None, 0));
+                }
+            }
+            "postgres" => {
+                let user = "n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%'";
+                for r in self.query(&format!("SELECT n.nspname, p.proname, p.prokind::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE {user} AND p.prokind IN ('f', 'p') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') GROUP BY 1, 2, 3 ORDER BY 1, 2")).await?.rows {
+                    out.push(ObjectRef { schema: Some(r[0].display()), name: r[1].display(), kind: if r[2].display() == "p" { "procedure" } else { "function" }.into() });
+                }
+                out.extend(one("trigger", self.query(&format!("SELECT n.nspname, t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND {user} ORDER BY 1, 2")).await?, Some(0), 1));
+            }
+            "sqlite" => out.extend(one("trigger", self.query("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name").await?, None, 0)),
+            "mssql" => {
+                for r in self.query("SELECT s.name, o.name, o.type FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE o.type IN ('FN', 'IF', 'TF', 'P', 'TR') AND o.is_ms_shipped = 0 ORDER BY s.name, o.name").await?.rows {
+                    let kind = match r[2].display().trim() { "P" => "procedure", "TR" => "trigger", _ => "function" };
+                    out.push(ObjectRef { schema: Some(r[0].display()), name: r[1].display(), kind: kind.into() });
+                }
+            }
+            _ => {}
+        }
+        Ok(out)
+    }
+
+    /// The `CREATE` statement of a function / procedure / trigger / event.
+    async fn object_definition(&self, kind: &str, schema: Option<&str>, name: &str) -> Result<String> {
+        let lit = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        let sql = match (self.dialect(), kind) {
+            ("mysql", "function" | "procedure" | "trigger" | "event") => format!("SHOW CREATE {} {}", kind.to_uppercase(), self.quote(name)),
+            ("postgres", "function" | "procedure") => format!("SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = {} AND p.proname = {}", lit(schema.unwrap_or("public")), lit(name)),
+            ("postgres", "trigger") => format!("SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND n.nspname = {} AND t.tgname = {}", lit(schema.unwrap_or("public")), lit(name)),
+            ("sqlite", "trigger") => format!("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = {}", lit(name)),
+            ("mssql", _) => format!("SELECT OBJECT_DEFINITION(OBJECT_ID({}))", lit(&format!("{}.{}", self.quote(schema.unwrap_or("dbo")), self.quote(name)))),
+            _ => return Err(DbError::msg("this kind of object has no definition to show")),
+        };
+        let r = self.query(&sql).await?;
+        // MySQL's SHOW CREATE puts the statement in a column named "Create …" (or "SQL Original Statement" for triggers).
+        let col = r.columns.iter().position(|c| c.name.starts_with("Create ") || c.name == "SQL Original Statement").unwrap_or(0);
+        let text: Vec<String> = r.rows.iter().filter_map(|row| row.get(col)).filter(|v| !matches!(v, Value::Null)).map(Value::display).collect();
+        if text.is_empty() { Err(DbError::msg(format!("no definition found for {name}"))) } else { Ok(text.join("\n\n")) }
+    }
+
     // ---- backup / restore -------------------------------------------------------------------
     /// DDL to recreate a table. Drivers that can't dump return an error saying so.
     async fn table_ddl(&self, _schema: Option<&str>, _table: &str) -> Result<TableDdl> {

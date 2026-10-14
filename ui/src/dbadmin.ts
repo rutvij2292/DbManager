@@ -121,3 +121,19 @@ export function confirmDanger(opts: { title: string; body: string; confirmLabel:
     } else yes.focus();
   });
 }
+
+/** A statement typed into the editor that destroys data. `drop` and `truncate` are blocked on protected connections. */
+export type Destructive = { kind: "drop" | "truncate" | "delete-all" | "update-all"; statement: string };
+export function destructiveKind(sql: string): Destructive | null {
+  const clean = sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+  for (const raw of clean.split(";")) {
+    const st = raw.trim();
+    if (!st) continue;
+    const l = st.toLowerCase();
+    if (/^drop\s+(table|database|schema|view|index|trigger|function|procedure|event|sequence|type)\b/.test(l)) return { kind: "drop", statement: st };
+    if (/^truncate\b/.test(l)) return { kind: "truncate", statement: st };
+    if (/^delete\s+from\b/.test(l) && !/\bwhere\b/.test(l)) return { kind: "delete-all", statement: st };
+    if (/^update\b/.test(l) && !/\bwhere\b/.test(l)) return { kind: "update-all", statement: st };
+  }
+  return null;
+}

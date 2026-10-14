@@ -112,6 +112,9 @@ export class Grid {
     this.body.scrollTop = this.body.scrollHeight;
     this.onChange();
   }
+  /** Is this a row that exists in the database (not a new, unsaved one)? */
+  rowIsPersisted(r: number) { return r < (this.summary?.row_count ?? 0); }
+  isMarkedDeleted(r: number) { return this.deleted.has(r); }
   deleteSelected() {
     const n = this.summary?.row_count ?? 0;
     if (this.sel < 0) return;

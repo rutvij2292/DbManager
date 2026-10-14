@@ -1,3 +1,4 @@
+import { confirmDanger } from "./dbadmin";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type ConnConfig, type Profile } from "./api";
 import { esc, tagChip, STARTER_TAGS } from "./ui";
@@ -23,7 +24,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50 select-none";
   overlay.innerHTML = `
-    <div class="w-[760px] h-[560px] bg-raised rounded-lg shadow-2xl border border-line-strong flex overflow-hidden">
+    <div class="w-[760px] h-[620px] bg-raised rounded-lg shadow-2xl border border-line-strong flex overflow-hidden">
       <div class="w-56 bg-panel border-r border-line-strong flex flex-col">
         <div id="list" class="flex-1 overflow-auto p-1"></div>
         <button id="new" class="m-2 bg-raised hover:bg-raised2 rounded py-1">+ New connection</button>
@@ -37,6 +38,10 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
             <input id="taginput" class="flex-1 min-w-[120px] bg-transparent outline-none" style="height:22px" placeholder="Add a tag, then press Enter"/>
           </div>
           <div id="tagsug" class="flex flex-wrap gap-1.5 mt-1.5"></div>
+        </div>
+        <div class="flex gap-2 items-end">
+          <label class="w-44">Environment <select name="environment" class="${field}"><option value="local">Local</option><option value="staging">Staging</option><option value="production">Production</option></select></label>
+          <label class="flex items-center gap-2 pb-1.5"><input type="checkbox" name="protect"/> Protect: block truncate and drop</label>
         </div>
         <label>Type <select name="kind" class="${field}">${KINDS.map((k) => `<option value="${k.id}">${k.label}</option>`).join("")}</select></label>
         <div id="net" class="flex flex-col gap-2 overflow-auto">
@@ -136,11 +141,15 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     database: el("database").value || null,
     path: el("path").value || null,
     ssl: el("ssl").value,
+    environment: el("environment").value,
+    protect: el("protect").checked,
+    color: current?.color ?? null,
     ssh_host: el("usessh").checked ? el("ssh_host").value || null : null,
     ssh_port: el("usessh").checked && el("ssh_port").value ? +el("ssh_port").value : null,
     ssh_user: el("usessh").checked ? el("ssh_user").value || null : null,
     ssh_key: el("usessh").checked ? el("ssh_key").value || null : null,
   });
+  el("environment").onchange = () => { el("protect").checked = el("environment").value === "production"; };
   const fill = (p: Profile | null) => {
     current = p;
     tags = [...(p?.tags ?? [])];
@@ -154,6 +163,8 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     el("database").value = p?.database ?? "";
     el("path").value = p?.path ?? "";
     el("ssl").value = p?.ssl ?? "prefer";
+    el("environment").value = p?.environment ?? "local";
+    el("protect").checked = p?.protect ?? p?.environment === "production";
     el("usessh").checked = !!p?.ssh_host;
     el("ssh_host").value = p?.ssh_host ?? "";
     el("ssh_port").value = p?.ssh_port ? String(p.ssh_port) : "";
@@ -191,7 +202,11 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
   q("#save").onclick = async () => {
     try { current = await api.saveConnection(toProfile(), el("password").value || undefined); msg("Saved"); refresh(); } catch (e) { msg(String(e), true); }
   };
-  q("#del").onclick = async () => { if (current) { await api.deleteConnection(current.id); fill(null); refresh(); } };
+  q("#del").onclick = async () => {
+    if (!current) return;
+    if (!(await confirmDanger({ title: `Delete connection “${current.name}”?`, body: "The saved connection and its stored password are removed. Your databases are not touched.", confirmLabel: "Delete connection" }))) return;
+    await api.deleteConnection(current.id); fill(null); refresh();
+  };
   form.onsubmit = async (e) => {
     e.preventDefault();
     msg("Connecting…");

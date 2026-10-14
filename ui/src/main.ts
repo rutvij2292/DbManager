@@ -23,11 +23,12 @@ import { icon, engineBadge, envColor, ENGINE_NAMES } from "./icons";
 import { applyTheme, currentTheme, esc, toast } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { pickDatabase } from "./dbpicker";
+import { createDiagram } from "./diagram";
 import { Grid } from "./grid";
 
 interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[] }
 interface Tab {
-  id: number; title: string; kind: "query" | "table";
+  id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
   root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; running?: boolean; cancelled?: boolean; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement;
 }
@@ -87,6 +88,7 @@ app.innerHTML = `
       <div id="objects" class="flex-1 overflow-auto px-1.5 pb-2 text-[12.5px]"></div>
       <div class="border-t border-line px-2.5 py-2 flex items-center gap-1">
         <button id="open" class="btn btn-ghost flex-1" style="justify-content:flex-start">${icon("plug", 15)}<span>Connections</span><span class="kbd ml-auto">⌘O</span></button>
+        <button id="diagram" class="btn btn-ghost" style="width:28px;padding:0;justify-content:center" title="Diagram of this database (⌘⇧D)">${icon("diagram", 15)}</button>
         <button id="theme" class="btn btn-ghost" style="width:28px;padding:0;justify-content:center" title="Switch theme"></button>
       </div>
     </aside>
@@ -178,8 +180,13 @@ function makeTab(kind: Tab["kind"], title: string, table?: string): Tab {
         (where) => { tab.filterWhere = where || undefined; paintFilter(tab); reload(tab); },
       );
     }
-    bar.append(segWrap, ...(sqlLike ? [filterBtn] : []), btn("Row", "Insert row (⌘I)", () => grid.addRow(), "plus", "btn btn-ghost"), btn("Row", "Delete selected row (⌘⌫)", () => grid.deleteSelected(), "minus", "btn btn-ghost"), sep, commit, discard, info);
-    (bar.children[1] as HTMLElement).dataset.label = "+ Row"; (bar.children[2] as HTMLElement).dataset.label = "− Row";
+    const diagBtn = btn("Diagram", "Show this table's relations (⌘⇧D)", () => openDiagram(tab.table), "diagram", "btn btn-ghost");
+    // Labels drive which buttons are hidden in Structure mode, so set them on the buttons themselves.
+    const addRow = btn("Row", "Insert row (⌘I)", () => grid.addRow(), "plus", "btn btn-ghost");
+    const delRow = btn("Row", "Delete selected row (⌘⌫)", () => grid.deleteSelected(), "minus", "btn btn-ghost");
+    addRow.dataset.label = "+ Row";
+    delRow.dataset.label = "− Row";
+    bar.append(segWrap, ...(sqlLike ? [filterBtn, diagBtn] : []), addRow, delRow, sep, commit, discard, info);
     const refreshBar = () => {
       const n = grid.pendingCount;
       commit.toggleAttribute("disabled", n === 0);
@@ -257,7 +264,7 @@ function renderTabs() {
         (on ? "bg-panel text-ink border-line" : "text-soft border-transparent hover:bg-raised");
       if (on) d.style.boxShadow = "inset 0 2px 0 var(--accent)";
       d.title = `${t.title}${i < 9 ? `  (⌘${i + 1})` : ""}`;
-      d.innerHTML = `<span class="${on ? "text-accent" : "text-muted"}">${icon(t.kind === "table" ? "table" : "plan", 14)}</span><span class="truncate">${esc(t.title)}</span>`;
+      d.innerHTML = `<span class="${on ? "text-accent" : "text-muted"}">${icon(t.kind === "table" ? "table" : t.kind === "diagram" ? "diagram" : "plan", 14)}</span><span class="truncate">${esc(t.title)}</span>`;
       const x = document.createElement("button");
       x.innerHTML = icon("close", 12);
       x.setAttribute("aria-label", "Close tab");
@@ -414,6 +421,40 @@ function paintFilter(t: Tab) {
   t.filterBtn.querySelector("span")!.textContent = t.filterWhere ? "Filtered" : "Filter";
 }
 
+/** Load (or reload) a diagram tab. `t.table` is the focus table, if any. */
+function loadDiagram(t: Tab) {
+  if (!t.conn || !t.gridWrap) return;
+  const wrap = t.gridWrap;
+  wrap.innerHTML = `<div class="h-full flex items-center justify-center text-muted">Reading the schema…</div>`;
+  t.status.textContent = "Reading the schema…";
+  api.erSchema(t.conn.id, t.table, 60).then((schema) => {
+    if (!schema.tables.length) {
+      wrap.innerHTML = `<div class="h-full flex flex-col items-center justify-center text-center gap-1"><div class="font-medium">Nothing to draw yet</div><div class="text-soft">This database has no tables.</div></div>`;
+      t.status.textContent = "No tables";
+      return;
+    }
+    const d = createDiagram(schema, (tbl) => openTable(tbl.name));
+    wrap.replaceChildren(d.el);
+    const base = `${schema.tables.length} table${schema.tables.length === 1 ? "" : "s"} · ${schema.relations.length} relation${schema.relations.length === 1 ? "" : "s"}`;
+    t.status.textContent = schema.truncated
+      ? `${base}. Showing ${schema.tables.length} of ${schema.total_tables} tables. Open a table's diagram to see everything it connects to.`
+      : t.table ? `${base}, centred on ${t.table}. Hover to trace relations, double-click a table to open it.` : `${base}. Hover to trace relations, double-click a table to open it.`;
+  }).catch((e) => {
+    wrap.innerHTML = `<div class="h-full flex items-center justify-center text-danger px-8 text-center">Couldn't read the schema: ${esc(String(e))}</div>`;
+    t.status.textContent = "Diagram failed";
+  });
+}
+
+/** ⌘⇧D: diagram of the whole database, or just one table and what it connects to. */
+function openDiagram(focus?: string) {
+  if (!conn) { toast("Connect to a database first.", "info"); return; }
+  if (["redis", "mongo"].includes(conn.kind)) { toast("Diagrams need a relational database.", "info"); return; }
+  const existing = tabs.find((t) => t.kind === "diagram" && t.conn === conn && t.table === focus);
+  if (existing) { activate(existing); loadDiagram(existing); return; }
+  const t = makeTab("diagram", focus ? `${focus} · diagram` : "Diagram", focus);
+  loadDiagram(t);
+}
+
 function currentSql(t: Tab): string {
   const view = t.editor!;
   const sel = view.state.selection.main;
@@ -451,7 +492,7 @@ async function explainActive(analyze: boolean) {
 
 function runActive() {
   const t = active;
-  if (!t) return;
+  if (!t || t.kind === "diagram") return;
   if (t.kind === "table") return reload(t);
   const view = t.editor!;
   const sel = view.state.selection.main;
@@ -460,6 +501,7 @@ function runActive() {
 }
 
 function reload(t: Tab) {
+  if (t.kind === "diagram") return loadDiagram(t);
   if (t.kind === "table" && t.table && t.conn) {
     const o = t.conn.objects.find((x) => x.name === t.table);
     t.schemaName = o?.schema ?? null;
@@ -746,6 +788,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "w") go(() => active && closeTab(active));
   else if (k === "o" || k === "n") go(openConnections);
   else if (k === "p") go(palette);
+  else if (k === "d" && e.shiftKey) go(() => openDiagram(active?.kind === "table" ? active.table : undefined));
   else if (k === "k") go(openDatabasePicker);
   else if (k === "r") go(() => active && reload(active));
   else if (k === "enter") go(runActive);
@@ -774,6 +817,7 @@ $("newtab").onclick = () => makeTab("query", "Query");
 $("open").onclick = openConnections;
 $("switch").onclick = () => { showLauncher(); };
 $("dbpick").onclick = () => openDatabasePicker();
+$("diagram").onclick = () => openDiagram();
 const paintTheme = () => { $("theme").innerHTML = icon(currentTheme() === "dark" ? "sun" : "moon", 15); };
 const toggleTheme = () => { applyTheme(currentTheme() === "dark" ? "light" : "dark"); paintTheme(); };
 $("theme").onclick = toggleTheme;

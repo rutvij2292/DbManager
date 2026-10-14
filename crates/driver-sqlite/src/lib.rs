@@ -320,4 +320,35 @@ mod tests {
         c.execute_batch(&build_ddl(c.as_ref(), None, "child", &[StructChange::DropColumn { name: "b".into() }]).unwrap().iter().map(|s| (s.clone(), None)).collect::<Vec<_>>()).await.unwrap();
         assert_eq!(c.describe(None, "child").await.unwrap().columns.len(), 4);
     }
+
+    #[tokio::test]
+    async fn er_schema_finds_relations_and_focus_neighbours() {
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap();
+        for q in [
+            "CREATE TABLE country(id INTEGER PRIMARY KEY, name TEXT)",
+            "CREATE TABLE customer(id INTEGER PRIMARY KEY, country_id INTEGER REFERENCES country(id), name TEXT)",
+            "CREATE TABLE orders(id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customer(id))",
+            "CREATE TABLE item(id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id))",
+            "CREATE TABLE lonely(id INTEGER PRIMARY KEY)",
+        ] {
+            c.query(q).await.unwrap();
+        }
+        let all = c.er_schema(None, 100).await.unwrap();
+        assert_eq!((all.tables.len(), all.relations.len(), all.truncated), (5, 3, false));
+        let orders = all.tables.iter().find(|t| t.id == "orders").unwrap();
+        assert!(orders.columns[0].primary_key && orders.columns[1].foreign_key && !orders.columns[1].nullable);
+        let r = all.relations.iter().find(|r| r.from_table == "orders").unwrap();
+        assert_eq!((r.to_table.as_str(), r.from_columns.clone(), r.to_columns.clone()), ("customer", vec!["customer_id".to_string()], vec!["id".to_string()]));
+
+        // Focus keeps the table plus direct neighbours only: customer <- orders -> item (not country, not lonely).
+        let f = c.er_schema(Some("orders"), 100).await.unwrap();
+        let mut ids: Vec<_> = f.tables.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["customer", "item", "orders"]);
+        assert_eq!(f.relations.len(), 2);
+        assert!(c.er_schema(Some("nope"), 100).await.is_err());
+
+        let cut = c.er_schema(None, 2).await.unwrap();
+        assert_eq!((cut.tables.len(), cut.truncated, cut.total_tables), (2, true, 5));
+    }
 }

@@ -113,6 +113,41 @@ pub struct ForeignKey {
     pub ref_columns: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErColumn {
+    pub name: String,
+    pub type_name: String,
+    pub primary_key: bool,
+    pub nullable: bool,
+    pub foreign_key: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErTable {
+    /// `schema.table`, or just `table` for the default schema.
+    pub id: String,
+    pub schema: Option<String>,
+    pub name: String,
+    pub columns: Vec<ErColumn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErRelation {
+    pub name: String,
+    pub from_table: String,
+    pub from_columns: Vec<String>,
+    pub to_table: String,
+    pub to_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErSchema {
+    pub tables: Vec<ErTable>,
+    pub relations: Vec<ErRelation>,
+    pub truncated: bool,
+    pub total_tables: usize,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObjectInfo {
     pub columns: Vec<ColumnInfo>,
@@ -179,6 +214,57 @@ pub trait Connection: Send + Sync {
             }
         }
         Ok(total)
+    }
+    /// Tables, columns and foreign-key relations for an entity-relationship diagram. With `focus`,
+    /// only that table and the tables directly related to it (either direction) are returned.
+    /// Without it, at most `limit` tables are returned (`truncated` says whether more exist).
+    async fn er_schema(&self, focus: Option<&str>, limit: usize) -> Result<ErSchema> {
+        let id = |schema: &Option<String>, name: &str| match schema.as_deref() {
+            Some(s) if !s.is_empty() && s != "public" => format!("{s}.{name}"),
+            _ => name.to_string(),
+        };
+        let mut tables: Vec<ErTable> = Vec::new();
+        let mut relations: Vec<ErRelation> = Vec::new();
+        for o in self.objects().await?.into_iter().filter(|o| o.kind == "table") {
+            let info = self.describe(o.schema.as_deref(), &o.name).await?;
+            let from = id(&o.schema, &o.name);
+            for fk in &info.foreign_keys {
+                relations.push(ErRelation {
+                    name: fk.name.clone(),
+                    from_table: from.clone(),
+                    from_columns: fk.columns.clone(),
+                    to_table: id(&fk.ref_schema.clone().or_else(|| o.schema.clone()), &fk.ref_table),
+                    to_columns: fk.ref_columns.clone(),
+                });
+            }
+            let fk_cols: Vec<&String> = info.foreign_keys.iter().flat_map(|f| f.columns.iter()).collect();
+            tables.push(ErTable {
+                id: from,
+                schema: o.schema.clone(),
+                name: o.name.clone(),
+                columns: info.columns.iter().map(|c| ErColumn { name: c.name.clone(), type_name: c.type_name.clone(), primary_key: c.primary_key, nullable: c.nullable, foreign_key: fk_cols.contains(&&c.name) }).collect(),
+            });
+        }
+        let total = tables.len();
+        if let Some(f) = focus {
+            let focus_id = tables.iter().find(|t| t.id == f || t.name == f).map(|t| t.id.clone()).ok_or_else(|| DbError::msg(format!("table '{f}' not found")))?;
+            let mut keep: std::collections::HashSet<String> = std::collections::HashSet::from([focus_id.clone()]);
+            for r in &relations {
+                if r.from_table == focus_id {
+                    keep.insert(r.to_table.clone());
+                }
+                if r.to_table == focus_id {
+                    keep.insert(r.from_table.clone());
+                }
+            }
+            tables.retain(|t| keep.contains(&t.id));
+        } else if tables.len() > limit {
+            tables.sort_by(|a, b| a.id.cmp(&b.id));
+            tables.truncate(limit);
+        }
+        let ids: std::collections::HashSet<&String> = tables.iter().map(|t| &t.id).collect();
+        relations.retain(|r| ids.contains(&r.from_table) && ids.contains(&r.to_table));
+        Ok(ErSchema { truncated: focus.is_none() && total > tables.len(), total_tables: total, tables, relations })
     }
     /// Fast bulk insert (Postgres `COPY`, SQLite prepared statements). Returns the rows inserted, or
     /// `Ok(None)` when the driver has no faster path than ordinary INSERT statements. Each call is

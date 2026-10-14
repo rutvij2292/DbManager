@@ -26,7 +26,35 @@ const status = ["paid", "pending", "shipped", "refunded"];
 const rows = Array.from({ length: 5000 }, (_, i) => [I(i + 1), I(1 + (i * 7) % 8), T(status[i % 4]), F(Math.round((20 + ((i * 37) % 480)) * 100) / 100), T(`2026-0${1 + (i % 9)}-${10 + (i % 18)} 1${i % 10}:2${i % 6}:00`), i % 3 === 0 ? N : { t: "Bool", v: i % 2 === 0 }]);
 
 let currentDb: string | null = null;
+const col = (name: string, type: string, pk = false, fk = false, nullable = true) => ({ name, type_name: type, primary_key: pk, foreign_key: fk, nullable });
+const er = {
+  tables: [
+    { id: "countries", schema: null, name: "countries", columns: [col("id", "int", true), col("iso_code", "char(2)"), col("name", "varchar(80)")] },
+    { id: "customers", schema: null, name: "customers", columns: [col("id", "int", true), col("country_id", "int", false, true), col("name", "varchar(120)"), col("email", "varchar(190)"), col("created_at", "datetime")] },
+    { id: "addresses", schema: null, name: "addresses", columns: [col("id", "int", true), col("customer_id", "int", false, true, false), col("line1", "varchar(160)"), col("city", "varchar(80)"), col("postcode", "varchar(16)")] },
+    { id: "orders", schema: null, name: "orders", columns: [col("id", "int", true), col("customer_id", "int", false, true, false), col("status", "varchar(20)"), col("total", "decimal(10,2)"), col("placed_at", "datetime"), col("shipped", "tinyint(1)")] },
+    { id: "order_items", schema: null, name: "order_items", columns: [col("id", "int", true), col("order_id", "int", false, true, false), col("product_id", "int", false, true, false), col("quantity", "int"), col("unit_price", "decimal(10,2)")] },
+    { id: "payments", schema: null, name: "payments", columns: [col("id", "int", true), col("order_id", "int", false, true, false), col("amount", "decimal(10,2)"), col("provider", "varchar(30)"), col("paid_at", "datetime")] },
+    { id: "products", schema: null, name: "products", columns: [col("id", "int", true), col("category_id", "int", false, true), col("sku", "varchar(40)"), col("title", "varchar(200)"), col("price", "decimal(10,2)"), col("stock", "int")] },
+    { id: "categories", schema: null, name: "categories", columns: [col("id", "int", true), col("parent_id", "int", false, true), col("name", "varchar(80)")] },
+    { id: "reviews", schema: null, name: "reviews", columns: [col("id", "int", true), col("product_id", "int", false, true, false), col("customer_id", "int", false, true, false), col("rating", "tinyint"), col("body", "text")] },
+    { id: "audit_log", schema: null, name: "audit_log", columns: [col("id", "bigint", true), col("actor", "varchar(80)"), col("action", "varchar(80)"), col("at", "datetime")] },
+    { id: "settings", schema: null, name: "settings", columns: [col("key", "varchar(80)", true), col("value", "text")] },
+  ],
+  relations: [
+    ["fk_cust_country", "customers", "country_id", "countries"], ["fk_addr_cust", "addresses", "customer_id", "customers"], ["fk_order_cust", "orders", "customer_id", "customers"],
+    ["fk_item_order", "order_items", "order_id", "orders"], ["fk_item_prod", "order_items", "product_id", "products"], ["fk_pay_order", "payments", "order_id", "orders"],
+    ["fk_prod_cat", "products", "category_id", "categories"], ["fk_cat_parent", "categories", "parent_id", "categories"], ["fk_rev_prod", "reviews", "product_id", "products"], ["fk_rev_cust", "reviews", "customer_id", "customers"],
+  ].map(([name, from, fc, to]) => ({ name, from_table: from, from_columns: [fc], to_table: to, to_columns: ["id"] })),
+  truncated: false, total_tables: 11,
+};
 const handlers: Record<string, (a: any) => unknown> = {
+  er_schema: (a) => {
+    if (!a.focus) return er;
+    const keep = new Set([a.focus]);
+    er.relations.forEach((r) => { if (r.from_table === a.focus) keep.add(r.to_table); if (r.to_table === a.focus) keep.add(r.from_table); });
+    return { ...er, tables: er.tables.filter((t) => keep.has(t.id)), relations: er.relations.filter((r) => keep.has(r.from_table) && keep.has(r.to_table)) };
+  },
   list_connections: () => profiles,
   connect_saved: (a) => { currentDb = profiles.find((p) => p.id === a.id)?.database ?? null; return 1; },
   list_databases: () => ["analytics", "information_schema", "mysql", "performance_schema", "shop", "shop_staging", "sys"],

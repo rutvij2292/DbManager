@@ -50,6 +50,7 @@ export const api = {
   tableplusImport: (ids: string[], passwords: boolean) => invoke<{ imported: number; passwords_copied: number; passwords_missing: number }>("tableplus_import", { ids, passwords }),
   listDatabases: (connId: number) => invoke<string[]>("list_databases", { connId }),
   switchDatabase: (connId: number, database: string) => invoke<void>("switch_database", { connId, database }),
+  erSchema: (connId: number, focus?: string, limit?: number) => invoke<ErSchema>("er_schema", { connId, focus, limit }),
   runQuery: (connId: number, sql: string) => invoke<Summary>("run_query", { connId, sql }),
   getRows: (queryId: number, offset: number, limit: number) => invoke<Val[][]>("get_rows", { queryId, offset, limit }),
   release: (queryId: number) => invoke<void>("release_query", { queryId }),
@@ -69,3 +70,8 @@ export interface ImportPreview { headers: string[]; sample: (string | null)[][];
 export interface ImportOptions { schema: string | null; table: string; create: boolean; has_header: boolean; delimiter?: string; mapping: (string | null)[]; empty_as_null: boolean }
 
 export interface TpEntry { id: string; name: string; kind: string | null; driver: string; host?: string | null; port?: number | null; user?: string | null; database?: string | null; path?: string | null; socket?: string | null; ssh_host?: string | null; environment?: string | null; already_imported: boolean }
+
+export interface ErColumn { name: string; type_name: string; primary_key: boolean; nullable: boolean; foreign_key: boolean }
+export interface ErTable { id: string; schema: string | null; name: string; columns: ErColumn[] }
+export interface ErRelation { name: string; from_table: string; from_columns: string[]; to_table: string; to_columns: string[] }
+export interface ErSchema { tables: ErTable[]; relations: ErRelation[]; truncated: boolean; total_tables: number }

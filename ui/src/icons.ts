@@ -27,6 +27,7 @@ const P: Record<string, string> = {
   sparkle: '<path d="M8 2.5 9.4 6.6 13.5 8 9.4 9.4 8 13.5 6.6 9.4 2.5 8l4.1-1.4L8 2.5Z"/>',
   ssh: '<rect x="3" y="7" width="10" height="6.5" rx="1.6"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
   filter: '<path d="M2.5 3.5h11L9.3 8.5v4l-2.6 1.2V8.5L2.5 3.5Z"/>',
+  diagram: '<rect x="1.8" y="2.5" width="5" height="4" rx="1"/><rect x="9.2" y="9.5" width="5" height="4" rx="1"/><rect x="9.2" y="2.5" width="5" height="4" rx="1"/><path d="M6.8 4.5h2.4M4.3 6.5v5h4.9"/>',
   warn: '<path d="M8 2.5 14 13H2L8 2.5ZM8 6.5v3M8 11.2v.1"/>',
 };
 

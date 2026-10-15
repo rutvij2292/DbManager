@@ -120,6 +120,7 @@ const handlers: Record<string, (a: any) => unknown> = {
   list_routines: () => [{ schema: null, name: "order_total", kind: "function" }, { schema: null, name: "archive_orders", kind: "procedure" }, { schema: null, name: "orders_bi", kind: "trigger" }, { schema: null, name: "nightly_cleanup", kind: "event" }],
   object_definition: (a) => `CREATE ${a.kind.toUpperCase()} ${a.name} ...;`,
   set_read_only: () => null,
+  apply_changes: (a) => a.changes.map((c: any) => `${c.kind.toUpperCase()} ${a.table} ${JSON.stringify(c.set ?? [])} WHERE ${JSON.stringify(c.key ?? [])}`),
   run_statements: () => null,
   explain: () => ({ op: "Query", detail: "", relation: null, est_rows: null, actual_rows: null, cost: null, time_ms: null, children: [
     { op: "Hash Join", detail: "Hash Cond: orders.customer_id = customers.id", relation: null, est_rows: 4800, actual_rows: 5000, cost: 410.2, time_ms: 18.4, children: [

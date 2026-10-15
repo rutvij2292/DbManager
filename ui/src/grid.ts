@@ -42,6 +42,13 @@ export class Grid {
 
   // Row editing (table tabs): staged client-side until committed.
   editable = false;
+  /** Result tabs edit cells only: no inserting or deleting rows. */
+  rowOps = true;
+  /** When set, only these result columns can be edited (the rest are expressions or duplicates). */
+  editCols: boolean[] | null = null;
+  /** Redraw after the owner changed what is editable. */
+  repaint() { this.render(); }
+  canEditCell(c: number) { return this.editable && (!this.editCols || !!this.editCols[c]); }
   onChange: () => void = () => {};
   /** Header click-to-sort; set `sortable` to show the affordance. `additive` = shift-click. */
   sortable = false;
@@ -129,7 +136,7 @@ export class Grid {
   }
   /** Stage a value for a cell exactly as the inline editor would. */
   stageEdit(r: number, c: number, v: Val) {
-    if (!this.editable || this.deleted.has(r)) return;
+    if (!this.canEditCell(c) || this.deleted.has(r)) return;
     const n = this.summary!.row_count;
     if (r >= n) this.inserted[r - n][c] = v;
     else {
@@ -185,7 +192,7 @@ export class Grid {
   private resize() { this.spacer.style.height = this.total() * ROW_H + "px"; }
 
   private startEdit(r: number, c: number, cell: HTMLElement) {
-    if (!this.editable || this.deleted.has(r)) return;
+    if (!this.canEditCell(c) || this.deleted.has(r)) return;
     const n = this.summary!.row_count;
     const cur = r >= n ? this.inserted[r - n][c] : this.edits.get(r)?.get(c) ?? this.original(r)?.[c];
     const input = document.createElement("input");

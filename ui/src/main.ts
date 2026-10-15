@@ -32,6 +32,7 @@ import { showBackup, showRestore, BACKUP_KINDS } from "./backup";
 import { Grid } from "./grid";
 import { formatRows, type CopyFormat } from "./copyfmt";
 import { splitStatements, statementAt } from "./sqlsplit";
+import { analyzeSelect, resolveEdit } from "./resultedit";
 import { pushHistory, loadSaved, findFavorite, addFavorite, renameQuery, deleteQuery, loadDrafts, saveDraft, removeDraft, dropLegacyHistory, type HistoryItem } from "./qstore";
 import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
 import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
@@ -59,7 +60,10 @@ interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
   root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; draftId: string; draftTimer?: number; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; countSeq?: number;
+  /** A query result that maps to one table and can be edited in place (see resultedit.ts), and the bar that shows it. */
+  edit?: EditTarget; editBar?: HTMLElement; editSeq?: number;
 }
+interface EditTarget { table: string; schema: string | null; cols: ColumnInfo[]; map: (string | null)[] }
 
 /** The current workspace: the database the sidebar last selected or the active tab belongs to. */
 let conn: Conn | null = null;
@@ -334,6 +338,10 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     tab.resultBar = document.createElement("div");
     tab.resultBar.className = "hidden shrink-0 px-3 py-1.5 bg-canvas overflow-x-auto";
     root.append(tab.resultBar);
+    tab.editBar = document.createElement("div");
+    tab.editBar.className = "hidden shrink-0 h-9 flex items-center gap-1.5 px-3 bg-canvas text-[13.5px]";
+    root.append(tab.editBar);
+    grid.onChange = () => paintEditBar(tab);
   }
   root.append(gridWrap, statusBar);
   tabs.push(tab);
@@ -623,6 +631,7 @@ async function exec(t: Tab, sqlText: string) {
     logSql(t.conn, sqlText, s.elapsed_ms);
     t.lastMs = s.elapsed_ms; t.failed = false;
     await t.grid.setResult(s.columns.length ? s : null);
+    if (t.kind === "query") prepareEdit(t);
     t.status.textContent = s.columns.length
       ? `${s.row_count.toLocaleString()} rows${s.truncated ? " (truncated)" : ""} · ${s.elapsed_ms} ms`
       : `${s.affected ?? 0} rows affected · ${s.elapsed_ms} ms`;
@@ -632,6 +641,7 @@ async function exec(t: Tab, sqlText: string) {
     t.failed = true;
     logSql(t.conn, sqlText, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0]);
     await t.grid.setResult(null);
+    if (t.kind === "query") prepareEdit(t);
     t.status.textContent = t.cancelled ? "Query cancelled" : "Error: " + String(e).split("\n")[0];
     t.status.title = String(e);
     t.status.classList.toggle("text-danger", !t.cancelled);
@@ -655,10 +665,17 @@ async function exec(t: Tab, sqlText: string) {
 
 const orig = (g: Grid, r: number, i: number): Val => g.original(r)?.[i] ?? { t: "Null" };
 
-function buildChanges(t: Tab): Change[] | string {
-  const g = t.grid, cols = t.cols!;
+/** Where a tab's staged edits are written: its own table (table tabs) or the one table its query result maps to. */
+function editTarget(t: Tab): EditTarget | null {
+  if (t.kind === "query") return t.edit ?? null;
+  return t.table && t.cols ? { table: t.table, schema: t.schemaName ?? null, cols: t.cols, map: [] } : null;
+}
+
+function buildChanges(t: Tab, target: EditTarget): Change[] | string {
+  const g = t.grid, cols = target.cols;
+  const src = (i: number) => target.map[i] ?? g.columns[i].name; // result columns can be aliases
   const pk = cols.map((c, i) => [c, i] as const).filter(([c]) => c.primary_key);
-  const colIdx = (name: string) => g.columns.findIndex((c) => c.name === name);
+  const colIdx = (name: string) => (target.map.length ? target.map.indexOf(name) : g.columns.findIndex((c) => c.name === name));
   const numeric = (type: string) => /int|serial|numeric|decimal|real|float|double|number/i.test(type);
   const typed = (name: string, v: Val): Val => {
     const c = cols.find((x) => x.name === name);
@@ -672,14 +689,14 @@ function buildChanges(t: Tab): Change[] | string {
   for (const [r, m] of g.edits) {
     if (g.deleted.has(r)) continue;
     if (!g.original(r)) return "Edited rows must be loaded; scroll to them and try again.";
-    out.push({ kind: "update", key: key(r), set: [...m].map(([i, v]) => [g.columns[i].name, typed(g.columns[i].name, v)] as [string, Val]) });
+    out.push({ kind: "update", key: key(r), set: [...m].map(([i, v]) => [src(i), typed(src(i), v)] as [string, Val]) });
   }
   for (const r of g.deleted) {
     if (!g.original(r)) return "Deleted rows must be loaded; scroll to them and try again.";
     out.push({ kind: "delete", key: key(r) });
   }
   const n = g.columns.length;
-  g.inserted.forEach((row) => out.push({ kind: "insert", set: row.map((v, i) => [g.columns[i].name, typed(g.columns[i].name, v)] as [string, Val]).filter(([, v]) => v.t !== "Null") }));
+  g.inserted.forEach((row) => out.push({ kind: "insert", set: row.map((v, i) => [src(i), typed(src(i), v)] as [string, Val]).filter(([, v]) => v.t !== "Null") }));
   void n;
   return out;
 }
@@ -719,19 +736,88 @@ async function discardChanges(t: Tab) {
 
 /** Show the generated SQL and, on confirmation, run it in one transaction. */
 async function commitChanges(t: Tab) {
-  if (!t.conn || !t.table || !t.cols) return;
-  const changes = buildChanges(t);
+  const target = editTarget(t);
+  if (!t.conn || !target || !t.grid.pendingCount) return;
+  const changes = buildChanges(t, target);
   if (typeof changes === "string") { t.status.textContent = changes; return; }
   try {
-    const stmts = await api.applyChanges(t.conn.id, t.schemaName ?? null, t.table, changes, true);
+    const stmts = await api.applyChanges(t.conn.id, target.schema, target.table, changes, true);
     if (!(await confirmSql(stmts))) return;
-    await api.applyChanges(t.conn.id, t.schemaName ?? null, t.table, changes, false);
+    await api.applyChanges(t.conn.id, target.schema, target.table, changes, false);
     t.grid.discard(); // staged changes are now in the database
-    reload(t);
+    if (t.kind === "query") await rerunResult(t); else reload(t);
   } catch (e) {
     t.status.textContent = "Commit failed: " + e;
     t.status.classList.add("text-danger");
   }
+}
+
+/** Read a query result again after its edits were committed (a run-all result is replaced in place, the other results stay). */
+async function rerunResult(t: Tab) {
+  const c = t.conn, sqlText = t.baseSql;
+  if (!c || !sqlText) return;
+  if (t.results && t.resultIdx !== undefined) {
+    const r = t.results[t.resultIdx];
+    const s = await api.runQuery(c.id, r.sql);
+    logSql(c, r.sql, s.elapsed_ms);
+    if (r.summary) api.release(r.summary.query_id).catch(() => {});
+    r.summary = s; r.affected = s.row_count; r.ms = s.elapsed_ms;
+    await showResult(t, t.resultIdx);
+    return;
+  }
+  const wrapped = t.sort.length ? wrapForSort(sqlText, t.sort, quoteFor(c)) : null;
+  await exec(t, wrapped ?? sqlText);
+}
+
+/** Work out whether the result on show can be edited. Runs after every result of a query tab; a slow lookup for an older result is ignored. */
+async function prepareEdit(t: Tab) {
+  const seq = t.editSeq = (t.editSeq ?? 0) + 1;
+  const g = t.grid, s = g.currentSummary;
+  t.edit = undefined; g.editable = false; g.editCols = null; g.rowOps = false;
+  let why = "";
+  const c = t.conn;
+  if (!s || !s.columns.length || !c || !t.baseSql) { paintEditBar(t, ""); return; }
+  const a = ["redis", "mongo"].includes(c.kind) ? null : analyzeSelect(t.baseSql);
+  if (!a) { paintEditBar(t, ""); return; }
+  if (!a.ok) why = a.reason;
+  else if (safetyOf(c.server) === "readonly") why = "this connection is read-only";
+  else {
+    const o = c.objects.find((x) => x.kind === "table" && x.name.toLowerCase() === a.table.toLowerCase() && (!a.schema || (x.schema ?? "").toLowerCase() === a.schema.toLowerCase()));
+    if (!o) why = `${a.table} isn't a table in this database`;
+    else {
+      try {
+        const d = await api.describe(c.id, o.schema ?? null, o.name);
+        if (seq !== t.editSeq || g.currentSummary !== s) return;
+        const r = resolveEdit(a, s.columns.map((x) => x.name), d.columns);
+        if (!r.ok) why = r.reason;
+        else {
+          t.edit = { table: o.name, schema: o.schema ?? null, cols: d.columns, map: r.map };
+          g.editCols = r.map.map((m) => !!m); g.editable = true;
+        }
+      } catch (e) { why = "couldn't read the table's structure"; }
+    }
+  }
+  if (seq !== t.editSeq || g.currentSummary !== s) return;
+  g.repaint();
+  paintEditBar(t, why);
+}
+
+/** The strip under a query's editor: how to edit, why not, and Commit / Discard once there are staged changes. */
+function paintEditBar(t: Tab, why?: string) {
+  const bar = t.editBar;
+  if (!bar) return;
+  if (why !== undefined) bar.dataset.why = why;
+  const n = t.grid.pendingCount, editable = !!t.edit;
+  if (!t.grid.currentSummary || (!editable && !bar.dataset.why)) { bar.classList.add("hidden"); bar.replaceChildren(); return; }
+  bar.classList.remove("hidden");
+  const info = document.createElement("span");
+  info.className = "hint text-muted truncate flex-1";
+  info.textContent = editable ? (n ? `${n} pending change${n > 1 ? "s" : ""} in ${t.edit!.table}` : `Double-click a cell to edit ${t.edit!.table}`) : `Read-only: ${bar.dataset.why}`;
+  bar.replaceChildren(info);
+  if (!n) return;
+  const mk = (label: string, ic: string, cls: string, f: () => void) => { const b = document.createElement("button"); b.className = cls; b.innerHTML = icon(ic, 14) + `<span>${label}</span>`; b.onclick = f; return b; };
+  const prod = isCareful(t.conn?.env) && t.conn?.env === "production";
+  bar.append(mk(`Commit ${n}`, "commit", prod ? "btn btn-careful" : "btn btn-primary", () => commitChanges(t)), mk("Discard", "undo", "btn", () => discardChanges(t)));
 }
 
 function confirmSql(stmts: string[]): Promise<boolean> {
@@ -873,8 +959,8 @@ function cellMenu(t: Tab, x: number, y: number, r: number, c: number) {
     { label: "Copy with column names", action: () => copyRows(t, "tsv", true) },
     { label: "Copy column name", action: () => { navigator.clipboard?.writeText(col); toast("Copied " + col, "ok"); } },
     { divider: true, label: "" },
-    { label: "Set to NULL", disabled: !g.editable || isNull, action: () => g.stageEdit(r, c, { t: "Null" }) },
-    { label: g.selectedCount > 1 ? `Delete ${g.selectedCount.toLocaleString()} rows…` : "Delete row…", danger: true, disabled: !g.editable, action: () => deleteRow(t) },
+    { label: "Set to NULL", disabled: !g.canEditCell(c) || isNull, action: () => g.stageEdit(r, c, { t: "Null" }) },
+    { label: g.selectedCount > 1 ? `Delete ${g.selectedCount.toLocaleString()} rows…` : "Delete row…", danger: true, disabled: !g.editable || !g.rowOps, action: () => deleteRow(t) },
   ]);
 }
 
@@ -919,7 +1005,9 @@ function runActive(all = false) {
   const sel = view.state.selection.main;
   const text = all ? (sel.empty ? view.state.doc.toString() : view.state.sliceDoc(sel.from, sel.to)) : currentSql(t);
   if (!text.trim()) return;
-  guardRun(t, text).then((ok) => { if (ok) (all ? execAll(t, text) : execOne(t, text)); });
+  const n = t.grid.pendingCount;
+  const keep = n ? confirmDanger({ title: "Discard pending changes?", body: `Running again replaces this result, so ${n} uncommitted change${n === 1 ? "" : "s"} will be thrown away.`, confirmLabel: "Discard and run" }) : Promise.resolve(true);
+  keep.then((go) => go && guardRun(t, text)).then((ok) => { if (ok) (all ? execAll(t, text) : execOne(t, text)); });
 }
 
 function execOne(t: Tab, text: string) {
@@ -1004,8 +1092,10 @@ async function showResult(t: Tab, i: number) {
   if (r.summary) {
     if (t.panel) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
     await t.grid.setResult(r.summary, false);
+    prepareEdit(t);
   } else {
     await t.grid.setResult(null, false);
+    prepareEdit(t);
     const el = document.createElement("div");
     el.className = "h-full overflow-auto p-5";
     const head = document.createElement("div");
@@ -1924,7 +2014,7 @@ const handlers: Record<string, (e: KeyboardEvent) => unknown> = {
   focusFilter: () => $("filter").focus(),
   nextTab: () => cycle(1), prevTab: () => cycle(-1),
   favorite: () => active?.kind === "query" ? favoriteCurrentQuery() : false,
-  commit: () => active?.kind === "table" ? commitChanges(active) : false,
+  commit: () => active?.kind === "table" || (active?.kind === "query" && active.edit) ? commitChanges(active) : false,
   addRow: () => active?.kind === "table" ? active.grid.addRow() : false,
   deleteRow: (e) => active?.kind === "table" && !(e.target instanceof HTMLInputElement) ? deleteRow(active) : false,
   filterTable: () => { if (active?.kind !== "table" || !active.filterBar) return false; if (active.mode === "structure") setMode(active, "data"); active.filterBar.toggle(); },

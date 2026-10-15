@@ -51,7 +51,7 @@ document.addEventListener("focusin", (e) => {
 });
 
 /** One open database: its own backend connection, tables and completion schema. */
-interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean; lastTab?: Tab | null; routines?: ObjectRef[]; history?: HistoryItem[]; log?: { at: number; ms: number; sql: string; err?: string }[] }
+interface Conn { id: number; name: string; kind: string; env?: string | null; sub?: string; db?: string | null; dbs?: string[]; objects: ObjectRef[]; schema: SchemaTable[]; server: Server; loading?: boolean; lastTab?: Tab | null; routines?: ObjectRef[]; history?: HistoryItem[]; log?: { at: number; ms: number; sql: string; err?: string; tab?: number }[] }
 /** A saved connection that is currently connected, with the databases opened on it. */
 interface Server { id: string; name: string; kind: string; env?: string | null; profile: Profile; rootId: number; dbs: string[]; conns: Conn[] }
 /** One statement's outcome from ⌘⇧Enter (run all): a row set (kept in Rust until the next run), a row count, or an error. */
@@ -141,11 +141,11 @@ app.innerHTML = `
         <div id="tabs" class="flex items-end gap-0.5 overflow-x-auto flex-1 min-w-0 h-full"></div>
         <div class="flex items-center gap-0.5 pb-1.5">
           ${iconBtn("backup", "archive", "Back up this database… (⌘⌥B)")}${iconBtn("restore", "restore", "Restore a backup… (⌘⌥R)")}<span class="w-px h-4 bg-line-strong mx-1"></span>
-          ${iconBtn("import", "upload", "Import a file… (⌘⌥I)")}${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("sqllog-btn", "plan", "Show the SQL that was run (⌘J)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
+          ${iconBtn("import", "upload", "Import a file… (⌘⌥I)")}${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("sqllog-btn", "plan", "SQL log: the statements that ran (⌘J)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
         </div>
       </div>
       <main id="main" class="card flex-1 min-h-0 flex flex-col" style="border-top-left-radius:0"></main>
-      <div id="sqllog" class="hidden card shrink-0 mt-1.5 flex flex-col" style="height:176px"></div>
+      <div id="sqllog" class="hidden card shrink-0 mt-1.5 flex flex-col" style="height:132px"></div>
     </div>
   </div>
   <div id="palette" class="hidden fixed inset-0 flex items-start justify-center pt-24 z-50" style="background:color-mix(in srgb, var(--ink) 26%, transparent);backdrop-filter:blur(8px)">
@@ -391,6 +391,7 @@ function activate(t: Tab) {
   $("main").replaceChildren(t.root);
   t.grid.resume();
   renderTabs();
+  renderLog();
 }
 
 /** Switch the whole workspace (tabs, sidebar) to another open database. */
@@ -503,12 +504,14 @@ function renderRail() {
 }
 
 // ---------- SQL log: every statement that ran on the open database, newest at the bottom (⌘J) ----------
-let logOpen = localStorage.getItem("tabnix.logOpen") === "1";
+let logOpen = localStorage.getItem("tabnix.logOpen") !== "0"; // open unless the user closed it
+/** "tab": only what the active tab ran; "db": everything on this database. */
+let logScope: "tab" | "db" = localStorage.getItem("tabnix.logScope") === "db" ? "db" : "tab";
 const LOG_MAX = 100, LOG_SQL_MAX = 4000; // in memory only, so it stays tiny
 
-function logSql(c: Conn, sql: string, ms: number, err?: string) {
+function logSql(c: Conn, sql: string, ms: number, err?: string, tab?: Tab) {
   const log = (c.log ??= []);
-  log.push({ at: Date.now(), ms, sql: sql.length > LOG_SQL_MAX ? sql.slice(0, LOG_SQL_MAX) + "…" : sql, err });
+  log.push({ at: Date.now(), ms, sql: sql.length > LOG_SQL_MAX ? sql.slice(0, LOG_SQL_MAX) + "…" : sql, err, tab: tab?.id });
   if (log.length > LOG_MAX) log.shift();
   if (logOpen && conn === c) renderLog();
 }
@@ -534,19 +537,22 @@ function highlightSql(sql: string): Node[] {
 
 function renderLog() {
   const host = $("sqllog");
-  host.classList.toggle("hidden", !logOpen);
+  const visible = logOpen && !!active && !launcherOpen;
+  host.classList.toggle("hidden", !visible);
   $("sqllog-btn")?.classList.toggle("text-accent", logOpen);
-  if (!logOpen) return;
-  const entries = conn?.log ?? [];
+  if (!visible) return;
+  const mine = logScope === "tab" && active ? active.id : null;
+  const entries = (conn?.log ?? []).filter((e) => mine === null || e.tab === mine);
   const hl = localStorage.getItem("tabnix.logHl") !== "0";
   const head = document.createElement("div");
   head.className = "h-8 shrink-0 flex items-center gap-2 px-3 text-[12.5px] text-muted border-b border-line";
-  head.innerHTML = `<span class="font-medium text-soft">SQL log</span><span>${esc(conn?.db ?? conn?.name ?? "")}</span><span class="flex-1"></span>`;
+  head.innerHTML = `<span class="font-medium text-soft">SQL</span><span class="truncate">${esc(mine !== null ? active!.title : conn?.db ?? conn?.name ?? "")}</span><span class="flex-1"></span>`;
   const mk = (label: string, f: () => void) => { const b = document.createElement("button"); b.className = "btn btn-ghost"; b.style.height = "24px"; b.textContent = label; b.onclick = f; return b; };
   head.append(
+    mk(logScope === "tab" ? "This tab" : "Whole database", () => { logScope = logScope === "tab" ? "db" : "tab"; localStorage.setItem("tabnix.logScope", logScope); renderLog(); }),
     mk(hl ? "Highlight: on" : "Highlight: off", () => { localStorage.setItem("tabnix.logHl", hl ? "0" : "1"); renderLog(); }),
     mk("Copy", () => { navigator.clipboard?.writeText(entries.map((e) => `-- ${new Date(e.at).toLocaleString()}\n${e.sql}`).join("\n\n")); toast("SQL log copied", "ok"); }),
-    mk("Clear", () => { if (conn) conn.log = []; renderLog(); }),
+    mk("Clear", () => { if (conn) conn.log = (conn.log ?? []).filter((e) => mine !== null && e.tab !== mine); renderLog(); }),
     mk("Close", toggleLog),
   );
   const body = document.createElement("div");
@@ -561,7 +567,7 @@ function renderLog() {
     if (hl) q.append(...highlightSql(e.sql)); else q.textContent = e.sql;
     body.append(stamp, q);
   }
-  if (!entries.length) body.innerHTML = `<div class="text-muted">Statements you run on this database will appear here.</div>`;
+  if (!entries.length) body.innerHTML = `<div class="text-muted">${mine !== null ? "Statements this tab runs will appear here." : "Statements you run on this database will appear here."}</div>`;
   host.replaceChildren(head, body);
   body.scrollTop = body.scrollHeight;
 }
@@ -599,7 +605,7 @@ async function countRows(t: Tab) {
     const sql = countSql(inner);
     if (!sql) throw new Error("can't count this object");
     const r = await api.runQuery(c.id, sql);
-    logSql(c, sql, r.elapsed_ms);
+    logSql(c, sql, r.elapsed_ms, undefined, t);
     const rows = await api.getRows(r.query_id, 0, 1);
     api.release(r.query_id).catch(() => {});
     const v = rows[0]?.[0];
@@ -628,7 +634,7 @@ async function exec(t: Tab, sqlText: string) {
   t.status.textContent = "Running… (⌘. to cancel)";
   try {
     const s: Summary = await api.runQuery(t.conn.id, sqlText);
-    logSql(t.conn, sqlText, s.elapsed_ms);
+    logSql(t.conn, sqlText, s.elapsed_ms, undefined, t);
     t.lastMs = s.elapsed_ms; t.failed = false;
     await t.grid.setResult(s.columns.length ? s : null);
     if (t.kind === "query") prepareEdit(t);
@@ -639,7 +645,7 @@ async function exec(t: Tab, sqlText: string) {
     if (/^\s*(create|drop|alter)\b/i.test(sqlText)) refreshObjects();
   } catch (e) {
     t.failed = true;
-    logSql(t.conn, sqlText, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0]);
+    logSql(t.conn, sqlText, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0], t);
     await t.grid.setResult(null);
     if (t.kind === "query") prepareEdit(t);
     t.status.textContent = t.cancelled ? "Query cancelled" : "Error: " + String(e).split("\n")[0];
@@ -744,6 +750,7 @@ async function commitChanges(t: Tab) {
     const stmts = await api.applyChanges(t.conn.id, target.schema, target.table, changes, true);
     if (!(await confirmSql(stmts))) return;
     await api.applyChanges(t.conn.id, target.schema, target.table, changes, false);
+    for (const q of stmts) logSql(t.conn, q, 0, undefined, t);
     t.grid.discard(); // staged changes are now in the database
     if (t.kind === "query") await rerunResult(t); else reload(t);
   } catch (e) {
@@ -759,7 +766,7 @@ async function rerunResult(t: Tab) {
   if (t.results && t.resultIdx !== undefined) {
     const r = t.results[t.resultIdx];
     const s = await api.runQuery(c.id, r.sql);
-    logSql(c, r.sql, s.elapsed_ms);
+    logSql(c, r.sql, s.elapsed_ms, undefined, t);
     if (r.summary) api.release(r.summary.query_id).catch(() => {});
     r.summary = s; r.affected = s.row_count; r.ms = s.elapsed_ms;
     await showResult(t, t.resultIdx);
@@ -1058,13 +1065,13 @@ async function execAll(t: Tab, text: string) {
     const at = Date.now();
     try {
       const s = await api.runQuery(c.id, st.text);
-      logSql(c, st.text, s.elapsed_ms);
+      logSql(c, st.text, s.elapsed_ms, undefined, t);
       recordHistory(c, { sql: st.text, at, ms: s.elapsed_ms, ok: true });
       const rows = s.columns.length > 0 && kept < MAX_KEPT_RESULTS;
       if (rows) kept++; else api.release(s.query_id).catch(() => {});
       results.push({ sql: st.text, summary: rows ? s : null, affected: s.columns.length ? s.row_count : s.affected ?? 0, ms: s.elapsed_ms });
     } catch (e) {
-      logSql(c, st.text, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0]);
+      logSql(c, st.text, 0, t.cancelled ? "cancelled" : String(e).split("\n")[0], t);
       recordHistory(c, { sql: st.text, at, ms: 0, ok: false });
       results.push({ sql: st.text, summary: null, error: String(e).replace(/^Error:\s*/, "") });
       t.failed = true;

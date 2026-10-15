@@ -15,6 +15,7 @@
   --eng-mssql:#6a5bd6; --eng-redis:#d8442f; --eng-mongo:#1d8f4e;
   --stripe:#f6f9fb; --row-hover:#eaf4f9; --sel:#d3ebf6; --grid-head:#f3f7f9;
   --num:#2f4fb5; --date:#0f6f74; --null:#6a7b8c;
+  --tbl:#5b9bf0; --tbl-head:#2f6fd0; --tbl-line:rgba(255,255,255,.6);
   --edit-soft:#fff3d6; --new-soft:#dff5ea; --del-soft:#fde6ea;
   --tok-keyword:#0b74a0; --tok-string:#1a7f4b; --tok-number:#b5590a; --tok-comment:#7a8a99;
   --tok-type:#8a3fbf; --tok-fn:#c0427a; --tok-op:#5d6e80;
@@ -43,6 +44,7 @@
   --eng-mssql:#a397ff; --eng-redis:#ff7b66; --eng-mongo:#4cd486;
   --stripe:#172026; --row-hover:#1a2b33; --sel:#173a4a; --grid-head:#182228;
   --num:#9db4ff; --date:#6fd3d0; --null:#7d909f;
+  --tbl:#4f8fe6; --tbl-head:#2a62bd; --tbl-line:rgba(255,255,255,.45);
   --edit-soft:#3a2e12; --new-soft:#12301f; --del-soft:#3a1a22;
   --tok-keyword:#5cc8ee; --tok-string:#7fdba0; --tok-number:#f5b26b; --tok-comment:#6f8291;
   --tok-type:#c79bff; --tok-fn:#ff9cc4; --tok-op:#a6b7c2;

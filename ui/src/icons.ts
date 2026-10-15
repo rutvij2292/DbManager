@@ -36,6 +36,7 @@ const P: Record<string, string> = {
 };
 
 export function icon(name: keyof typeof P | string, size = 16, cls = "", filled = false): string {
+  if (name === "table") return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="var(--tbl)"/><path d="M1.5 4.5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2V6h-13z" fill="var(--tbl-head)"/><path d="M1.5 9.7h13M6 6v7.5M10.5 6v7.5" stroke="var(--tbl-line)" stroke-width="1" fill="none"/></svg>`;
   return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 16 16" fill="${filled ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] ?? ""}</svg>`;
 }
 

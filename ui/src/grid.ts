@@ -37,6 +37,8 @@ export class Grid {
   /** Selected rows (click, ⌘-click toggles, Shift-click ranges, ⌘A all). `anchor` is the row ranges grow from. */
   private rows = new Set<number>();
   private anchor = -1;
+  /** Column of the active cell (the outlined one); its row is `anchor`. */
+  private activeCol = -1;
   private allRows = false;
   private summary: Summary | null = null;
 
@@ -79,6 +81,59 @@ export class Grid {
       this.render();
     });
     new ResizeObserver(() => this.render()).observe(this.body);
+    // Delegated on the persistent rows layer: render() replaces every cell, so per-cell click handlers lose the second click of a double-click.
+    this.body.tabIndex = 0;
+    this.body.style.outline = "none";
+    this.rowsLayer.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement;
+      if (t.closest("input")) return;
+      const rowEl = t.closest<HTMLElement>("[data-r]");
+      if (!rowEl) return;
+      const r = +rowEl.dataset.r!;
+      const cell = t.closest<HTMLElement>("[data-c]");
+      const col = cell ? +cell.dataset.c! : this.activeCol;
+      this.body.focus({ preventScroll: true });
+      const plain = !e.shiftKey && !e.metaKey && !e.ctrlKey;
+      if (plain && col === this.activeCol && this.anchor === r && this.rows.size === 1 && !this.allRows) return; // nothing changes: keep the DOM for the double-click
+      this.activeCol = col;
+      this.pick(r, e.shiftKey ? "range" : e.metaKey || e.ctrlKey ? "toggle" : "single");
+    });
+    this.rowsLayer.addEventListener("dblclick", (e) => {
+      const t = e.target as HTMLElement;
+      if (t.closest("input")) return;
+      const rowEl = t.closest<HTMLElement>("[data-r]"), cell = t.closest<HTMLElement>("[data-c]");
+      if (rowEl && cell) this.startEdit(+rowEl.dataset.r!, +cell.dataset.c!);
+    });
+    this.body.addEventListener("keydown", (e) => this.onKey(e));
+  }
+
+  /** Move the active cell (and select its row). */
+  private move(dr: number, dc: number) {
+    const n = this.total(), cols = this.summary?.columns.length ?? 0;
+    if (!n || !cols) return;
+    const first = this.anchor < 0 || this.activeCol < 0;
+    const r = first ? Math.max(0, this.anchor) : Math.min(n - 1, Math.max(0, this.anchor + dr));
+    this.activeCol = first ? Math.max(0, this.activeCol) : Math.min(cols - 1, Math.max(0, this.activeCol + dc));
+    this.reveal(r, this.activeCol);
+    this.setSelection(new Set([r]), r);
+  }
+  /** Scroll so the cell is fully in view. */
+  private reveal(r: number, c: number) {
+    const b = this.body, top = r * ROW_H;
+    if (top < b.scrollTop) b.scrollTop = top;
+    else if (top + ROW_H > b.scrollTop + b.clientHeight) b.scrollTop = top + ROW_H - b.clientHeight;
+    const left = GUTTER + this.widths.slice(0, c).reduce((a, w) => a + w, 0), right = left + (this.widths[c] ?? 0);
+    if (left - GUTTER < b.scrollLeft) b.scrollLeft = Math.max(0, left - GUTTER);
+    else if (right > b.scrollLeft + b.clientWidth) b.scrollLeft = right - b.clientWidth;
+  }
+  private onKey(e: KeyboardEvent) {
+    if (e.target !== this.body || !this.summary) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    if (arrows[e.key]) { e.preventDefault(); this.move(...arrows[e.key]); }
+    else if (e.key === "Tab") { e.preventDefault(); this.move(0, e.shiftKey ? -1 : 1); }
+    else if (e.key === "Enter" || e.key === "F2") { if (this.anchor >= 0 && this.activeCol >= 0 && this.canEditCell(this.activeCol)) { e.preventDefault(); this.startEdit(this.anchor, this.activeCol); } else if (e.key === "Enter") this.move(1, 0); }
+    else if (e.key.length === 1 && this.anchor >= 0 && this.activeCol >= 0 && this.canEditCell(this.activeCol)) { e.preventDefault(); this.startEdit(this.anchor, this.activeCol, undefined, e.key); }
   }
 
   get columns() { return this.summary?.columns ?? []; }
@@ -191,18 +246,24 @@ export class Grid {
   }
   private resize() { this.spacer.style.height = this.total() * ROW_H + "px"; }
 
-  private startEdit(r: number, c: number, cell: HTMLElement) {
+  /** Edit a cell in place. `initial` (typing on a selected cell) replaces the content instead of editing it. */
+  private startEdit(r: number, c: number, cell?: HTMLElement, initial?: string) {
     if (!this.canEditCell(c) || this.deleted.has(r)) return;
+    this.reveal(r, c);
+    this.render();
+    cell ??= this.rowsLayer.querySelector<HTMLElement>(`[data-r="${r}"] > [data-c="${c}"]`) ?? undefined;
+    if (!cell) return;
     const n = this.summary!.row_count;
     const cur = r >= n ? this.inserted[r - n][c] : this.edits.get(r)?.get(c) ?? this.original(r)?.[c];
     const input = document.createElement("input");
     input.className = "w-full h-full bg-panel text-ink outline outline-2 outline-accent px-1 mono";
-    input.value = !cur || cur.t === "Null" ? "" : show(cur);
+    input.value = initial ?? (!cur || cur.t === "Null" ? "" : show(cur));
     input.placeholder = "NULL";
     cell.replaceChildren(input);
-    input.focus(); input.select();
+    input.focus();
+    if (initial === undefined) input.select(); else input.setSelectionRange(input.value.length, input.value.length);
     let done = false;
-    const finish = (save: boolean) => {
+    const finish = (save: boolean, step?: [number, number]) => {
       if (done) return; done = true;
       if (save) {
         const v: Val = input.value === "" || input.value === "NULL" ? { t: "Null" } : { t: "Text", v: input.value };
@@ -216,8 +277,14 @@ export class Grid {
         this.onChange();
       }
       this.render();
+      if (step) { this.body.focus({ preventScroll: true }); this.move(...step); }
     };
-    input.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") finish(true); else if (e.key === "Escape") finish(false); else if (e.key === "Tab") { e.preventDefault(); finish(true); } };
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") finish(true, [1, 0]);
+      else if (e.key === "Escape") { finish(false); this.body.focus({ preventScroll: true }); }
+      else if (e.key === "Tab") { e.preventDefault(); finish(true, [0, e.shiftKey ? -1 : 1]); }
+    };
     input.onblur = () => finish(true);
   }
 
@@ -230,7 +297,7 @@ export class Grid {
     this.summary = s;
     this.cache.clear();
     this.loading.clear();
-    this.rows = new Set(); this.anchor = -1; this.allRows = false;
+    this.rows = new Set(); this.anchor = -1; this.activeCol = -1; this.allRows = false;
     this.head.innerHTML = "";
     this.rowsLayer.innerHTML = "";
     this.body.scrollTop = 0;
@@ -328,7 +395,7 @@ export class Grid {
       div.style.height = ROW_H + "px";
       div.style.background = gone ? "var(--del-soft)" : isNew ? "var(--new-soft)" : selected ? "var(--sel)" : r % 2 ? "var(--stripe)" : "";
       if (!gone && !isNew && !selected) { div.onmouseenter = () => (div.style.background = "var(--row-hover)"); div.onmouseleave = () => (div.style.background = r % 2 ? "var(--stripe)" : ""); }
-      div.onclick = (e) => this.pick(r, e.shiftKey ? "range" : e.metaKey || e.ctrlKey ? "toggle" : "single");
+      div.dataset.r = String(r);
       const g = document.createElement("div");
       g.className = "grid-cell gutter shrink-0";
       g.style.fontVariantNumeric = "tabular-nums";
@@ -339,11 +406,12 @@ export class Grid {
       s.columns.forEach((col, i) => {
         const c = document.createElement("div");
         c.className = "grid-cell shrink-0";
+        c.dataset.c = String(i);
         c.style.width = this.widths[i] + "px";
+        if (r === this.anchor && i === this.activeCol && this.rows.size === 1 && !this.allRows) { c.style.outline = "2px solid var(--accent)"; c.style.outlineOffset = "-2px"; }
         const edited = this.edits.get(r)?.get(i);
         const v = edited ?? row?.[i];
         if (edited) { c.style.background = "var(--edit-soft)"; c.style.boxShadow = "inset 2px 0 0 var(--warn)"; }
-        c.ondblclick = () => this.startEdit(r, i, c);
         c.oncontextmenu = (e) => { e.preventDefault(); if (!this.isSelected(r)) this.pick(r, "single"); this.onCellMenu(e.clientX, e.clientY, r, i); };
         if (v) {
           const k = kindOf(col.type_name);

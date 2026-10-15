@@ -289,7 +289,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       return b;
     };
     const commit = btn("Commit", "Review & commit changes (⌘S)", () => commitChanges(tab), "commit");
-    const discard = btn("Discard", "Discard pending changes", () => discardChanges(tab), "undo");
+    const discard = btn("Discard", "Discard pending changes (⌘⌥Z)", () => discardChanges(tab), "undo");
     const info = document.createElement("span");
     info.className = "hint text-muted ml-2 truncate";
     const segWrap = document.createElement("div");
@@ -329,6 +329,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       info.textContent = !tab.cols ? "" : grid.editable ? (n ? `${n} pending change${n > 1 ? "s" : ""}` : "Double-click a cell to edit") : "Read-only: this table has no primary key";
     };
     grid.onChange = () => { refreshBar(); syncDirtyRows(); };
+    grid.onDeleteKey = () => { if (grid.editable && grid.rowOps) deleteRow(tab); };
     refreshBar();
     setTimeout(() => setMode(tab, "data"), 0);
     tab.bar = bar;
@@ -2147,6 +2148,7 @@ const handlers: Record<string, (e: KeyboardEvent) => unknown> = {
   nextTab: () => cycle(1), prevTab: () => cycle(-1),
   favorite: () => active?.kind === "query" ? favoriteCurrentQuery() : false,
   commitAll,
+  discard: () => active?.kind === "table" || (active?.kind === "query" && active.edit) ? (active.grid.pendingCount ? discardChanges(active) : false) : false,
   commit: () => active?.kind === "table" || (active?.kind === "query" && active.edit) ? commitChanges(active) : false,
   addRow: () => active?.kind === "table" ? active.grid.addRow() : false,
   deleteRow: (e) => active?.kind === "table" && !(e.target instanceof HTMLInputElement) ? deleteRow(active) : false,

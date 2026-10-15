@@ -81,6 +81,7 @@ export const ACTIONS: Action[] = [
   A("Tabs", "prevTab", "Previous tab", "meta+shift+["),
   A("Tabs", "reload", "Reload data", "meta+r"),
   A("Table", "commit", "Commit changes", "meta+s"),
+  A("Table", "discard", "Discard uncommitted changes", "meta+alt+z"),
   A("Table", "commitAll", "Commit all tables in this database", "meta+alt+s"),
   A("Table", "addRow", "Insert row", "meta+i"),
   A("Table", "deleteRow", "Delete selected row", "meta+backspace"),

@@ -52,6 +52,8 @@ export class Grid {
   repaint() { this.render(); }
   canEditCell(c: number) { return this.editable && (!this.editCols || !!this.editCols[c]); }
   onChange: () => void = () => {};
+  /** Delete / Backspace pressed on selected rows (set by table tabs, which can stage deletions). */
+  onDeleteKey: (() => void) | null = null;
   /** Header click-to-sort; set `sortable` to show the affordance. `additive` = shift-click. */
   sortable = false;
   sort: SortKey[] = [];
@@ -132,6 +134,7 @@ export class Grid {
     const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
     if (arrows[e.key]) { e.preventDefault(); this.move(...arrows[e.key]); }
     else if (e.key === "Tab") { e.preventDefault(); this.move(0, e.shiftKey ? -1 : 1); }
+    else if ((e.key === "Delete" || e.key === "Backspace") && this.selectedCount > 0 && this.onDeleteKey) { e.preventDefault(); this.onDeleteKey(); }
     else if (e.key === "Enter" || e.key === "F2") { if (this.anchor >= 0 && this.activeCol >= 0 && this.canEditCell(this.activeCol)) { e.preventDefault(); this.startEdit(this.anchor, this.activeCol); } else if (e.key === "Enter") this.move(1, 0); }
     else if (e.key.length === 1 && this.anchor >= 0 && this.activeCol >= 0 && this.canEditCell(this.activeCol)) { e.preventDefault(); this.startEdit(this.anchor, this.activeCol, undefined, e.key); }
   }

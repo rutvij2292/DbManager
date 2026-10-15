@@ -35,9 +35,9 @@ const EXT: Record<ExportFormat, string> = { csv: "csv", tsv: "tsv", json: "json"
 const FORMATS: [ExportFormat, string, string][] = [["csv", "CSV", "Spreadsheets"], ["tsv", "TSV", "Tab-separated"], ["json", "JSON", "One array"], ["jsonl", "JSON Lines", "One per line"], ["sql", "SQL", "INSERT statements"]];
 
 /** Export dialog. `sql` is run in full (no row cap) and streamed to the chosen file. */
-export function showExport(connId: number, sql: string, suggestedName: string, status: (s: string) => void) {
+export function showExport(connId: number, sql: string, suggestedName: string, status: (s: string) => void, many?: { name: string; sql: string }[]) {
   const m = modal(`
-    ${head("download", `Export ${esc(suggestedName)}`, "Streams straight from the database to a file. There is no row limit.")}
+    ${head("download", many ? `Export ${many.length} tables` : `Export ${esc(suggestedName)}`, many ? "One file per table, written to a folder you choose. There is no row limit." : "Streams straight from the database to a file. There is no row limit.")}
     <div id="body" class="px-6 pb-5 flex flex-col gap-4 overflow-auto">
       <div>
         <div class="font-medium mb-2">Format</div>
@@ -52,7 +52,7 @@ export function showExport(connId: number, sql: string, suggestedName: string, s
       </div>
       <div>
         <div class="font-medium mb-1.5">What will be exported</div>
-        <pre class="mono text-[12.5px] rounded-xl px-3.5 py-3 max-h-28 overflow-auto whitespace-pre-wrap select-text" style="background:var(--canvas);color:var(--soft)">${esc(sql)}</pre>
+        <pre class="mono text-[12.5px] rounded-xl px-3.5 py-3 max-h-28 overflow-auto whitespace-pre-wrap select-text" style="background:var(--canvas);color:var(--soft)">${esc(many ? many.map((t) => t.name).join("\n") : sql)}</pre>
       </div>
       <div class="flex items-center justify-end gap-2 pt-1"><button id="x" class="btn btn-ghost">Close</button><button id="go" class="btn btn-primary">${icon("download", 15)}<span>Export…</span></button></div>
     </div>`, 620);
@@ -68,6 +68,7 @@ export function showExport(connId: number, sql: string, suggestedName: string, s
   m.q("#x").onclick = m.close;
   m.q("#go").onclick = async () => {
     const format = (m.o.querySelector('input[name="fmt"]:checked') as HTMLInputElement).value as ExportFormat;
+    if (many) return exportMany(m, connId, many, format, status);
     const path = await save({ defaultPath: `${suggestedName}.${EXT[format]}`, filters: [{ name: format.toUpperCase(), extensions: [EXT[format]] }] });
     if (!path) return;
     const job = jobSeq++;
@@ -81,6 +82,31 @@ export function showExport(connId: number, sql: string, suggestedName: string, s
     }
     m.close();
   };
+}
+
+/** Write each table to its own file in a chosen folder. A failing table doesn't stop the rest; Cancel does. */
+async function exportMany(m: ReturnType<typeof modal>, connId: number, tables: { name: string; sql: string }[], format: ExportFormat, status: (s: string) => void) {
+  const dir = await open({ directory: true, title: "Choose a folder for the exported files" });
+  if (typeof dir !== "string") return;
+  const options = { format, header: m.q<HTMLInputElement>("#hdr").checked, delimiter: m.q<HTMLInputElement>("#delim").value || ",", table: "" };
+  const used = new Set<string>(), failed: string[] = [];
+  let rows = 0, done = 0, cancelled = false;
+  for (const [i, t] of tables.entries()) {
+    let file = t.name.replace(/[\\/:*?"<>|]/g, "_") || "table";
+    for (let n = 2; used.has(file.toLowerCase()); n++) file = `${t.name}_${n}`;
+    used.add(file.toLowerCase());
+    const job = jobSeq++;
+    try {
+      rows += await withProgress(m, job, `Exporting ${t.name} (${i + 1} of ${tables.length})…`, "rows written", () => api.exportData(connId, t.sql, `${dir}/${file}.${EXT[format]}`, { ...options, table: t.name }, job));
+      done++;
+    } catch (e) {
+      if (String(e).includes("cancelled")) { cancelled = true; break; }
+      failed.push(`${t.name}: ${e}`);
+    }
+  }
+  m.close();
+  const base = `Exported ${done} of ${tables.length} tables (${rows.toLocaleString()} rows) to ${dir}`;
+  status(cancelled ? `Export cancelled after ${done} of ${tables.length} tables` : failed.length ? `${base}. Failed: ${failed.join("; ")}` : base);
 }
 
 /** Import dialog: pick a file, preview it, map columns, load into an existing or new table. */

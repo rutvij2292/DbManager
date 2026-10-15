@@ -41,11 +41,12 @@ export function truncateAllSql(kind: string, tables: TableRef[]): string[] | nul
 export const canIgnoreForeignKeys = (kind: string) => kind !== "mssql";
 
 /** Run `sql` with foreign-key enforcement off for just that statement, like phpMyAdmin's checkbox. */
-function withoutForeignKeys(kind: string, sql: string, ignore: boolean): string[] {
-  if (!ignore) return [sql];
-  if (isMy(kind)) return ["SET FOREIGN_KEY_CHECKS=0", sql, "SET FOREIGN_KEY_CHECKS=1"];
-  if (kind === "sqlite") return ["PRAGMA foreign_keys=OFF", sql, "PRAGMA foreign_keys=ON"];
-  return [sql]; // PostgreSQL: handled with CASCADE on the statement itself
+function withoutForeignKeys(kind: string, sql: string | string[], ignore: boolean): string[] {
+  const body = Array.isArray(sql) ? sql : [sql];
+  if (!ignore) return body;
+  if (isMy(kind)) return ["SET FOREIGN_KEY_CHECKS=0", ...body, "SET FOREIGN_KEY_CHECKS=1"];
+  if (kind === "sqlite") return ["PRAGMA foreign_keys=OFF", ...body, "PRAGMA foreign_keys=ON"];
+  return body; // PostgreSQL: handled with CASCADE on the statement itself
 }
 
 export function truncateTableSql(kind: string, t: TableRef, ignoreFk = false): string[] {
@@ -58,6 +59,27 @@ export function dropTableSql(kind: string, t: TableRef, ignoreFk = false): strin
   const sql = `DROP ${t.kind === "view" ? "VIEW" : "TABLE"} ${qualified(kind, t)}`;
   if (kind === "postgres") return [`${sql}${ignoreFk ? " CASCADE" : ""}`];
   return withoutForeignKeys(kind, sql, ignoreFk);
+}
+
+/** Truncate several tables in one batch. Foreign keys are switched off once around the whole batch. */
+export function truncateTablesSql(kind: string, tables: TableRef[], ignoreFk = false): string[] {
+  const list = tables.filter((t) => t.kind !== "view");
+  if (!list.length) return [];
+  if (kind === "postgres") return [`TRUNCATE TABLE ${list.map((t) => qualified(kind, t)).join(", ")}${ignoreFk ? " CASCADE" : ""}`];
+  const one = (t: TableRef) => (kind === "sqlite" ? `DELETE FROM ${qualified(kind, t)}` : `TRUNCATE TABLE ${qualified(kind, t)}`);
+  return withoutForeignKeys(kind, list.map(one), ignoreFk);
+}
+
+/** Drop several tables and views in one batch (views first, so a view never outlives its table mid-batch). */
+export function dropTablesSql(kind: string, tables: TableRef[], ignoreFk = false): string[] {
+  const views = tables.filter((t) => t.kind === "view"), tabs = tables.filter((t) => t.kind !== "view");
+  const cascade = ignoreFk ? " CASCADE" : "";
+  if (kind === "postgres") {
+    const names = (l: TableRef[]) => l.map((t) => qualified(kind, t)).join(", ");
+    return [...(views.length ? [`DROP VIEW ${names(views)}${cascade}`] : []), ...(tabs.length ? [`DROP TABLE ${names(tabs)}${cascade}`] : [])];
+  }
+  const stmts = [...views.map((t) => `DROP VIEW ${qualified(kind, t)}`), ...tabs.map((t) => `DROP TABLE ${qualified(kind, t)}`)];
+  return stmts.length ? withoutForeignKeys(kind, stmts, ignoreFk && tabs.length > 0) : [];
 }
 
 /** What the "ignore foreign keys" option does, per engine, for the checkbox label. */

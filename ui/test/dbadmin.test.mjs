@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, isForeignKeyError, destructiveKind, isReadOnlySql, safetyLevel } from "../.test-build/dbadmin.mjs";
+import { createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, truncateTablesSql, dropTablesSql, isForeignKeyError, destructiveKind, isReadOnlySql, safetyLevel } from "../.test-build/dbadmin.mjs";
 
 test("create / drop database per engine", () => {
   assert.equal(createDatabaseSql("mysql", "my`db"), "CREATE DATABASE `my``db`");
@@ -60,4 +60,18 @@ test("safety level falls back to the legacy flag, then the environment", () => {
   assert.equal(safetyLevel({ protect: false, environment: "production" }), "off");
   assert.equal(safetyLevel({ environment: "production" }), "protected");
   assert.equal(safetyLevel({ environment: "local" }), "off");
+});
+
+test("bulk truncate and drop", () => {
+  const a = { schema: null, name: "a" }, b = { schema: null, name: "b" }, v = { schema: null, name: "v", kind: "view" };
+  assert.deepEqual(truncateTablesSql("mysql", [a, b, v], true), ["SET FOREIGN_KEY_CHECKS=0", "TRUNCATE TABLE `a`", "TRUNCATE TABLE `b`", "SET FOREIGN_KEY_CHECKS=1"]);
+  assert.deepEqual(truncateTablesSql("mysql", [a, b]), ["TRUNCATE TABLE `a`", "TRUNCATE TABLE `b`"]);
+  assert.deepEqual(truncateTablesSql("sqlite", [a, b], true), ["PRAGMA foreign_keys=OFF", 'DELETE FROM "a"', 'DELETE FROM "b"', "PRAGMA foreign_keys=ON"]);
+  assert.deepEqual(truncateTablesSql("postgres", [a, { schema: "s", name: "b" }], true), ['TRUNCATE TABLE "a", "s"."b" CASCADE']);
+  assert.deepEqual(truncateTablesSql("mysql", [v]), []);
+  assert.deepEqual(dropTablesSql("mysql", [a, v, b], true), ["SET FOREIGN_KEY_CHECKS=0", "DROP VIEW `v`", "DROP TABLE `a`", "DROP TABLE `b`", "SET FOREIGN_KEY_CHECKS=1"]);
+  assert.deepEqual(dropTablesSql("postgres", [a, v, b]), ['DROP VIEW "v"', 'DROP TABLE "a", "b"']);
+  assert.deepEqual(dropTablesSql("postgres", [a], true), ['DROP TABLE "a" CASCADE']);
+  assert.deepEqual(dropTablesSql("mssql", [a, b]), ["DROP TABLE [a]", "DROP TABLE [b]"]);
+  assert.deepEqual(dropTablesSql("mysql", [v], true), ["DROP VIEW `v`"]);
 });

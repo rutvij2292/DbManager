@@ -34,7 +34,8 @@ import { formatRows, type CopyFormat } from "./copyfmt";
 import { splitStatements, statementAt } from "./sqlsplit";
 import { analyzeSelect, resolveEdit } from "./resultedit";
 import { pushHistory, loadSaved, findFavorite, addFavorite, renameQuery, deleteQuery, loadDrafts, saveDraft, removeDraft, dropLegacyHistory, type HistoryItem } from "./qstore";
-import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, promptName, confirmDanger } from "./dbadmin";
+import { clickSelect, type Selection } from "./selection";
+import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, truncateTablesSql, dropTablesSql, promptName, confirmDanger } from "./dbadmin";
 import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
 
 /**
@@ -327,7 +328,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       commit.className = n ? (isCareful(tab.conn?.env) && tab.conn?.env === "production" ? "btn btn-careful" : "btn btn-primary") : "btn";
       info.textContent = !tab.cols ? "" : grid.editable ? (n ? `${n} pending change${n > 1 ? "s" : ""}` : "Double-click a cell to edit") : "Read-only: this table has no primary key";
     };
-    grid.onChange = refreshBar;
+    grid.onChange = () => { refreshBar(); syncDirtyRows(); };
     refreshBar();
     setTimeout(() => setMode(tab, "data"), 0);
     tab.bar = bar;
@@ -428,6 +429,7 @@ function closeTab(t: Tab, keepDraft = false) {
   const next = nextAfterClose(tabs, t); // always a tab of the same connection, or null
   tabs.splice(g, 1);
   t.grid.setResult(null);
+  syncDirtyRows();
   if (keepDraft) flushDraft(t);
   else { rememberSession(t, true); clearTimeout(t.draftTimer); if (t.conn && t.kind === "query") removeDraft(draftKey(t.conn), t.draftId); }
   releaseResults(t);
@@ -759,6 +761,37 @@ async function commitChanges(t: Tab) {
   }
 }
 
+/** Commit every table tab of the current database that has staged changes, after one review. Each tab is its own transaction. */
+async function commitAll() {
+  const c = conn;
+  if (!c) return false;
+  const dirty = tabs.filter((t) => t.kind === "table" && t.conn === c && t.grid.pendingCount);
+  if (!dirty.length) { toast("No uncommitted changes in this database.", "info"); return; }
+  const plan: { t: Tab; target: EditTarget; changes: Change[]; stmts: string[] }[] = [];
+  try {
+    for (const t of dirty) {
+      const target = editTarget(t);
+      if (!target) continue;
+      const changes = buildChanges(t, target);
+      if (typeof changes === "string") { toast(`${t.table}: ${changes}`, "error"); return; }
+      plan.push({ t, target, changes, stmts: await api.applyChanges(c.id, target.schema, target.table, changes, true) });
+    }
+  } catch (e) { toast(`Couldn't prepare the commit: ${e}`, "error"); return; }
+  if (!plan.length || !(await confirmSql(plan.flatMap((p) => [`-- ${p.target.table}`, ...p.stmts]), `Commit ${plan.length} table${plan.length === 1 ? "" : "s"}`))) return;
+  let ok = 0;
+  for (const p of plan) {
+    try {
+      await api.applyChanges(c.id, p.target.schema, p.target.table, p.changes, false);
+      for (const q of p.stmts) logSql(c, q, 0, undefined, p.t);
+      p.t.grid.discard(); reload(p.t); ok++;
+    } catch (e) {
+      toast(`Committed ${ok} of ${plan.length}. ${p.target.table} failed: ${e}`, "error");
+      return;
+    }
+  }
+  toast(`Committed changes to ${ok} table${ok === 1 ? "" : "s"}`, "ok");
+}
+
 /** Read a query result again after its edits were committed (a run-all result is replaced in place, the other results stay). */
 async function rerunResult(t: Tab) {
   const c = t.conn, sqlText = t.baseSql;
@@ -827,12 +860,12 @@ function paintEditBar(t: Tab, why?: string) {
   bar.append(mk(`Commit ${n}`, "commit", prod ? "btn btn-careful" : "btn btn-primary", () => commitChanges(t)), mk("Discard", "undo", "btn", () => discardChanges(t)));
 }
 
-function confirmSql(stmts: string[]): Promise<boolean> {
+function confirmSql(stmts: string[], title?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const o = document.createElement("div");
     o.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50";
     o.innerHTML = `<div class="w-[640px] max-h-[70vh] bg-raised rounded-lg border border-line-strong shadow-2xl flex flex-col">
-      <div class="px-4 py-2 border-b border-line-strong font-semibold">Review changes (${stmts.length} statement${stmts.length > 1 ? "s" : ""}, one transaction)</div>
+      <div class="px-4 py-2 border-b border-line-strong font-semibold">${title ? `${title} (one transaction per table)` : `Review changes (${stmts.length} statement${stmts.length > 1 ? "s" : ""}, one transaction)`}</div>
       <pre class="mono text-[13px] p-4 overflow-auto flex-1 select-text whitespace-pre-wrap"></pre>
       <div class="p-3 flex justify-end gap-2 border-t border-line-strong">
         <button id="no" class="px-3 py-1 rounded hover:bg-raised2">Cancel</button>
@@ -1185,7 +1218,7 @@ async function refreshDatabase(c: Conn) {
 
 // ---------- sidebar tree: servers -> databases -> tables ----------
 const collapsed = new Set<string>();
-interface RowOpts { level: number; ic: string; label: string; sub?: string; badge?: string; stripe?: string; chevron?: "open" | "shut"; count?: number; active?: boolean; strong?: boolean; muted?: boolean; actions?: { ic: string; title: string; fn: () => void }[]; click?: () => void; dbl?: () => void; menu?: (x: number, y: number) => void; title?: string }
+interface RowOpts { level: number; ic: string; label: string; sub?: string; badge?: string; stripe?: string; chevron?: "open" | "shut"; count?: number; active?: boolean; strong?: boolean; muted?: boolean; actions?: { ic: string; title: string; fn: () => void }[]; click?: (e: MouseEvent) => void; dbl?: () => void; menu?: (x: number, y: number) => void; title?: string; selected?: boolean; dirty?: number; name?: string }
 function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElement {
   const d = document.createElement("div");
   const chev = o.chevron ? `<span class="text-muted shrink-0" style="width:12px;transition:transform .16s var(--ease-out);transform:rotate(${o.chevron === "open" ? 90 : 0}deg)">${icon("chevron", 11)}</span>` : `<span style="width:12px" class="shrink-0"></span>`;
@@ -1202,11 +1235,15 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
     d.style.height = h + "px";
     d.style.paddingLeft = 6 + (o.level - 1) * 16 + "px";
     if (o.active) d.setAttribute("aria-current", "true");
+    if (o.selected) d.dataset.selected = "true";
+    if (o.dirty) d.dataset.dirty = "true";
+    if (o.name !== undefined) d.dataset.name = o.name;
     d.innerHTML = chev + `<span class="${o.active ? "" : "text-muted"} shrink-0">${icon(o.ic, 15)}</span>` +
       `<span class="min-w-0 flex-1 truncate ${o.level === 2 ? "text-soft font-medium text-[13px]" : ""} ${o.level === 1 ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}</span>` +
       (o.count !== undefined ? `<span class="text-muted text-[12px] shrink-0 group-hover:hidden">${o.count}</span>` : "");
   }
   if (o.title) d.title = o.title;
+  if (o.dirty) d.title = `${o.dirty} uncommitted change${o.dirty === 1 ? "" : "s"}`;
   if (o.actions?.length) {
     const box = document.createElement("span");
     box.className = "hidden group-hover:flex items-center shrink-0 rounded-md bg-panel/70";
@@ -1232,6 +1269,29 @@ const ART_TABNIX = `<svg viewBox="0 0 150 110" width="150" height="110" fill="no
   <circle cx="134" cy="14" r="6" fill="var(--spark)"/><path d="M106 33 129 17" stroke="var(--spark)" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 const ART_RESULTS = `<svg viewBox="0 0 120 80" width="120" height="80" fill="none" aria-hidden="true"><g fill="var(--accent)" opacity=".14"><rect x="8" y="30" width="104" height="11" rx="5"/><rect x="8" y="48" width="104" height="11" rx="5"/><rect x="8" y="66" width="70" height="11" rx="5"/></g>
   <rect x="14" y="6" width="2.6" height="18" rx="1.3" fill="var(--accent)"><animate attributeName="opacity" values="1;0.15;1" dur="1.2s" repeatCount="indefinite"/></rect><rect x="22" y="12" width="36" height="6" rx="3" fill="var(--spark)" opacity=".85"/></svg>`;
+
+/** Tables picked in the sidebar (⌘/Ctrl-click, Shift-click) for a bulk action. Belongs to one database. */
+let sel: Selection = { picked: new Set(), anchor: null };
+let selConn: Conn | null = null;
+const objKey = (o: ObjectRef) => (o.schema ? o.schema + "." : "") + o.name;
+const selectedObjects = (c: Conn) => (selConn === c ? c.objects.filter((o) => sel.picked.has(objKey(o))) : []);
+function clearSelection() { sel = { picked: new Set(), anchor: null }; selConn = null; }
+
+/** Open table tabs with staged edits, as table name -> change count, for one database. */
+function dirtyTables(c: Conn | null) {
+  const m = new Map<string, number>();
+  for (const t of tabs) if (c && t.kind === "table" && t.conn === c && t.table && t.grid.pendingCount) m.set(t.table, (m.get(t.table) ?? 0) + t.grid.pendingCount);
+  return m;
+}
+/** Re-mark the yellow "uncommitted" rows in place, without rebuilding the tree. */
+function syncDirtyRows() {
+  const dirty = dirtyTables(conn);
+  document.querySelectorAll<HTMLElement>("#objects [data-name]").forEach((row) => {
+    const n = dirty.get(row.dataset.name!);
+    if (n) { row.dataset.dirty = "true"; row.title = `${n} uncommitted change${n === 1 ? "" : "s"}`; }
+    else if (row.dataset.dirty) { delete row.dataset.dirty; row.title = "Double-click to open"; }
+  });
+}
 
 const KIND_GROUPS: [string, string, string][] = [["table", "Tables", "table"], ["view", "Views", "view"], ["collection", "Collections", "collection"], ["key", "Keys", "key"], ["function", "Functions", "structure"], ["procedure", "Procedures", "play"], ["trigger", "Triggers", "wand"], ["event", "Events", "sun"]];
 const ROUTINE_KINDS = ["function", "procedure", "trigger", "event"];
@@ -1407,6 +1467,10 @@ function renderObjects() {
       if (q && !items.length && !(c.db ?? "").toLowerCase().includes(q)) continue;
       const dKey = "d:" + c.id, dOpen = q ? true : !collapsed.has(dKey);
       const here = conn === c;
+      const order = KIND_GROUPS.flatMap(([k]) => (ROUTINE_KINDS.includes(k) ? [] : items.filter((o) => o.kind === k).map(objKey)));
+      if (selConn !== c) clearSelection();
+      else if (sel.picked.size) { const seen = new Set(order); sel = { picked: new Set([...sel.picked].filter((k) => seen.has(k))), anchor: sel.anchor }; }
+      const dirty = dirtyTables(c);
       children.push(treeRow({
         level: 1, ic: "database", label: c.db ?? "default", strong: true, active: here && !openTab, chevron: dOpen ? "open" : "shut", count: c.objects.length,
         title: `${c.db ?? "default"} on ${s.name}`,
@@ -1427,9 +1491,21 @@ function renderObjects() {
           const on = !!openTab && openTab.conn === c && openTab.table === o.name;
           children.push(treeRow({
             level: 3, ic, label: (o.schema && o.schema !== "public" ? o.schema + "." : "") + o.name, active: on, title: "Double-click to open",
-            click: () => { conn = c; renderObjects(); },
+            selected: sel.picked.has(objKey(o)), dirty: dirty.get(o.name), name: o.name,
+            click: (e) => {
+              if (ROUTINE_KINDS.includes(o.kind)) { conn = c; renderObjects(); return; }
+              const mode = e.shiftKey ? "range" : e.metaKey || e.ctrlKey ? "toggle" : "single";
+              const same = mode === "single" && conn === c && selConn === c && sel.picked.size === 1 && sel.picked.has(objKey(o));
+              conn = c; selConn = c; sel = clickSelect(sel, order, objKey(o), mode);
+              if (!same) renderObjects(); // a repeated plain click keeps its row, so a double-click still lands
+            },
             dbl: () => (ROUTINE_KINDS.includes(o.kind) ? showDefinition(c, o) : openTable(o.name, c)),
-            menu: (x, y) => (ROUTINE_KINDS.includes(o.kind) ? routineMenu(c, o, x, y) : tableMenu(c, o, x, y)),
+            menu: (x, y) => {
+              if (ROUTINE_KINDS.includes(o.kind)) return routineMenu(c, o, x, y);
+              if (selConn !== c || !sel.picked.has(objKey(o))) { selConn = c; sel = clickSelect(sel, order, objKey(o), "single"); renderObjects(); }
+              const picked = selectedObjects(c);
+              picked.length > 1 ? bulkMenu(c, picked, x, y) : tableMenu(c, o, x, y);
+            },
           }));
         }
       }
@@ -1482,6 +1558,7 @@ function tableMenu(c: Conn, o: ObjectRef, x: number, y: number) {
     { label: "Copy name", action: () => { navigator.clipboard?.writeText(o.name); toast("Copied " + o.name, "ok"); } },
     { divider: true, label: "" },
     { label: "Refresh", action: () => refreshDatabase(c) },
+    ...(dirtyTables(c).has(o.name) ? [{ divider: true, label: "" }, { label: "Commit changes", action: () => { const t = tabs.find((k) => k.kind === "table" && k.table === o.name && k.conn === c && k.grid.pendingCount); if (t) commitChanges(t); } }, { label: "Discard changes", action: () => { const t = tabs.find((k) => k.kind === "table" && k.table === o.name && k.conn === c && k.grid.pendingCount); if (t) discardChanges(t); } }] : []),
     { divider: true, label: "" },
     { label: isProtected(c.server) ? "Truncate… (protected)" : "Truncate…", danger: true, disabled: o.kind === "view" || ["redis", "mongo"].includes(c.kind), action: () => truncateTable(c, o) },
     { label: (o.kind === "view" ? "Drop view…" : "Drop table…") + (isProtected(c.server) ? " (protected)" : ""), danger: true, disabled: ["redis", "mongo"].includes(c.kind), action: () => dropTable(c, o) },
@@ -1656,8 +1733,8 @@ async function truncateDatabase(c: Conn) {
  * Truncate/drop one table. Foreign keys can block it, so the dialog has a phpMyAdmin-style checkbox, and if the
  * server refuses anyway the user is offered a retry that ignores foreign keys.
  */
-async function tableOp(c: Conn, o: ObjectRef, op: "truncate" | "drop", build: (ignoreFk: boolean) => string[], text: { title: string; body: string; confirmLabel: string; typed?: string }): Promise<boolean> {
-  const option = canIgnoreForeignKeys(c.kind) && o.kind !== "view" ? { label: ignoreFkLabel(c.kind, op), checked: false } : undefined;
+async function tableOp(c: Conn, hasTables: boolean, op: "truncate" | "drop", build: (ignoreFk: boolean) => string[], text: { title: string; body: string; confirmLabel: string; typed?: string }, bulk = false): Promise<boolean> {
+  const option = canIgnoreForeignKeys(c.kind) && hasTables ? { label: ignoreFkLabel(c.kind, op), checked: false } : undefined;
   if (!(await confirmDanger({ ...text, sql: build(false), option }))) return false;
   let ignore = !!option?.checked;
   for (;;) {
@@ -1665,7 +1742,7 @@ async function tableOp(c: Conn, o: ObjectRef, op: "truncate" | "drop", build: (i
     try { await api.runStatements(c.id, sqls); for (const q of sqls) logSql(c, q, 0); return true; }
     catch (e) {
       const msg = String(e);
-      if (ignore || !option || !isForeignKeyError(msg)) { toast(`${op === "drop" ? "Drop" : "Truncate"} failed: ${msg}`, "error"); return false; }
+      if (ignore || !option || !isForeignKeyError(msg)) { toast(`${op === "drop" ? "Drop" : "Truncate"} failed: ${msg}${bulk ? " Some tables may already have been changed." : ""}`, "error"); return false; }
       const retry = await confirmDanger({ title: "Blocked by a foreign key", body: `${esc(msg.split("\n")[0])}<br><br>Retry with foreign key constraints ignored for this operation only?`, confirmLabel: "Retry ignoring foreign keys", sql: build(true) });
       if (!retry) return false;
       ignore = true;
@@ -1675,7 +1752,7 @@ async function tableOp(c: Conn, o: ObjectRef, op: "truncate" | "drop", build: (i
 
 async function truncateTable(c: Conn, o: ObjectRef) {
   if (blocked(c.server, "truncating a table")) return;
-  const done = await tableOp(c, o, "truncate", (fk) => truncateTableSql(c.kind, o, fk), {
+  const done = await tableOp(c, o.kind !== "view", "truncate", (fk) => truncateTableSql(c.kind, o, fk), {
     title: `Truncate ${o.name}?`, body: `Deletes every row of <b>${esc(o.name)}</b>. The table stays. It cannot be undone.`, confirmLabel: "Truncate", typed: c.env === "production" ? o.name : undefined,
   });
   if (done) { toast(`Truncated ${o.name}`, "ok"); reloadTablesOf(c); }
@@ -1683,12 +1760,60 @@ async function truncateTable(c: Conn, o: ObjectRef) {
 
 async function dropTable(c: Conn, o: ObjectRef) {
   if (blocked(c.server, "dropping a table")) return;
-  const done = await tableOp(c, o, "drop", (fk) => dropTableSql(c.kind, o, fk), {
+  const done = await tableOp(c, o.kind !== "view", "drop", (fk) => dropTableSql(c.kind, o, fk), {
     title: `Drop ${o.kind === "view" ? "view" : "table"} ${o.name}?`, body: `Permanently removes <b>${esc(o.name)}</b>${o.kind === "view" ? "" : " and its data"}. It cannot be undone.`, confirmLabel: "Drop", typed: o.name,
   });
   if (!done) return;
   for (const t of [...tabs]) if (t.conn === c && t.table === o.name) closeTab(t);
   toast(`Dropped ${o.name}`, "ok");
+  await refreshDatabase(c);
+}
+
+const nameList = (l: ObjectRef[]) => `<ul class="mt-1 mono text-[12.5px]">${l.slice(0, 8).map((o) => `<li>${esc(o.name)}</li>`).join("")}${l.length > 8 ? `<li class="text-muted">… and ${l.length - 8} more</li>` : ""}</ul>`;
+
+function bulkMenu(c: Conn, picked: ObjectRef[], x: number, y: number) {
+  const n = picked.length, nonSql = ["redis", "mongo"].includes(c.kind), tables = picked.filter((o) => o.kind !== "view");
+  const prot = isProtected(c.server) ? " (protected)" : "";
+  contextMenu(x, y, [
+    { label: `Export ${n} tables…`, disabled: nonSql, action: () => exportTables(c, picked) },
+    { divider: true, label: "" },
+    { label: `Clear selection`, action: () => { clearSelection(); renderObjects(); } },
+    { divider: true, label: "" },
+    { label: `Truncate ${tables.length} table${tables.length === 1 ? "" : "s"}…${prot}`, danger: true, disabled: nonSql || !tables.length, action: () => truncateTables(c, tables) },
+    { label: `Drop ${n} tables…${prot}`, danger: true, disabled: nonSql, action: () => dropTables(c, picked) },
+  ]);
+}
+
+async function exportTables(c: Conn, objs: ObjectRef[]) {
+  try {
+    const many = await Promise.all(objs.map(async (o) => ({ name: o.name, sql: await api.selectAllSql(c.id, o.schema, o.name, 2_000_000_000) })));
+    conn = c;
+    showExport(c.id, "", `${many.length} tables`, (m) => toast(m, m.startsWith("Exported") && !m.includes("Failed") ? "ok" : "info"), many);
+  } catch (e) { toast(`Couldn't prepare the export: ${e}`, "error"); }
+}
+
+async function truncateTables(c: Conn, tables: ObjectRef[]) {
+  if (blocked(c.server, "truncating tables")) return;
+  const done = await tableOp(c, true, "truncate", (fk) => truncateTablesSql(c.kind, tables, fk), {
+    title: `Truncate ${tables.length} tables?`, body: `Deletes every row of these tables. The tables stay. It cannot be undone.${nameList(tables)}`,
+    confirmLabel: "Truncate", typed: c.env === "production" ? c.db ?? c.name : undefined,
+  }, true);
+  if (!done) return;
+  toast(`Truncated ${tables.length} tables`, "ok");
+  reloadTablesOf(c);
+}
+
+async function dropTables(c: Conn, objs: ObjectRef[]) {
+  if (blocked(c.server, "dropping tables")) return;
+  const done = await tableOp(c, objs.some((o) => o.kind !== "view"), "drop", (fk) => dropTablesSql(c.kind, objs, fk), {
+    title: `Drop ${objs.length} tables?`, body: `Permanently removes these tables and their data. It cannot be undone.${nameList(objs)}`,
+    confirmLabel: "Drop", typed: c.db ?? c.name,
+  }, true);
+  if (!done) return;
+  const gone = new Set(objs.map((o) => o.name));
+  for (const t of [...tabs]) if (t.conn === c && t.table && gone.has(t.table)) closeTab(t);
+  clearSelection();
+  toast(`Dropped ${objs.length} tables`, "ok");
   await refreshDatabase(c);
 }
 
@@ -2021,6 +2146,7 @@ const handlers: Record<string, (e: KeyboardEvent) => unknown> = {
   focusFilter: () => $("filter").focus(),
   nextTab: () => cycle(1), prevTab: () => cycle(-1),
   favorite: () => active?.kind === "query" ? favoriteCurrentQuery() : false,
+  commitAll,
   commit: () => active?.kind === "table" || (active?.kind === "query" && active.edit) ? commitChanges(active) : false,
   addRow: () => active?.kind === "table" ? active.grid.addRow() : false,
   deleteRow: (e) => active?.kind === "table" && !(e.target instanceof HTMLInputElement) ? deleteRow(active) : false,

@@ -142,8 +142,8 @@ app.innerHTML = `
       <div class="titlebar h-11 shrink-0 flex items-end px-1 gap-2">
         <div id="tabs" class="flex items-end gap-0.5 overflow-x-auto flex-1 min-w-0 h-full"></div>
         <div class="flex items-center gap-0.5 pb-1.5">
-          ${iconBtn("backup", "archive", "Back up this database… (⌘⌥B)")}${iconBtn("restore", "restore", "Restore a backup… (⌘⌥R)")}<span class="w-px h-4 bg-line-strong mx-1"></span>
-          ${iconBtn("import", "upload", "Import a file… (⌘⌥I)")}${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("sqllog-btn", "plan", "SQL log: the statements that ran (⌘J)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
+          ${iconBtn("more", "more", "Back up, restore, import…")}<span class="w-px h-4 bg-line-strong mx-1"></span>
+          ${iconBtn("export", "download", "Export the result… (⌘⌥E)")}${iconBtn("sqllog-btn", "plan", "SQL log: the statements that ran (⌘J)")}${iconBtn("newtab", "plus", "New query tab (⌘T)")}
         </div>
       </div>
       <main id="main" class="card flex-1 min-h-0 flex flex-col" style="border-top-left-radius:0"></main>
@@ -547,7 +547,7 @@ function renderLog() {
   const host = $("sqllog");
   const visible = logOpen && !!active && !launcherOpen;
   host.classList.toggle("hidden", !visible);
-  $("sqllog-btn")?.classList.toggle("text-accent", logOpen);
+  $("sqllog-btn")?.setAttribute("aria-pressed", String(logOpen));
   if (!visible) return;
   const mine = logScope === "tab" && active ? active.id : null;
   const entries = (conn?.log ?? []).filter((e) => mine === null || e.tab === mine);
@@ -630,6 +630,35 @@ async function countRows(t: Tab) {
   }
 }
 
+/** Readable error block with a Copy button: first line in red, the rest in ink. */
+function errorPanel(title: string, message: string, ms?: number): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "h-full overflow-auto p-5";
+  const head = document.createElement("div");
+  head.className = "flex items-center gap-2 mb-2";
+  const ttl = document.createElement("span");
+  ttl.className = "text-danger font-medium";
+  ttl.textContent = title;
+  head.append(ttl);
+  if (ms != null) { const m = document.createElement("span"); m.className = "text-muted text-[12px]"; m.textContent = `${ms} ms`; head.append(m); }
+  const sp = document.createElement("span"); sp.className = "flex-1";
+  const copy = document.createElement("button");
+  copy.className = "btn btn-ghost btn-sm";
+  copy.textContent = "Copy";
+  copy.onclick = () => { navigator.clipboard?.writeText(message); toast("Error copied", "ok"); };
+  head.append(sp, copy);
+  const pre = document.createElement("pre");
+  pre.className = "mono text-[13px] whitespace-pre-wrap break-words select-text";
+  pre.style.color = "var(--ink)";
+  const nl = message.indexOf("\n");
+  const first = document.createElement("span");
+  first.className = "text-danger";
+  first.textContent = nl < 0 ? message : message.slice(0, nl);
+  pre.append(first, document.createTextNode(nl < 0 ? "" : message.slice(nl)));
+  el.append(head, pre);
+  return el;
+}
+
 async function exec(t: Tab, sqlText: string) {
   if (!t.conn) { t.status.textContent = "Not connected — open a database first (⌘O)"; return; }
   if (t.panel && t.gridWrap) { t.gridWrap.replaceChildren(t.grid.el); t.panel = undefined; }
@@ -660,12 +689,7 @@ async function exec(t: Tab, sqlText: string) {
     t.status.title = String(e);
     t.status.classList.toggle("text-danger", !t.cancelled);
     if (!t.cancelled && t.gridWrap) {
-      const el = document.createElement("div");
-      el.className = "h-full overflow-auto p-5";
-      const pre = document.createElement("pre");
-      pre.className = "mono text-[13px] text-danger whitespace-pre-wrap break-words select-text";
-      pre.textContent = String(e).replace(/^Error:\s*/, "");
-      el.append(pre);
+      const el = errorPanel("Query failed", String(e).replace(/^Error:\s*/, ""));
       t.panel = el;
       t.gridWrap.replaceChildren(el);
     }
@@ -1146,8 +1170,9 @@ async function showResult(t: Tab, i: number) {
   } else {
     await t.grid.setResult(null, false);
     prepareEdit(t);
-    const el = document.createElement("div");
+    const el = r.error ? errorPanel("This statement failed", r.error) : document.createElement("div");
     el.className = "h-full overflow-auto p-5";
+    if (!r.error) {
     const head = document.createElement("div");
     head.className = r.error ? "text-danger font-medium mb-2" : "text-soft mb-2";
     head.textContent = r.error ? "This statement failed" : `${(r.affected ?? 0).toLocaleString()} row${r.affected === 1 ? "" : "s"} affected · ${r.ms} ms`;
@@ -1155,6 +1180,7 @@ async function showResult(t: Tab, i: number) {
     pre.className = "mono text-[13px] whitespace-pre-wrap break-words select-text " + (r.error ? "text-danger" : "text-muted");
     pre.textContent = r.error ?? r.sql;
     el.append(head, pre);
+    }
     t.panel = el;
     t.gridWrap.replaceChildren(el);
   }
@@ -2204,9 +2230,15 @@ function cycle(d: number) {
 }
 
 $("sqllog-btn").onclick = toggleLog;
-$("backup").onclick = backupActive;
-$("restore").onclick = restoreActive;
-$("import").onclick = importActive;
+$("more").onclick = () => {
+  const r = $("more").getBoundingClientRect(), can = !!conn && BACKUP_KINDS.includes(conn.kind);
+  contextMenu(r.left, r.bottom + 4, [
+    { label: "Back up…", hint: prettyCombo(comboOf("backup")), disabled: !can, action: backupActive },
+    { label: "Restore…", hint: prettyCombo(comboOf("restore")), disabled: !can, action: restoreActive },
+    { divider: true, label: "" },
+    { label: "Import a file…", hint: prettyCombo(comboOf("import")), disabled: !conn, action: importActive },
+  ]);
+};
 $("export").onclick = exportActive;
 $("newtab").onclick = newQuery;
 $("open").onclick = openConnections;

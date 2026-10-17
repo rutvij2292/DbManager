@@ -1,7 +1,7 @@
 import { type ColumnInfo, type IndexInfo, type ObjectInfo, type StructChange } from "./api";
 import { icon } from "./icons";
 
-const cell = "bg-transparent border border-transparent hover:border-line-strong focus:border-accent focus:bg-panel rounded-md px-2 h-7 outline-none w-full mono";
+const cell = "struct-cell bg-transparent border border-transparent hover:border-line-strong focus:border-accent focus:bg-panel rounded-md px-2 h-7 outline-none w-full mono";
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 interface Row { orig: ColumnInfo | null; name: string; type: string; nullable: boolean; def: string; dropped: boolean }
@@ -58,8 +58,8 @@ export function createStructureView(
 
   function draw() {
     const n = pending().length;
-    const box = (title: string, count: number, body: string) => `<section class="rounded-xl border border-line-strong overflow-hidden mb-6">
-        <div class="flex items-center gap-2 px-4 h-9 bg-canvas border-b border-line"><span class="font-medium">${title}</span><span class="pill">${count}</span></div>${body}</section>`;
+    const box = (title: string, count: number, body: string) => `<section class="rounded-xl border border-line-strong overflow-hidden mb-4">
+        <div class="flex items-center gap-2 px-4 h-8 bg-canvas border-b border-line"><span class="font-medium">${title}</span><span class="pill">${count}</span></div>${body}</section>`;
     const th = "text-left font-medium text-soft px-2 h-8";
     el.innerHTML = `
       <div class="flex items-center gap-2 mb-5">

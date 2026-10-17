@@ -126,6 +126,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .btn-danger:focus-visible, .btn-careful:focus-visible { outline-color: var(--danger); }
 .btn-primary:disabled, .btn-careful:disabled, .btn-danger:disabled { opacity: 1; background: var(--raised); color: var(--muted); box-shadow: none; }
 .btn-sm { height: 26px; padding: 0 9px; gap: 6px; font-size: 13px; }
+.btn-ghost[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.struct-cell:not(:hover):not(:focus) { border-bottom-color: var(--line); }
 .field { height: 32px; padding: 0 10px; border-radius: var(--r-sm); background: var(--panel); border: 1px solid var(--line-strong); color: var(--ink); outline: none; font-size: 14px; }
 .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .field-sm { height: 26px; padding: 0 8px; font-size: 13px; }

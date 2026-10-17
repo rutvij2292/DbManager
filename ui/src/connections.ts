@@ -1,7 +1,8 @@
 import { confirmDanger, safetyLevel } from "./dbadmin";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type ConnConfig, type Profile } from "./api";
-import { esc, tagChip, STARTER_TAGS } from "./ui";
+import { esc, tagChip, STARTER_TAGS, modal } from "./ui";
+import { icon, engineBadge, envColor } from "./icons";
 
 interface Kind { id: string; label: string; port?: number; file?: boolean }
 const KINDS: Kind[] = [
@@ -17,67 +18,68 @@ const KINDS: Kind[] = [
   { id: "greenplum", label: "Greenplum", port: 5432 },
 ];
 
-const field = "w-full bg-panel border border-line-strong rounded px-2 py-1 outline-none focus:border-accent";
+const field = "field w-full";
+const cap = "text-[11px] font-semibold uppercase tracking-wide text-muted pt-1";
+const lab = (t: string, inner: string, cls = "", title = "") => `<label class="flex flex-col gap-1 ${cls}"${title ? ` title="${title}"` : ""}><span class="text-[12px] text-soft">${t}</span>${inner}</label>`;
 
 /** Connection manager modal: saved list on the left, form on the right. */
 export function showConnectionManager(onConnect: (connId: number, p: Profile) => Promise<void>) {
-  const overlay = document.createElement("div");
-  overlay.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50 select-none";
-  overlay.dataset.modal = "";
-  overlay.innerHTML = `
-    <div class="w-[760px] h-[620px] bg-raised rounded-lg shadow-2xl border border-line-strong flex overflow-hidden">
-      <div class="w-56 bg-panel border-r border-line-strong flex flex-col">
-        <div id="list" class="flex-1 overflow-auto p-1"></div>
-        <button id="new" class="m-2 bg-raised hover:bg-raised2 rounded py-1">+ New connection</button>
+  const m = modal(`
+    <div class="flex" style="height:min(620px,80vh)">
+      <div class="w-[240px] shrink-0 border-r border-line flex flex-col">
+        <button id="new" class="btn btn-ghost m-2">${icon("plus", 14)}<span>New connection</span></button>
+        <div id="list" class="flex-1 overflow-auto pb-1.5"></div>
       </div>
-      <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[13.5px]">
-        <label>Name <input name="name" class="${field}" placeholder="Local Postgres"/></label>
-        <div>
-          <div class="mb-1">Tags <span class="text-muted">· group connections, e.g. Work or Practice</span></div>
-          <div id="tagbox" class="${field} flex flex-wrap items-center gap-1.5" style="height:auto;min-height:32px;padding-top:4px;padding-bottom:4px">
-            <span id="tagchips" class="contents"></span>
-            <input id="taginput" class="flex-1 min-w-[120px] bg-transparent outline-none" style="height:22px" placeholder="Add a tag, then press Enter"/>
+      <form id="form" class="flex-1 flex flex-col min-w-0">
+        <div class="flex-1 overflow-auto px-5 py-4 flex flex-col gap-3">
+          <div class="${cap}" style="padding-top:0">General</div>
+          ${lab("Name", `<input name="name" class="${field}" placeholder="Local Postgres"/>`)}
+          <div>
+            <div class="mb-1 text-[12px] text-soft">Tags <span class="text-muted">· group connections, e.g. Work or Practice</span></div>
+            <div id="tagbox" class="${field} flex flex-wrap items-center gap-1.5" style="height:auto;min-height:32px;padding-top:4px;padding-bottom:4px">
+              <span id="tagchips" class="contents"></span>
+              <input id="taginput" class="flex-1 min-w-[120px] bg-transparent outline-none" style="height:22px" placeholder="Add a tag, then press Enter"/>
+            </div>
+            <div id="tagsug" class="flex flex-wrap gap-1.5 mt-1.5"></div>
           </div>
-          <div id="tagsug" class="flex flex-wrap gap-1.5 mt-1.5"></div>
-        </div>
-        <div class="flex gap-2 items-end">
-          <label class="w-44">Environment <select name="environment" class="${field}"><option value="local">Local</option><option value="staging">Staging</option><option value="production">Production</option></select></label>
-          <label class="w-60" title="Protected: truncate/drop are blocked and every write asks first. Read-only: nothing can be changed.">Safety <select name="safety" class="${field}"><option value="off">Off</option><option value="protected">Protected</option><option value="readonly">Read-only</option></select></label>
-        </div>
-        <label>Type <select name="kind" class="${field}">${KINDS.map((k) => `<option value="${k.id}">${k.label}</option>`).join("")}</select></label>
-        <div id="net" class="flex flex-col gap-2 overflow-auto">
-          <div class="flex gap-2"><label class="flex-1">Host <input name="host" class="${field}" value="127.0.0.1"/></label>
-          <label class="w-24">Port <input name="port" type="number" class="${field}"/></label></div>
-          <div class="flex gap-2"><label class="flex-1">User <input name="user" class="${field}"/></label>
-          <label class="flex-1">Password <input name="password" type="password" class="${field}" placeholder="(stored in Keychain)"/></label></div>
-          <div class="flex gap-2"><label class="flex-1">Database <input name="database" class="${field}"/></label>
-          <label class="w-44">SSL <select name="ssl" class="${field}"><option value="prefer">Prefer</option><option value="disable">Off</option><option value="require">Require</option><option value="verify">Verify certificate</option></select></label></div>
-          <label class="flex items-center gap-2 mt-1"><input type="checkbox" name="usessh"/> Connect over SSH (uses your ssh keys / agent)</label>
-          <div id="ssh" class="hidden flex flex-col gap-2">
-            <div class="flex gap-2"><label class="flex-1">SSH host <input name="ssh_host" class="${field}"/></label>
-            <label class="w-20">Port <input name="ssh_port" type="number" class="${field}" placeholder="22"/></label>
-            <label class="w-32">User <input name="ssh_user" class="${field}"/></label></div>
-            <label>Private key (optional) <input name="ssh_key" class="${field}" placeholder="~/.ssh/id_ed25519"/></label>
+          <div class="flex gap-3">
+            ${lab("Environment", `<select name="environment" class="${field}"><option value="local">Local</option><option value="staging">Staging</option><option value="production">Production</option></select>`, "w-44")}
+            ${lab("Safety", `<select name="safety" class="${field}"><option value="off">Off</option><option value="protected">Protected</option><option value="readonly">Read-only</option></select>`, "flex-1", "Protected: truncate/drop are blocked and every write asks first. Read-only: nothing can be changed.")}
+          </div>
+          <div class="${cap}">Connection</div>
+          ${lab("Type", `<select name="kind" class="${field}">${KINDS.map((k) => `<option value="${k.id}">${k.label}</option>`).join("")}</select>`)}
+          <div id="net" class="flex flex-col gap-3">
+            <div class="${cap}">Server</div>
+            <div class="flex gap-3">${lab("Host", `<input name="host" class="${field}" value="127.0.0.1"/>`, "flex-1")}${lab("Port", `<input name="port" type="number" class="${field}"/>`, "w-24")}</div>
+            <div class="flex gap-3">${lab("User", `<input name="user" class="${field}"/>`, "flex-1")}${lab("Password", `<input name="password" type="password" class="${field}" placeholder="(stored in Keychain)"/>`, "flex-1")}</div>
+            <div class="flex gap-3">${lab("Database", `<input name="database" class="${field}"/>`, "flex-1")}${lab("SSL", `<select name="ssl" class="${field}"><option value="prefer">Prefer</option><option value="disable">Off</option><option value="require">Require</option><option value="verify">Verify certificate</option></select>`, "w-44")}</div>
+            <label class="flex items-center gap-2"><input type="checkbox" name="usessh"/> Connect over SSH (uses your ssh keys / agent)</label>
+            <div id="ssh" class="hidden flex flex-col gap-3">
+              <div class="flex gap-3">${lab("SSH host", `<input name="ssh_host" class="${field}"/>`, "flex-1")}${lab("Port", `<input name="ssh_port" type="number" class="${field}" placeholder="22"/>`, "w-20")}${lab("User", `<input name="ssh_user" class="${field}"/>`, "w-32")}</div>
+              ${lab("Private key (optional)", `<input name="ssh_key" class="${field}" placeholder="~/.ssh/id_ed25519"/>`)}
+            </div>
+          </div>
+          <div id="file" class="hidden flex flex-col gap-3">
+            <div class="${cap}">File</div>
+            <div class="flex gap-2 items-end">${lab("Path", `<input name="path" class="${field}"/>`, "flex-1")}<button type="button" id="browse" class="btn">Browse…</button></div>
           </div>
         </div>
-        <div id="file" class="hidden flex gap-2 items-end"><label class="flex-1">File <input name="path" class="${field}"/></label>
-          <button type="button" id="browse" class="bg-raised2 hover:bg-raised2 rounded px-3 py-1">Browse…</button></div>
-        <div id="msg" class="text-[13px] min-h-4 mt-1"></div>
-        <div class="mt-auto flex gap-2 justify-end">
-          <button type="button" id="del" class="mr-auto text-danger hover:text-danger">Delete</button>
-          <button type="button" id="close" class="px-3 py-1 rounded hover:bg-raised2">Close</button>
-          <button type="button" id="test" class="px-3 py-1 rounded bg-raised2 hover:bg-raised2">Test</button>
-          <button type="button" id="save" class="px-3 py-1 rounded bg-raised2 hover:bg-raised2">Save</button>
-          <button type="submit" class="px-3 py-1 rounded btn-primary">Connect</button>
+        <div class="px-5 py-3 border-t border-line flex items-center gap-2">
+          <button type="button" id="del" class="btn btn-ghost text-danger">Delete</button>
+          <div id="msg" class="text-[12px] truncate flex-1 min-w-0 mr-1"></div>
+          <button type="button" id="close" class="btn btn-ghost">Close</button>
+          <button type="button" id="test" class="btn btn-ghost">Test</button>
+          <button type="button" id="save" class="btn">Save</button>
+          <button type="submit" class="btn btn-primary">Connect</button>
         </div>
       </form>
-    </div>`;
-  document.body.append(overlay);
-  const q = <T extends HTMLElement>(s: string) => overlay.querySelector(s) as T;
+    </div>`, 800, { backdropClose: false });
+  const q = m.q;
   const form = q<HTMLFormElement>("#form");
   const el = (n: string) => form.elements.namedItem(n) as HTMLInputElement;
-  const msg = (t: string, bad = false) => { const m = q("#msg"); m.textContent = t; m.className = "text-[13px] min-h-4 mt-1 " + (bad ? "text-danger" : "text-ok"); };
+  const msg = (t: string, bad = false) => { const e = q("#msg"); e.textContent = t; e.title = t; e.className = "text-[12px] truncate flex-1 min-w-0 mr-1 " + (bad ? "text-danger" : "text-ok"); };
   let current: Profile | null = null;
+  const syncDel = () => { q("#del").style.visibility = current ? "" : "hidden"; };
 
   const kindOf = () => KINDS.find((k) => k.id === el("kind").value)!;
   const syncKind = () => {
@@ -114,7 +116,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     q("#tagchips").innerHTML = tags.map((t, i) => `<button type="button" data-rm="${i}" class="inline-flex" title="Remove ${esc(t)}">${tagChip(t)}</button>`).join("");
     q("#tagchips").querySelectorAll<HTMLElement>("[data-rm]").forEach((b) => (b.onclick = () => { tags.splice(+b.dataset.rm!, 1); drawTags(); }));
     const free = known.filter((k) => !tags.some((t) => t.toLowerCase() === k.toLowerCase()));
-    q("#tagsug").innerHTML = free.length ? `<span class="text-muted text-[12.5px] mr-0.5">Use:</span>` + free.map((k) => `<button type="button" data-add="${esc(k)}" class="opacity-80 hover:opacity-100">${tagChip(k)}</button>`).join("") : "";
+    q("#tagsug").innerHTML = free.length ? `<span class="text-muted text-[12px] mr-0.5">Use:</span>` + free.map((k) => `<button type="button" data-add="${esc(k)}" class="opacity-80 hover:opacity-100">${tagChip(k)}</button>`).join("") : "";
     q("#tagsug").querySelectorAll<HTMLElement>("[data-add]").forEach((b) => (b.onclick = () => { addTag(b.dataset.add!); }));
   };
   const addTag = (raw: string) => {
@@ -172,6 +174,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     el("ssh_user").value = p?.ssh_user ?? "";
     el("ssh_key").value = p?.ssh_key ?? "";
     syncKind();
+    syncDel();
     msg("");
   };
   const refresh = async () => {
@@ -180,16 +183,16 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     drawTags();
     q("#list").replaceChildren(...list.map((p) => {
       const d = document.createElement("div");
-      d.className = "px-2 py-1.5 rounded cursor-default hover:bg-raised " + (p.id === current?.id ? "bg-raised2" : "");
-      d.innerHTML = `<div class="truncate">${p.name.replace(/</g, "&lt;")}</div><div class="text-[11px] text-muted">${p.kind}</div>`;
+      d.className = "flex items-center gap-2.5 px-2.5 h-11 rounded-lg mx-1.5 cursor-default " + (p.id === current?.id ? "bg-accent-soft" : "hover:bg-raised");
+      if (p.environment && p.environment !== "local") d.style.boxShadow = `inset 3px 0 0 ${envColor(p.environment)}`;
+      const sub = p.kind === "sqlite" ? p.path ?? "" : [p.host, p.port].filter(Boolean).join(":");
+      d.innerHTML = `${engineBadge(p.kind, 22)}<div class="min-w-0 flex-1"><div class="text-[13px] truncate">${esc(p.name)}</div><div class="text-[12px] text-muted mono truncate">${esc(sub)}</div></div>`;
       d.onclick = () => { fill(p); refresh(); };
       d.ondblclick = async () => { fill(p); form.requestSubmit(); };
       return d;
     }));
   };
-  const close = () => { overlay.remove(); window.removeEventListener("keydown", onKey, true); };
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
-  window.addEventListener("keydown", onKey, true);
+  const close = m.close;
 
   el("kind").onchange = syncKind;
   el("usessh").onchange = syncKind;
@@ -201,7 +204,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     try { await api.testConnection(toConfig()); msg("Connection OK"); } catch (e) { msg(String(e), true); }
   };
   q("#save").onclick = async () => {
-    try { current = await api.saveConnection(toProfile(), el("password").value || undefined); msg("Saved"); refresh(); } catch (e) { msg(String(e), true); }
+    try { current = await api.saveConnection(toProfile(), el("password").value || undefined); syncDel(); msg("Saved"); refresh(); } catch (e) { msg(String(e), true); }
   };
   q("#del").onclick = async () => {
     if (!current) return;

@@ -1,3 +1,4 @@
+import { icon } from "./icons";
 /** Shared dialog + toast helpers. */
 export function modal(inner: string, width = 560, opts: { backdropClose?: boolean } = {}) {
   const o = document.createElement("div");
@@ -24,14 +25,33 @@ export function toast(msg: string, tone: "ok" | "error" | "info" = "info") {
   if (!t) {
     t = document.createElement("div");
     t.id = "toast";
-    t.className = "fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 text-[13.5px] shadow-pop border border-line-strong bg-panel max-w-[70vw]";
+    t.className = "fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 text-[13px] shadow-pop border border-line-strong bg-panel max-w-[70vw] flex items-center gap-2.5";
     document.body.append(t);
   }
-  t.style.borderLeft = `3px solid ${tone === "ok" ? "var(--ok)" : tone === "error" ? "var(--danger)" : "var(--accent)"}`;
-  t.textContent = msg;
-  t.style.display = "block";
+  const el = t;
+  const hide = () => { el.style.display = "none"; };
+  const col = tone === "ok" ? "var(--ok)" : tone === "error" ? "var(--danger)" : "var(--accent)";
+  el.style.borderLeft = `3px solid ${col}`;
+  el.setAttribute("role", tone === "error" ? "alert" : "status");
+  const ic = document.createElement("span");
+  ic.className = "shrink-0 flex";
+  ic.style.color = col;
+  ic.innerHTML = icon(tone === "ok" ? "commit" : tone === "error" ? "warn" : "info", 14);
+  const tx = document.createElement("span");
+  tx.textContent = msg;
+  el.replaceChildren(ic, tx);
+  if (tone === "error") {
+    const x = document.createElement("button");
+    x.className = "btn btn-ghost btn-sm shrink-0";
+    x.style.cssText = "width:26px;padding:0;justify-content:center";
+    x.setAttribute("aria-label", "Dismiss");
+    x.innerHTML = icon("close", 12);
+    x.onclick = hide;
+    el.append(x);
+  }
+  el.style.display = "flex";
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => { t!.style.display = "none"; }, tone === "error" ? 7000 : 3500);
+  toastTimer = window.setTimeout(hide, tone === "error" ? 8000 : 5000);
 }
 
 export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));

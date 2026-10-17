@@ -33,6 +33,8 @@ const P: Record<string, string> = {
   archive: '<rect x="2" y="2.8" width="12" height="3.4" rx="1"/><path d="M3 6.2v6.3c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2V6.2M6.5 9h3"/>',
   restore: '<path d="M2.5 8a5.5 5.5 0 1 0 1.8-4.1M2.5 2.5v3h3"/><path d="M8 5v3.2l2 1.2"/>',
   warn: '<path d="M8 2.5 14 13H2L8 2.5ZM8 6.5v3M8 11.2v.1"/>',
+  info: '<circle cx="8" cy="8" r="5.8"/><path d="M8 7.3v3.5M8 5.2v.1"/>',
+  more: '<circle cx="3.5" cy="8" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/><circle cx="12.5" cy="8" r=".9" fill="currentColor"/>',
 };
 
 export function icon(name: keyof typeof P | string, size = 16, cls = "", filled = false): string {

@@ -34,7 +34,7 @@ export function createStructureView(
   status: (s: string) => void,
 ): { el: HTMLElement; reload: () => Promise<void> } {
   const el = document.createElement("div");
-  el.className = "h-full overflow-auto px-6 py-5 text-[13.5px] bg-panel";
+  el.className = "h-full overflow-auto px-6 py-5 text-[13px] bg-panel";
   let rows: Row[] = [];
   let indexes: IndexInfo[] = [];
   let droppedIdx = new Set<string>();

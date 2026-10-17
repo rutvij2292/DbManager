@@ -75,7 +75,7 @@ export function createDiagram(schema: ErSchema, onOpen: (t: ErTable) => void) {
       else if (c.foreign_key) g.append(el("circle", { cx: 17, cy: y + ROW / 2, r: 3.2, fill: "var(--accent)" }));
       const name = el("text", { x: 30, y: y + 15, "font-size": 12, fill: c.primary_key ? "var(--ink)" : "var(--soft)", "font-weight": c.primary_key ? 600 : 400 }, c.name);
       name.style.fontFamily = "var(--font-mono)";
-      const type = el("text", { x: s.w - 10, y: y + 15, "font-size": 10.5, "text-anchor": "end", fill: "var(--muted)" }, c.type_name.toLowerCase());
+      const type = el("text", { x: s.w - 10, y: y + 15, "font-size": 11, "text-anchor": "end", fill: "var(--muted)" }, c.type_name.toLowerCase());
       type.style.fontFamily = "var(--font-mono)";
       g.append(name, type);
     });

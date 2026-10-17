@@ -35,8 +35,8 @@ export function showTablePlusImport(entries: TpEntry[]): Promise<boolean> {
           <input type="checkbox" data-id="${e.id}" ${checked.has(e.id) ? "checked" : ""} ${off ? "disabled" : ""}/>
           ${engineBadge(e.kind, 28)}
           <span class="min-w-0 flex-1"><span class="block font-medium truncate">${esc(e.name)}</span>
-            <span class="block mono text-[12.5px] text-muted truncate">${esc(where(e) || ENGINE_NAMES[e.kind ?? ""] || e.driver)}</span></span>
-          <span class="text-[12.5px] text-muted shrink-0 text-right">${note}</span></label>`;
+            <span class="block mono text-[12px] text-muted truncate">${esc(where(e) || ENGINE_NAMES[e.kind ?? ""] || e.driver)}</span></span>
+          <span class="text-[12px] text-muted shrink-0 text-right">${note}</span></label>`;
       }).join("");
       list.querySelectorAll<HTMLInputElement>("input[data-id]").forEach((i) => (i.onchange = () => { i.checked ? checked.add(i.dataset.id!) : checked.delete(i.dataset.id!); sync(); }));
       sync();

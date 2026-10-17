@@ -139,7 +139,7 @@ export function showSettings() {
   const colorRow = (id: "bgLight" | "bgDark", label: string) => `<div class="flex items-center gap-2"><span class="w-[150px] text-soft">${label}</span><input id="${id}" type="color" value="${isHex(s[id]) ? s[id] : id === "bgDark" ? "#0e1418" : "#edf2f5"}" style="width:44px;height:28px;padding:0;border:1px solid var(--line-strong);border-radius:6px;background:none"><button class="btn btn-ghost" data-reset="${id}">Default</button></div>`;
   const m = modal(`
     <div class="px-5 pt-4 pb-2 text-[16px] font-semibold">Settings</div>
-    <div class="px-5 pb-4 overflow-auto flex flex-col gap-3 text-[13.5px]">
+    <div class="px-5 pb-4 overflow-auto flex flex-col gap-3 text-[13px]">
       <div class="text-[12px] font-semibold uppercase tracking-wide text-muted mt-1">Appearance</div>
       <label class="flex items-center gap-2"><span class="w-[150px] text-soft">Interface font</span><input id="uiFont" class="field flex-1" list="ui-fonts" placeholder="System default" value="${esc(s.uiFont)}"></label>
       <label class="flex items-center gap-2"><span class="w-[150px] text-soft">Editor font</span><input id="editorFont" class="field flex-1" list="ed-fonts" placeholder="SF Mono" value="${esc(s.editorFont)}"></label>

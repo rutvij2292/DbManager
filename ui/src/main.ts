@@ -117,7 +117,7 @@ app.innerHTML = `
       <div class="titlebar h-11 shrink-0 w-full"></div>
       <div id="rail-items" class="flex-1 overflow-y-auto overflow-x-visible flex flex-col items-center gap-1 py-1 w-full px-1.5"></div>
       <div class="flex flex-col items-center gap-1 py-2.5">
-        <button id="addconn" class="flex flex-col items-center justify-center gap-0.5 rounded-xl" style="width:66px;height:50px" title="Connect to another database (⌘N)" aria-label="Connect to another database">${icon("plus", 18)}<span class="text-[11.5px]">Connect</span></button>
+        <button id="addconn" class="flex flex-col items-center justify-center gap-0.5 rounded-xl" style="width:66px;height:50px" title="Connect to another database (⌘N)" aria-label="Connect to another database">${icon("plus", 18)}<span class="text-[11px]">Connect</span></button>
         <button id="settings" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Settings (⌘,)" aria-label="Settings">${icon("gear", 15)}</button>
         <button id="theme" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Switch theme (⌘⇧L)" aria-label="Switch theme"></button>
       </div>
@@ -283,7 +283,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   tab.gridWrap = gridWrap;
   if (kind === "table") {
     const bar = document.createElement("div");
-    bar.className = "h-11 shrink-0 flex items-center gap-1.5 px-3 bg-canvas text-[13.5px]";
+    bar.className = "h-11 shrink-0 flex items-center gap-1.5 px-3 bg-canvas text-[13px]";
     const btn = (label: string, title: string, f: () => void, ic?: string, cls = "btn") => {
       const b = document.createElement("button");
       b.innerHTML = (ic ? icon(ic, 14) : "") + `<span>${label}</span>`;
@@ -344,7 +344,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     tab.resultBar.className = "hidden shrink-0 px-3 py-1.5 bg-canvas overflow-x-auto";
     root.append(tab.resultBar);
     tab.editBar = document.createElement("div");
-    tab.editBar.className = "hidden shrink-0 h-9 flex items-center gap-1.5 px-3 bg-canvas text-[13.5px]";
+    tab.editBar.className = "hidden shrink-0 h-9 flex items-center gap-1.5 px-3 bg-canvas text-[13px]";
     root.append(tab.editBar);
     grid.onChange = () => paintEditBar(tab);
   }
@@ -496,11 +496,11 @@ function renderRail() {
     b.setAttribute("aria-label", `${label} on ${s.name}${on ? " (current)" : ""}`);
     b.title = `${s.name}${c?.db ? ` / ${label}` : ""} · ${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}\n${c ? `${n} tab${n === 1 ? "" : "s"}` : "no database open"}`;
     b.innerHTML = engineBadge(s.kind, 36) +
-      `<span class="text-[10.5px] leading-[1.15] text-center w-full truncate text-muted">${esc(s.name)}</span>` +
-      (c?.db ? `<span class="text-[11.5px] leading-[1.15] text-center w-full truncate -mt-0.5 ${on ? "text-ink font-medium" : "text-soft"}">${esc(label)}</span>` : "") +
+      `<span class="text-[11px] leading-[1.15] text-center w-full truncate text-muted">${esc(s.name)}</span>` +
+      (c?.db ? `<span class="text-[11px] leading-[1.15] text-center w-full truncate -mt-0.5 ${on ? "text-ink font-medium" : "text-soft"}">${esc(label)}</span>` : "") +
       (on ? `<span class="absolute" style="left:-7px;top:18px;width:4px;height:24px;border-radius:0 3px 3px 0;background:var(--hue-active,var(--accent))"></span>` : "") +
       (s.env && s.env !== "local" ? `<span class="absolute" style="right:7px;top:5px;width:10px;height:10px;border-radius:5px;background:${envColor(s.env)};border:2px solid var(--panel)"></span>` : "") +
-      (n > 1 ? `<span class="absolute text-[10.5px] font-semibold rounded-full bg-raised2 text-soft" style="right:4px;top:30px;min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 4px">${n}</span>` : "");
+      (n > 1 ? `<span class="absolute text-[11px] font-semibold rounded-full bg-raised2 text-soft" style="right:4px;top:30px;min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 4px">${n}</span>` : "");
     b.onclick = () => (c ? switchWorkspace(c) : switchServer(s));
     b.oncontextmenu = (e) => { e.preventDefault(); c ? dbMenu(c, e.clientX, e.clientY) : serverMenu(s, e.clientX, e.clientY); };
     return b;
@@ -551,7 +551,7 @@ function renderLog() {
   const entries = (conn?.log ?? []).filter((e) => mine === null || e.tab === mine);
   const hl = localStorage.getItem("tabnix.logHl") !== "0";
   const head = document.createElement("div");
-  head.className = "h-8 shrink-0 flex items-center gap-2 px-3 text-[12.5px] text-muted border-b border-line";
+  head.className = "h-8 shrink-0 flex items-center gap-2 px-3 text-[12px] text-muted border-b border-line";
   head.innerHTML = `<span class="font-medium text-soft">SQL</span><span class="truncate">${esc(mine !== null ? active!.title : conn?.db ?? conn?.name ?? "")}</span><span class="flex-1"></span>`;
   const mk = (label: string, f: () => void) => { const b = document.createElement("button"); b.className = "btn btn-ghost btn-sm"; b.textContent = label; b.onclick = f; return b; };
   head.append(
@@ -1235,7 +1235,7 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
     d.style.setProperty("--hue", o.hue ?? "var(--accent)");
     d.dataset.env = o.env ?? "local";
     d.innerHTML = chev + (o.badge ?? "") +
-      `<span class="min-w-0 flex-1"><span class="block truncate font-semibold text-[14.5px] leading-tight">${esc(o.label)}</span><span class="block truncate text-[12px] text-muted">${esc(o.sub ?? "")}</span></span>` +
+      `<span class="min-w-0 flex-1"><span class="block truncate font-semibold text-[14px] leading-tight">${esc(o.label)}</span><span class="block truncate text-[12px] text-muted">${esc(o.sub ?? "")}</span></span>` +
       (o.env && o.env !== "local" ? `<span class="pill shrink-0 group-hover:hidden" style="color:${envColor(o.env)};background:color-mix(in srgb, ${envColor(o.env)} 13%, transparent)">${esc(o.env)}</span>` : "");
   } else {
     const h = o.level === 1 ? 32 : o.level === 2 ? 28 : 30;
@@ -1779,7 +1779,7 @@ async function dropTable(c: Conn, o: ObjectRef) {
   await refreshDatabase(c);
 }
 
-const nameList = (l: ObjectRef[]) => `<ul class="mt-1 mono text-[12.5px]">${l.slice(0, 8).map((o) => `<li>${esc(o.name)}</li>`).join("")}${l.length > 8 ? `<li class="text-muted">… and ${l.length - 8} more</li>` : ""}</ul>`;
+const nameList = (l: ObjectRef[]) => `<ul class="mt-1 mono text-[12px]">${l.slice(0, 8).map((o) => `<li>${esc(o.name)}</li>`).join("")}${l.length > 8 ? `<li class="text-muted">… and ${l.length - 8} more</li>` : ""}</ul>`;
 
 function bulkMenu(c: Conn, picked: ObjectRef[], x: number, y: number) {
   const n = picked.length, nonSql = ["redis", "mongo"].includes(c.kind), tables = picked.filter((o) => o.kind !== "view");
@@ -1868,7 +1868,7 @@ function openDatabasePicker() {
 
 function queryBar(tab: Tab): HTMLElement {
   const bar = document.createElement("div");
-  bar.className = "h-11 shrink-0 flex items-center gap-1 px-3 bg-canvas text-[13.5px]";
+  bar.className = "h-11 shrink-0 flex items-center gap-1 px-3 bg-canvas text-[13px]";
   const b = (html: string, title: string, f: () => void, cls = "btn btn-ghost") => {
     const el = document.createElement("button");
     el.innerHTML = html; el.title = title; el.className = cls; el.onclick = f;
@@ -1944,7 +1944,7 @@ async function showLauncher() {
     const edge = p.environment === "production" ? `<span class="absolute inset-y-0 left-0" style="width:4px;background:repeating-linear-gradient(135deg,var(--env-production) 0 3px,transparent 3px 6px);opacity:.8"></span>` : p.environment === "staging" ? `<span class="absolute inset-y-0 left-0" style="width:3px;background:var(--env-staging)"></span>` : "";
     const live = servers.find((sv) => sv.id === p.id);
     row.innerHTML = `${edge}${engineBadge(p.kind, 42)}
-      <div class="min-w-0 flex-1"><div class="font-semibold text-[15px] truncate">${esc(p.name)}</div><div class="mono text-[12.5px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div>
+      <div class="min-w-0 flex-1"><div class="font-semibold text-[15px] truncate">${esc(p.name)}</div><div class="mono text-[12px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div>
         ${p.tags?.length ? `<div class="flex gap-1.5 mt-1.5 overflow-hidden">${p.tags.slice(0, 3).map((t) => tagChip(t)).join("")}${p.tags.length > 3 ? `<span class="text-muted text-[12px] leading-5">+${p.tags.length - 3}</span>` : ""}</div>` : ""}</div>
       <div class="relative shrink-0 self-start mt-3.5" style="width:96px;height:30px">
         ${live ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:var(--ok);background:var(--ok-soft)"><span style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>connected</span>` : p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)};background:color-mix(in srgb, ${envColor(p.environment)} 13%, transparent)">${esc(p.environment)}</span>` : ""}
@@ -1992,7 +1992,7 @@ async function showLauncher() {
     const chip = (key: string, label: string, n: number, inner?: string) => {
       const on = launcherTag === key;
       const b = document.createElement("button");
-      b.className = "inline-flex items-center gap-2 rounded-full px-3 h-8 text-[13.5px] font-medium " + (on ? "bg-accent-soft text-ink" : "text-soft hover:bg-raised");
+      b.className = "inline-flex items-center gap-2 rounded-full px-3 h-8 text-[13px] font-medium " + (on ? "bg-accent-soft text-ink" : "text-soft hover:bg-raised");
       b.style.boxShadow = on ? "inset 0 0 0 1.5px var(--accent)" : "inset 0 0 0 1px var(--line-strong)";
       b.innerHTML = `${inner ?? ""}<span>${esc(label)}</span><span class="text-muted text-[12px]">${n}</span>`;
       b.onclick = () => { launcherTag = key; drawFilter(); drawCards(); };

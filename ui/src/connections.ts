@@ -30,7 +30,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
         <div id="list" class="flex-1 overflow-auto p-1"></div>
         <button id="new" class="m-2 bg-raised hover:bg-raised2 rounded py-1">+ New connection</button>
       </div>
-      <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[13.5px]">
+      <form id="form" class="flex-1 p-4 flex flex-col gap-2 text-[13px]">
         <label>Name <input name="name" class="${field}" placeholder="Local Postgres"/></label>
         <div>
           <div class="mb-1">Tags <span class="text-muted">· group connections, e.g. Work or Practice</span></div>
@@ -114,7 +114,7 @@ export function showConnectionManager(onConnect: (connId: number, p: Profile) =>
     q("#tagchips").innerHTML = tags.map((t, i) => `<button type="button" data-rm="${i}" class="inline-flex" title="Remove ${esc(t)}">${tagChip(t)}</button>`).join("");
     q("#tagchips").querySelectorAll<HTMLElement>("[data-rm]").forEach((b) => (b.onclick = () => { tags.splice(+b.dataset.rm!, 1); drawTags(); }));
     const free = known.filter((k) => !tags.some((t) => t.toLowerCase() === k.toLowerCase()));
-    q("#tagsug").innerHTML = free.length ? `<span class="text-muted text-[12.5px] mr-0.5">Use:</span>` + free.map((k) => `<button type="button" data-add="${esc(k)}" class="opacity-80 hover:opacity-100">${tagChip(k)}</button>`).join("") : "";
+    q("#tagsug").innerHTML = free.length ? `<span class="text-muted text-[12px] mr-0.5">Use:</span>` + free.map((k) => `<button type="button" data-add="${esc(k)}" class="opacity-80 hover:opacity-100">${tagChip(k)}</button>`).join("") : "";
     q("#tagsug").querySelectorAll<HTMLElement>("[data-add]").forEach((b) => (b.onclick = () => { addTag(b.dataset.add!); }));
   };
   const addTag = (raw: string) => {

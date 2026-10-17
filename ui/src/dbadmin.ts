@@ -96,7 +96,7 @@ export function promptName(title: string, hint: string, confirmLabel: string, in
   return new Promise((resolve) => {
     const m = modal(`
       <div class="px-5 pt-4 pb-2"><div class="text-[16px] font-semibold">${esc(title)}</div><div class="text-soft mt-0.5">${esc(hint)}</div></div>
-      <div class="px-5 pb-3"><input id="n" class="field w-full" autocomplete="off" placeholder="name" value="${esc(initial)}"/><div id="msg" class="text-danger text-[12.5px] mt-1.5 h-4"></div></div>
+      <div class="px-5 pb-3"><input id="n" class="field w-full" autocomplete="off" placeholder="name" value="${esc(initial)}"/><div id="msg" class="text-danger text-[12px] mt-1.5 h-4"></div></div>
       <div class="px-5 py-3 border-t border-line flex justify-end gap-2"><button id="no" class="btn">Cancel</button><button id="yes" class="btn btn-primary">${esc(confirmLabel)}</button></div>`, 440);
     let done = false;
     const finish = (v: string | null) => { if (done) return; done = true; m.close(); resolve(v); };
@@ -123,9 +123,9 @@ export function confirmDanger(opts: { title: string; body: string; confirmLabel:
   return new Promise((resolve) => {
     const m = modal(`
       <div class="px-5 pt-4 pb-2"><div class="text-[16px] font-semibold text-danger">${esc(opts.title)}</div><div class="text-soft mt-1">${opts.body}</div></div>
-      ${opts.sql?.length ? `<pre id="sql" class="mono text-[12.5px] mx-5 mb-2 p-2.5 rounded-lg bg-canvas overflow-auto select-text whitespace-pre-wrap" style="max-height:140px"></pre>` : ""}
+      ${opts.sql?.length ? `<pre id="sql" class="mono text-[12px] mx-5 mb-2 p-2.5 rounded-lg bg-canvas overflow-auto select-text whitespace-pre-wrap" style="max-height:140px"></pre>` : ""}
       ${opts.option ? `<label class="flex items-center gap-2 px-5 pb-3"><input id="opt" type="checkbox"${opts.option.checked ? " checked" : ""}/> ${esc(opts.option.label)}</label>` : ""}
-      ${opts.typed ? `<div class="px-5 pb-3"><div class="text-[12.5px] text-muted mb-1">Type <b class="text-ink">${esc(opts.typed)}</b> to confirm</div><input id="t" class="field w-full" autocomplete="off"/></div>` : ""}
+      ${opts.typed ? `<div class="px-5 pb-3"><div class="text-[12px] text-muted mb-1">Type <b class="text-ink">${esc(opts.typed)}</b> to confirm</div><input id="t" class="field w-full" autocomplete="off"/></div>` : ""}
       <div class="px-5 py-3 border-t border-line flex justify-end gap-2"><button id="no" class="btn">Cancel</button><button id="yes" class="btn btn-danger"${opts.typed ? " disabled" : ""}>${esc(opts.confirmLabel)}</button></div>`, 500);
     if (opts.sql?.length) m.q("#sql").textContent = opts.sql.join(";\n") + ";";
     let done = false;

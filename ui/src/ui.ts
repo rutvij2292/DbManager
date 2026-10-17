@@ -24,7 +24,7 @@ export function toast(msg: string, tone: "ok" | "error" | "info" = "info") {
   if (!t) {
     t = document.createElement("div");
     t.id = "toast";
-    t.className = "fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 text-[13.5px] shadow-pop border border-line-strong bg-panel max-w-[70vw]";
+    t.className = "fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 text-[13px] shadow-pop border border-line-strong bg-panel max-w-[70vw]";
     document.body.append(t);
   }
   t.style.borderLeft = `3px solid ${tone === "ok" ? "var(--ok)" : tone === "error" ? "var(--danger)" : "var(--accent)"}`;
@@ -52,7 +52,7 @@ export function contextMenu(x: number, y: number, items: MenuItem[]) {
   document.getElementById("ctx")?.remove();
   const m = document.createElement("div");
   m.id = "ctx";
-  m.className = "fixed z-[70] min-w-[200px] py-1 rounded-lg border border-line-strong bg-panel shadow-pop text-[13.5px] select-none";
+  m.className = "fixed z-[70] min-w-[200px] py-1 rounded-lg border border-line-strong bg-panel shadow-pop text-[13px] select-none";
   m.innerHTML = items.map((it, i) => it.divider
     ? `<div class="my-1 h-px bg-line"></div>`
     : `<div data-i="${i}" class="flex items-center gap-3 mx-1.5 px-2.5 h-8 rounded-lg ${it.disabled ? "opacity-40" : "hover:bg-accent hover:text-white cursor-default"} ${it.danger ? "text-danger" : ""}"><span class="flex-1 truncate">${esc(it.label)}</span>${it.hint ? `<span class="text-[12px] opacity-60">${esc(it.hint)}</span>` : ""}</div>`).join("");

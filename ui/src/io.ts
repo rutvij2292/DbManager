@@ -52,7 +52,7 @@ export function showExport(connId: number, sql: string, suggestedName: string, s
       </div>
       <div>
         <div class="font-medium mb-1.5">What will be exported</div>
-        <pre class="mono text-[12.5px] rounded-xl px-3.5 py-3 max-h-28 overflow-auto whitespace-pre-wrap select-text" style="background:var(--canvas);color:var(--soft)">${esc(many ? many.map((t) => t.name).join("\n") : sql)}</pre>
+        <pre class="mono text-[12px] rounded-xl px-3.5 py-3 max-h-28 overflow-auto whitespace-pre-wrap select-text" style="background:var(--canvas);color:var(--soft)">${esc(many ? many.map((t) => t.name).join("\n") : sql)}</pre>
       </div>
       <div class="flex items-center justify-end gap-2 pt-1"><button id="x" class="btn btn-ghost">Close</button><button id="go" class="btn btn-primary">${icon("download", 15)}<span>Export…</span></button></div>
     </div>`, 620);
@@ -120,7 +120,7 @@ export async function showImport(connId: number, objects: ObjectRef[], currentTa
   const kindLabel = () => (prev.format === "delimited" ? ({ ",": "CSV", ";": "Semicolon-separated", "\t": "TSV", "|": "Pipe-separated" } as Record<string, string>)[prev.delimiter] ?? "Delimited text" : prev.format === "jsonl" ? "JSON Lines" : "JSON");
 
   const m = modal(`
-    ${head("upload", "Import a file", `<span class="mono text-[12.5px]">${esc(file)}</span>`)}
+    ${head("upload", "Import a file", `<span class="mono text-[12px]">${esc(file)}</span>`)}
     <div id="body" class="px-6 pb-5 flex flex-col gap-4 overflow-auto">
       <div class="flex items-center gap-2 flex-wrap">
         <span class="pill" id="kind"></span><span class="pill" id="cols"></span>
@@ -170,7 +170,7 @@ export async function showImport(connId: number, objects: ObjectRef[], currentTa
     const typeBadge = (t: string) => `<span class="mono text-[11px] rounded px-1.5 py-0.5" style="background:var(--raised);color:${t === "integer" || t === "real" ? "var(--num)" : "var(--soft)"}">${t}</span>`;
     m.q("#map").innerHTML = `<table class="w-full"><thead><tr style="background:var(--grid-head)"><th class="text-left font-semibold text-soft px-3 h-9">In your file</th><th class="text-left font-semibold text-soft px-2">Sample</th><th class="text-left font-semibold text-soft px-2">${creating ? "New column name" : "Goes into"}</th></tr></thead><tbody>` +
       prev.headers.map((h, i) => `<tr style="border-top:1px solid var(--line)"><td class="px-3 h-10 whitespace-nowrap"><span class="font-medium">${esc(h)}</span> ${typeBadge(prev.types[i] ?? "text")}</td>
-        <td class="px-2 text-soft mono text-[12.5px] max-w-[220px]"><div class="truncate">${esc(prev.sample.slice(0, 3).map((r) => r[i] ?? "null").join("  ·  "))}</div></td>
+        <td class="px-2 text-soft mono text-[12px] max-w-[220px]"><div class="truncate">${esc(prev.sample.slice(0, 3).map((r) => r[i] ?? "null").join("  ·  "))}</div></td>
         <td class="px-2 py-1" style="width:200px">${creating ? `<input data-i="${i}" value="${esc(mapping[i] ?? h)}" class="field w-full"/>` : `<select data-i="${i}" class="field w-full">${opts(mapping[i] ?? null)}</select>`}</td></tr>`).join("") + "</tbody></table>";
     m.o.querySelectorAll<HTMLInputElement | HTMLSelectElement>("#map [data-i]").forEach((el) => {
       mapping[+el.dataset.i!] = el.value || null;

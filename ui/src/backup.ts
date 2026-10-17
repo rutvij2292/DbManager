@@ -89,7 +89,7 @@ export async function showRestore(connId: number, connName: string, dbName: stri
     <div id="body" class="px-5 py-4 flex flex-col gap-3">
       <div class="rounded-lg px-3 py-2.5 ${prod ? "bg-danger-soft" : "bg-warn-soft"}" style="box-shadow: inset 3px 0 0 ${prod ? "var(--danger)" : "var(--warn)"}">
         <div class="font-medium">${prod ? "This is a production database." : "This changes the database."}</div>
-        <div class="text-soft text-[13.5px]">The script runs against <b>${esc(dbName || connName)}</b> on ${esc(connName)}. Statements in it can create, replace or delete tables and data.</div>
+        <div class="text-soft text-[13px]">The script runs against <b>${esc(dbName || connName)}</b> on ${esc(connName)}. Statements in it can create, replace or delete tables and data.</div>
       </div>
       <label class="flex items-start gap-2"><input id="keep" type="checkbox" class="mt-0.5"/><span>Keep going after errors<br/><span class="text-muted text-[13px]">Off by default: the restore stops at the first failing statement and tells you which one.</span></span></label>
       ${prod ? `<label class="flex items-start gap-2"><input id="ack" type="checkbox" class="mt-0.5"/><span>I understand this will change the production database.</span></label>` : ""}
@@ -115,7 +115,7 @@ export async function showRestore(connId: number, connName: string, dbName: stri
       un();
       if (!r.failed) { done(`Restored: ${r.statements.toLocaleString()} statements${r.copied_rows ? `, ${r.copied_rows.toLocaleString()} rows copied` : ""}.`); m.close(); return; }
       m.q("#body").innerHTML = `<div class="flex flex-col gap-2"><div class="font-medium text-warn">Finished with ${r.failed} error${r.failed === 1 ? "" : "s"} in ${r.statements.toLocaleString()} statements.</div>
-        <div class="overflow-auto rounded-lg border border-line" style="max-height:240px">${r.errors.map(([s, e]) => `<div class="px-3 py-2 border-b border-line last:border-b-0"><div class="mono text-[12.5px] text-muted truncate" title="${esc(s)}">${esc(s)}</div><div class="text-danger text-[13.5px]">${esc(e)}</div></div>`).join("")}</div>
+        <div class="overflow-auto rounded-lg border border-line" style="max-height:240px">${r.errors.map(([s, e]) => `<div class="px-3 py-2 border-b border-line last:border-b-0"><div class="mono text-[12px] text-muted truncate" title="${esc(s)}">${esc(s)}</div><div class="text-danger text-[13px]">${esc(e)}</div></div>`).join("")}</div>
         ${r.failed > r.errors.length ? `<div class="text-muted text-[13px]">Showing the first ${r.errors.length}.</div>` : ""}
         <div class="flex justify-end"><button id="ok" class="btn btn-primary">Done</button></div></div>`;
       m.q("#ok").onclick = () => { m.close(); done(`Restore finished with ${r.failed} error${r.failed === 1 ? "" : "s"}.`); };

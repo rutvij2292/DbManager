@@ -68,7 +68,7 @@ export class Grid {
   inserted: Val[][] = [];
 
   constructor() {
-    this.el.className = "h-full flex flex-col text-[13.5px] bg-panel";
+    this.el.className = "h-full flex flex-col text-[13px] bg-panel";
     this.head.className = "flex overflow-hidden shrink-0";
     this.head.style.cssText = "background:var(--grid-head);border-bottom:1px solid var(--line-strong);height:34px;display:none";
     this.body.className = "flex-1 overflow-auto relative";

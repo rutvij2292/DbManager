@@ -22,7 +22,8 @@ import { buildOrder, nextSort, setSort, detectSort, countSql, wrapForSort, type 
 import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
-import { applyAppearance, capturing, matchAction, showSettings } from "./settings";
+import { applyAppearance, capturing, matchAction, showSettings, ACTIONS, comboOf, prettyCombo } from "./settings";
+import { paletteResults, type PalAction } from "./palette-rank";
 import { applyTheme, currentTheme, esc, toast, contextMenu, tagChip, tagHue as tagHueOf } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { tabsOf, nextAfterClose, nthTab, cycleTab, tabForSwitch } from "./workspace";
@@ -118,7 +119,7 @@ app.innerHTML = `
       <div id="rail-items" class="flex-1 overflow-y-auto overflow-x-visible flex flex-col items-center gap-1 py-1 w-full px-1.5"></div>
       <div class="flex flex-col items-center gap-1 py-2.5">
         <button id="addconn" class="flex flex-col items-center justify-center gap-0.5 rounded-xl" style="width:66px;height:50px" title="Connect to another database (⌘N)" aria-label="Connect to another database">${icon("plus", 18)}<span class="text-[11px]">Connect</span></button>
-        <button id="settings" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Settings (⌘,)" aria-label="Settings">${icon("gear", 15)}</button>
+        <button id="settings" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Settings and keyboard shortcuts (${prettyCombo(comboOf("settings"))})" aria-label="Settings">${icon("gear", 15)}</button>
         <button id="theme" class="btn btn-ghost" style="width:34px;height:30px;padding:0;justify-content:center" title="Switch theme (⌘⇧L)" aria-label="Switch theme"></button>
       </div>
     </nav>
@@ -129,11 +130,11 @@ app.innerHTML = `
       <div class="px-3 mb-2 relative">
         <span class="absolute left-[22px] top-[9px] text-muted pointer-events-none">${icon("search", 15)}</span>
         <input id="filter" placeholder="Search tables" class="field w-full" style="padding-left:34px;background:color-mix(in srgb, var(--panel) 70%, transparent)" />
-        <span class="kbd absolute right-[22px] top-[6px] pointer-events-none">⌘P</span>
+        <span class="kbd absolute right-[22px] top-[6px] pointer-events-none">${prettyCombo(comboOf("palette"))}</span>
       </div>
       <div id="objects" class="flex-1 overflow-auto px-2 pb-2"></div>
       <div class="px-3 py-2.5 flex items-center gap-1">
-        <button id="open" class="btn btn-ghost flex-1" style="justify-content:flex-start">${icon("plug", 16)}<span>Connections</span><span class="kbd ml-auto">⌘O</span></button>
+        <button id="open" class="btn btn-ghost flex-1" style="justify-content:flex-start">${icon("plug", 16)}<span>Connections</span><span class="kbd ml-auto">${prettyCombo(comboOf("openConnections"))}</span></button>
         <button id="diagram" class="btn btn-ghost" style="width:32px;padding:0;justify-content:center" title="Diagram of this database (⌘⇧D)">${icon("diagram", 16)}</button>
       </div>
     </aside>
@@ -151,8 +152,9 @@ app.innerHTML = `
   </div>
   <div id="palette" class="hidden fixed inset-0 flex items-start justify-center pt-24 z-50" style="background:color-mix(in srgb, var(--ink) 26%, transparent);backdrop-filter:blur(8px)">
     <div class="w-[580px] glass-strong rounded-2xl overflow-hidden">
-      <input id="pinput" placeholder="Open a table, view or collection" class="w-full bg-transparent px-5 py-3.5 outline-none border-b border-line text-[16px]"/>
+      <input id="pinput" placeholder="Open a table, or type &gt; for actions" class="w-full bg-transparent px-5 py-3.5 outline-none border-b border-line text-[16px]"/>
       <div id="plist" class="max-h-80 overflow-auto py-1.5"></div>
+      <div class="px-4 h-8 flex items-center gap-4 text-[12px] text-muted border-t border-line"><span>↑↓ navigate</span><span>↵ open</span><span>&gt; actions</span><span>esc close</span></div>
     </div>
   </div>`;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -2046,19 +2048,38 @@ function palette() {
   closePalette?.();
   const p = $("palette"), inp = $<HTMLInputElement>("pinput"), list = $("plist");
   p.classList.remove("hidden"); inp.value = ""; inp.focus();
-  let idx = 0, items: ObjectRef[] = [];
+  type Item = { t: "o"; o: ObjectRef } | { t: "a"; a: PalAction };
+  let idx = 0, items: Item[] = [];
+  const header = (txt: string) => {
+    const h = document.createElement("div");
+    h.className = "px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted";
+    h.textContent = txt;
+    return h;
+  };
   const draw = () => {
-    const q = inp.value.toLowerCase();
-    items = (conn?.objects ?? []).filter((o) => o.name.toLowerCase().includes(q)).slice(0, 50);
+    const res = paletteResults(inp.value, conn?.objects ?? [], ACTIONS.map((a) => ({ ...a, combo: comboOf(a.id) })));
+    items = [...res.objects.map((o) => ({ t: "o" as const, o: o as ObjectRef })), ...res.actions.map((a) => ({ t: "a" as const, a }))];
     idx = Math.min(idx, Math.max(0, items.length - 1));
-    list.replaceChildren(...items.map((o, i) => {
+    const rows: HTMLElement[] = [];
+    let selEl: HTMLElement | undefined;
+    items.forEach((it, i) => {
+      if (i === 0 && it.t === "o") rows.push(header("Tables & views"));
+      if (it.t === "a" && (i === 0 || items[i - 1].t === "o")) rows.push(header("Actions"));
       const d = document.createElement("div");
-      d.className = "px-4 py-1.5 flex items-center gap-2 " + (i === idx ? "bg-accent text-white" : "");
-      d.innerHTML = `${icon(o.kind === "view" ? "view" : o.kind === "key" ? "key" : o.kind === "collection" ? "collection" : "table", 14)}<span>${esc(o.name)}</span><span class="ml-auto text-[12px] opacity-70">${o.kind}</span>`;
-      d.onclick = () => choose(o);
-      return d;
-    }));
-    (list.children[idx] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
+      const sel = i === idx;
+      d.className = "px-4 py-1.5 flex items-center gap-2 " + (sel ? "bg-accent text-white" : "");
+      if (it.t === "o") {
+        const o = it.o;
+        d.innerHTML = `${icon(o.kind === "view" ? "view" : o.kind === "key" ? "key" : o.kind === "collection" ? "collection" : "table", 14)}<span>${esc(o.name)}</span><span class="ml-auto text-[12px] opacity-70">${o.kind}</span>`;
+      } else {
+        d.innerHTML = `${icon("sparkle", 14)}<span>${esc(it.a.label)}</span><span class="ml-auto kbd"${sel ? ' style="color:inherit;border-color:currentColor;background:transparent"' : ""}>${esc(prettyCombo(it.a.combo))}</span>`;
+      }
+      d.onclick = () => choose(it);
+      if (sel) selEl = d;
+      rows.push(d);
+    });
+    list.replaceChildren(...rows);
+    selEl?.scrollIntoView({ block: "nearest" });
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); close(); }
@@ -2069,7 +2090,11 @@ function palette() {
   };
   const close = () => { p.classList.add("hidden"); inp.oninput = null; window.removeEventListener("keydown", onKey, true); closePalette = null; };
   closePalette = close;
-  const choose = (o: ObjectRef) => { close(); openTable(o.name); };
+  const choose = (it: Item) => {
+    close();
+    if (it.t === "o") openTable(it.o.name);
+    else handlers[it.a.id]?.(new KeyboardEvent("keydown"));
+  };
   inp.oninput = () => { idx = 0; draw(); };
   window.addEventListener("keydown", onKey, true);
   draw();

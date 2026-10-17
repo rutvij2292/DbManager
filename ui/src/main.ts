@@ -23,7 +23,7 @@ import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
 import { applyAppearance, capturing, comboOf, matchAction, prettyCombo, showSettings } from "./settings";
-import { applyTheme, currentTheme, esc, toast, contextMenu, tagChip, tagHue as tagHueOf } from "./ui";
+import { applyTheme, currentTheme, esc, modal, toast, contextMenu, tagChip, tagHue as tagHueOf } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { tabsOf, nextAfterClose, nthTab, cycleTab, tabForSwitch } from "./workspace";
 import { pickDatabase } from "./dbpicker";
@@ -60,7 +60,7 @@ interface StmtResult { sql: string; summary: Summary | null; affected?: number; 
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; draftId: string; draftTimer?: number; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; countSeq?: number;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; draftId: string; draftTimer?: number; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; pendingPill?: HTMLButtonElement; countSeq?: number;
   /** A query result that maps to one table and can be edited in place (see resultedit.ts), and the bar that shows it. */
   edit?: EditTarget; editBar?: HTMLElement; editSeq?: number;
 }
@@ -189,6 +189,12 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     statusBar.innerHTML = `<span class="pill shrink-0" style="--hue:${engineVar(c.kind)};background:color-mix(in srgb, ${engineVar(c.kind)} 12%, transparent);color:var(--ink)"><span style="width:7px;height:7px;border-radius:4px;background:${engineVar(c.kind)}"></span>${esc(c.name)}${c.db ? `<span class="text-muted"> / ${esc(c.db)}</span>` : ""}</span>${risky ? `<span class="pill shrink-0" style="color:${envColor(c.env)};background:color-mix(in srgb, ${envColor(c.env)} 12%, transparent)">${esc(c.env!)}</span>` : ""}${safetyLevel(c.server.profile) === "readonly" ? `<span class="pill shrink-0" title="Nothing can be changed on this connection">read-only</span>` : ""}`;
   }
   statusBar.append(status);
+  const pendingPill = document.createElement("button");
+  pendingPill.className = "pill shrink-0";
+  pendingPill.style.display = "none";
+  pendingPill.title = "Commit all tables in this database (" + prettyCombo(comboOf("commitAll")) + ")";
+  pendingPill.onclick = () => commitAll();
+  statusBar.append(pendingPill);
   const countBtn = document.createElement("button");
   countBtn.className = "btn btn-ghost btn-sm shrink-0";
   countBtn.style.cssText = "display:none";
@@ -196,7 +202,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   const selInfo = document.createElement("span");
   selInfo.className = "shrink-0 text-muted";
   statusBar.append(selInfo);
-  const tab: Tab = { draftId: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [], countBtn };
+  const tab: Tab = { draftId: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [], countBtn, pendingPill };
   grid.sortable = kind !== "diagram" && !["redis", "mongo"].includes(c?.kind ?? "");
   grid.onSort = (col, additive, x, y) => {
     if (additive) { applySort(tab, nextSort(tab.sort, col, true)); return; }
@@ -365,7 +371,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     tab.editBar = document.createElement("div");
     tab.editBar.className = "tbar hidden shrink-0 h-9 flex items-center gap-1.5 px-3 bg-canvas text-[13px]";
     root.append(tab.editBar);
-    grid.onChange = () => paintEditBar(tab);
+    grid.onChange = () => { paintEditBar(tab); syncDirtyRows(); };
   }
   root.append(gridWrap, statusBar);
   tabs.push(tab);
@@ -416,6 +422,7 @@ function activate(t: Tab) {
   t.grid.resume();
   renderTabs();
   renderLog();
+  syncDirtyRows();
 }
 
 /** Switch the whole workspace (tabs, sidebar) to another open database. */
@@ -473,6 +480,8 @@ function renderTabs() {
       const d = document.createElement("div");
       d.className = "group tab";
       d.setAttribute("role", "tab");
+      d.dataset.tab = String(t.id);
+      if (t.grid.pendingCount) d.dataset.dirty = "true";
       d.setAttribute("aria-selected", String(on));
       if (t.conn) d.style.setProperty("--hue", t.conn.env === "production" ? "var(--env-production)" : engineVar(t.conn.kind));
       d.title = `${t.title}${t.conn?.db ? ` · ${t.conn.db}` : ""}${i < 9 ? `  (⌘${i + 1})` : ""}`;
@@ -481,11 +490,15 @@ function renderTabs() {
       const x = document.createElement("button");
       x.innerHTML = icon("close", 12);
       x.setAttribute("aria-label", "Close tab");
-      x.className = "rounded p-1 text-muted hover:text-ink hover:bg-raised2 " + (on ? "" : "opacity-0 group-hover:opacity-100");
-      x.onclick = (e) => { e.stopPropagation(); closeTab(t); };
-      d.append(x);
+      x.className = "tab-x rounded p-1 text-muted hover:text-ink hover:bg-raised2 " + (on ? "" : "opacity-0 group-hover:opacity-100");
+      x.onclick = (e) => { e.stopPropagation(); askCloseTab(t); };
+      const dot = document.createElement("span");
+      dot.className = "tab-dot";
+      dot.setAttribute("aria-hidden", "true");
+      d.append(dot, x);
       d.onclick = () => activate(t);
-      d.onauxclick = () => closeTab(t);
+      d.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); }; // no autoscroll on middle-click
+      d.onauxclick = (e) => { if (e.button === 1) askCloseTab(t); };
       return d;
     }),
   );
@@ -759,6 +772,16 @@ async function copyRows(t: Tab, fmt: CopyFormat, header = false) {
   } catch (e) { toast("Couldn't copy: " + e, "error"); }
 }
 
+/** Ask before closing tabs that hold staged edits. Resolves true when it is fine to go ahead. */
+async function okToDropEdits(list: Tab[], what: string): Promise<boolean> {
+  const n = list.reduce((a, t) => a + t.grid.pendingCount, 0);
+  if (!n) return true;
+  return confirmDanger({ title: `${what}?`, body: `${n} uncommitted change${n === 1 ? "" : "s"} will be thrown away.`, confirmLabel: "Discard and close" });
+}
+const askCloseTab = (t: Tab) => { okToDropEdits([t], `Close ${t.title}`).then((ok) => ok && closeTab(t)); };
+const askCloseDatabase = (c: Conn) => { okToDropEdits(tabs.filter((t) => t.conn === c), `Close ${c.db ?? c.name}`).then((ok) => ok && closeDatabase(c)); };
+const askDisconnect = (s: Server) => { okToDropEdits(tabs.filter((t) => s.conns.includes(t.conn!)), `Disconnect ${s.name}`).then((ok) => ok && disconnectServer(s)); };
+
 async function discardChanges(t: Tab) {
   if (!t.grid.pendingCount) return;
   const n = t.grid.pendingCount;
@@ -772,12 +795,14 @@ async function commitChanges(t: Tab) {
   const changes = buildChanges(t, target);
   if (typeof changes === "string") { t.status.textContent = changes; return; }
   try {
+    const n = t.grid.pendingCount;
     const stmts = await api.applyChanges(t.conn.id, target.schema, target.table, changes, true);
-    if (!(await confirmSql(stmts))) return;
+    if (!(await confirmSql(stmts, { careful: t.conn.env === "production" }))) return;
     await api.applyChanges(t.conn.id, target.schema, target.table, changes, false);
     for (const q of stmts) logSql(t.conn, q, 0, undefined, t);
     t.grid.discard(); // staged changes are now in the database
     if (t.kind === "query") await rerunResult(t); else reload(t);
+    toast(`Committed ${n} change${n === 1 ? "" : "s"} to ${target.table}`, "ok");
   } catch (e) {
     t.status.textContent = "Commit failed: " + e;
     t.status.classList.add("text-danger");
@@ -800,7 +825,7 @@ async function commitAll() {
       plan.push({ t, target, changes, stmts: await api.applyChanges(c.id, target.schema, target.table, changes, true) });
     }
   } catch (e) { toast(`Couldn't prepare the commit: ${e}`, "error"); return; }
-  if (!plan.length || !(await confirmSql(plan.flatMap((p) => [`-- ${p.target.table}`, ...p.stmts]), `Commit ${plan.length} table${plan.length === 1 ? "" : "s"}`))) return;
+  if (!plan.length || !(await confirmSql(plan.flatMap((p) => [`-- ${p.target.table}`, ...p.stmts]), { title: `Commit ${plan.length} table${plan.length === 1 ? "" : "s"}`, careful: c.env === "production" }))) return;
   let ok = 0;
   for (const p of plan) {
     try {
@@ -886,28 +911,22 @@ function paintEditBar(t: Tab, why?: string) {
   bar.append(pill, mk("Commit", "commit", "btn keep-label " + (prod ? "btn-careful" : "btn-primary"), () => commitChanges(t), kbd(prettyCombo(comboOf("commit")))), mk("Discard", "undo", "btn keep-label", () => discardChanges(t)));
 }
 
-function confirmSql(stmts: string[], title?: string): Promise<boolean> {
+function confirmSql(stmts: string[], opts: { title?: string; careful?: boolean } = {}): Promise<boolean> {
   return new Promise((resolve) => {
-    const o = document.createElement("div");
-    o.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50";
-    o.dataset.modal = "";
-    o.innerHTML = `<div class="w-[640px] max-h-[70vh] bg-raised rounded-lg border border-line-strong shadow-2xl flex flex-col">
-      <div class="px-4 py-2 border-b border-line-strong font-semibold">${title ? `${title} (one transaction per table)` : `Review changes (${stmts.length} statement${stmts.length > 1 ? "s" : ""}, one transaction)`}</div>
-      <pre class="mono text-[13px] p-4 overflow-auto flex-1 select-text whitespace-pre-wrap"></pre>
-      <div class="p-3 flex justify-end gap-2 border-t border-line-strong">
-        <button id="no" class="px-3 py-1 rounded hover:bg-raised2">Cancel</button>
-        <button id="yes" class="px-3 py-1 rounded btn-primary">Commit</button></div></div>`;
-    o.querySelector("pre")!.textContent = stmts.join("\n");
-    const done = (v: boolean) => { o.remove(); window.removeEventListener("keydown", key, true); resolve(v); };
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }
-      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); done(true); }
-    };
+    const count = stmts.filter((x) => !x.startsWith("--")).length;
+    const subtitle = opts.title ? `${count} statements · one transaction per table` : `${count} statement${count === 1 ? "" : "s"} · one transaction`;
+    const m = modal(`<div class="px-5 pt-4 pb-2"><div class="text-[16px] font-semibold">${esc(opts.title ?? "Review changes")}</div><div class="text-soft mt-0.5">${subtitle}</div></div>
+      <pre id="sql" class="mono text-[12px] mx-5 mb-3 p-3 rounded-lg bg-canvas overflow-auto select-text whitespace-pre-wrap" style="max-height:52vh"></pre>
+      <div class="px-5 py-3 border-t border-line flex items-center gap-2"><span class="text-muted text-[12px] mr-auto">⌘↵ commit · Esc cancel</span><button id="no" class="btn">Cancel</button><button id="yes" class="btn keep-label ${opts.careful ? "btn-careful" : "btn-primary"}">${icon("commit", 14)}<span>Commit</span></button></div>`, 640);
+    m.q("#sql").textContent = stmts.join("\n");
+    let done = false;
+    const finish = (v: boolean) => { if (done) return; done = true; window.removeEventListener("keydown", key, true); m.close(); resolve(v); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); finish(true); } };
     window.addEventListener("keydown", key, true);
-    (o.querySelector("#no") as HTMLElement).onclick = () => done(false);
-    (o.querySelector("#yes") as HTMLElement).onclick = () => done(true);
-    document.body.append(o);
-    (o.querySelector("#yes") as HTMLElement).focus();
+    m.onClose = () => finish(false);
+    m.q("#no").onclick = () => finish(false);
+    m.q("#yes").onclick = () => finish(true);
+    m.q("#yes").focus();
   });
 }
 
@@ -931,10 +950,11 @@ function setMode(t: Tab, mode: "data" | "structure") {
       async (changes) => {
         if (!changes.length) return false;
         const ddl = await api.applyStructure(conn.id, t.schemaName ?? null, name, changes, true);
-        if (!(await confirmSql(ddl))) return false;
+        if (!(await confirmSql(ddl, { title: "Review structure changes", careful: conn.env === "production" }))) return false;
         await api.applyStructure(conn.id, t.schemaName ?? null, name, changes, false);
         t.cols = undefined; // force the data tab to re-read primary keys
         refreshSchema(conn);
+        toast(`Updated the structure of ${name}`, "ok");
         return true;
       },
       (m) => { t.status.textContent = m; },
@@ -1266,14 +1286,12 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
     d.style.paddingLeft = 6 + (o.level - 1) * 16 + "px";
     if (o.active) d.setAttribute("aria-current", "true");
     if (o.selected) d.dataset.selected = "true";
-    if (o.dirty) d.dataset.dirty = "true";
     if (o.name !== undefined) d.dataset.name = o.name;
     d.innerHTML = chev + `<span class="${o.active ? "" : "text-muted"} shrink-0">${icon(o.ic, 15)}</span>` +
       `<span class="min-w-0 flex-1 truncate ${o.level === 2 ? "text-soft font-medium text-[13px]" : ""} ${o.level === 1 ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}</span>` +
       (o.count !== undefined ? `<span class="text-muted text-[12px] shrink-0 group-hover:hidden">${o.count}</span>` : "");
   }
   if (o.title) d.title = o.title;
-  if (o.dirty) d.title = `${o.dirty} uncommitted change${o.dirty === 1 ? "" : "s"}`;
   if (o.actions?.length) {
     const box = document.createElement("span");
     box.className = "hidden group-hover:flex items-center shrink-0 rounded-md bg-panel/70";
@@ -1287,6 +1305,7 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
     }
     d.append(box);
   }
+  if (o.dirty) paintDirty(d, o.dirty);
   if (o.click) d.onclick = o.click;
   if (o.dbl) d.ondblclick = o.dbl;
   d.oncontextmenu = (e) => { if (!o.menu) return; e.preventDefault(); o.menu(e.clientX, e.clientY); };
@@ -1313,14 +1332,22 @@ function dirtyTables(c: Conn | null) {
   for (const t of tabs) if (c && t.kind === "table" && t.conn === c && t.table && t.grid.pendingCount) m.set(t.table, (m.get(t.table) ?? 0) + t.grid.pendingCount);
   return m;
 }
-/** Re-mark the yellow "uncommitted" rows in place, without rebuilding the tree. */
+/** Mark one sidebar row as holding `n` uncommitted changes (amber stripe, tint and a count), or clear it. */
+function paintDirty(row: HTMLElement, n: number | undefined) {
+  let badge = row.querySelector<HTMLElement>(".dirty-n");
+  if (n) { row.dataset.dirty = "true"; row.title = `${n} uncommitted change${n === 1 ? "" : "s"}`; if (!badge) { badge = document.createElement("span"); badge.className = "dirty-n group-hover:hidden"; row.insertBefore(badge, row.querySelector(".group-hover\\:flex")); } badge.textContent = String(n); }
+  else { if (row.dataset.dirty) row.title = "Double-click to open"; delete row.dataset.dirty; badge?.remove(); }
+}
+/** Re-mark the "uncommitted" rows, tab dots and the status-bar pill in place, without rebuilding anything. */
 function syncDirtyRows() {
   const dirty = dirtyTables(conn);
-  document.querySelectorAll<HTMLElement>("#objects [data-name]").forEach((row) => {
-    const n = dirty.get(row.dataset.name!);
-    if (n) { row.dataset.dirty = "true"; row.title = `${n} uncommitted change${n === 1 ? "" : "s"}`; }
-    else if (row.dataset.dirty) { delete row.dataset.dirty; row.title = "Double-click to open"; }
-  });
+  document.querySelectorAll<HTMLElement>("#objects [data-name]").forEach((row) => paintDirty(row, dirty.get(row.dataset.name!)));
+  document.querySelectorAll<HTMLElement>("#tabs [data-tab]").forEach((el) => { const t = tabs.find((x) => x.id === +el.dataset.tab!); if (t?.grid.pendingCount) el.dataset.dirty = "true"; else delete el.dataset.dirty; });
+  const total = [...dirty.values()].reduce((a, b) => a + b, 0), k = dirty.size;
+  if (active?.pendingPill) {
+    active.pendingPill.style.display = k ? "" : "none";
+    active.pendingPill.innerHTML = `<span style="width:6px;height:6px;border-radius:3px;background:var(--dirty-stripe)"></span>${total} uncommitted · ${k} table${k === 1 ? "" : "s"}`;
+  }
 }
 
 const KIND_GROUPS: [string, string, string][] = [["table", "Tables", "table"], ["view", "Views", "view"], ["collection", "Collections", "collection"], ["key", "Keys", "key"], ["function", "Functions", "structure"], ["procedure", "Procedures", "play"], ["trigger", "Triggers", "wand"], ["event", "Events", "sun"]];
@@ -1509,7 +1536,7 @@ function renderObjects() {
         click: () => { conn = c; dOpen ? collapsed.add(dKey) : collapsed.delete(dKey); renderObjects(); },
         dbl: () => { if (!tabs.some((t) => t.conn === c)) makeTab("query", "Query", undefined, c); },
         menu: (x, y) => dbMenu(c, x, y),
-        actions: [{ ic: "plan", title: "New query", fn: () => { conn = c; makeTab("query", "Query", undefined, c); } }, { ic: "close", title: "Close this database", fn: () => closeDatabase(c) }],
+        actions: [...(dirty.size ? [{ ic: "commit", title: `Commit all (${dirty.size})`, fn: () => { conn = c; commitAll(); } }] : []), { ic: "plan", title: "New query", fn: () => { conn = c; makeTab("query", "Query", undefined, c); } }, { ic: "close", title: "Close this database", fn: () => askCloseDatabase(c) }],
       }));
       if (!dOpen) continue;
       if (c.loading && !c.objects.length) { const l = document.createElement("div"); l.className = "pl-14 h-[26px] leading-[26px] text-muted"; l.textContent = "Reading tables…"; children.push(l); continue; }
@@ -1555,7 +1582,7 @@ function renderObjects() {
       badge: engineBadge(s.kind, 28), chevron: sOpen ? "open" : "shut", title: `${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}`,
       click: () => { if (first) conn = first; sOpen ? collapsed.add(sKey) : collapsed.delete(sKey); renderObjects(); },
       menu: (x, y) => serverMenu(s, x, y),
-      actions: [{ ic: "plus", title: s.dbs.length ? "Open a database" : "New query", fn: () => (s.dbs.length ? pickAndOpen(s) : makeTab("query", "Query", undefined, s.conns[0] ?? null)) }, { ic: "close", title: "Disconnect", fn: () => disconnectServer(s) }],
+      actions: [{ ic: "plus", title: s.dbs.length ? "Open a database" : "New query", fn: () => (s.dbs.length ? pickAndOpen(s) : makeTab("query", "Query", undefined, s.conns[0] ?? null)) }, { ic: "close", title: "Disconnect", fn: () => askDisconnect(s) }],
     }));
     for (const el of children) frag.append(el);
   }
@@ -1599,9 +1626,11 @@ function tableMenu(c: Conn, o: ObjectRef, x: number, y: number) {
 
 function dbMenu(c: Conn, x: number, y: number) {
   const canBackup = BACKUP_KINDS.includes(c.kind);
+  const nDirty = dirtyTables(c).size;
   contextMenu(x, y, [
     { label: "New query", hint: "⌘T", action: () => { conn = c; makeTab("query", "Query", undefined, c); } },
     { label: "Diagram", hint: "⌘⇧D", disabled: ["redis", "mongo"].includes(c.kind), action: () => { conn = c; openDiagram(); } },
+    ...(nDirty ? [{ label: `Commit all (${nDirty} table${nDirty === 1 ? "" : "s"})…`, hint: prettyCombo(comboOf("commitAll")), action: () => { conn = c; commitAll(); } }] : []),
     { divider: true, label: "" },
     { label: "Back up…", hint: "⌘⌥B", disabled: !canBackup, action: () => { conn = c; backupActive(); } },
     { label: "Restore…", hint: "⌘⌥R", disabled: !canBackup, action: () => { conn = c; restoreActive(); } },
@@ -1614,7 +1643,7 @@ function dbMenu(c: Conn, x: number, y: number) {
     { label: isProtected(c.server) ? "Truncate all tables… (protected)" : "Truncate all tables…", danger: true, disabled: !canTruncateAll(c.kind), action: () => truncateDatabase(c) },
     { label: isProtected(c.server) ? "Drop database… (protected)" : "Drop database…", danger: true, disabled: !canManageDatabases(c.kind) || !c.db || SYSTEM_DBS.has(c.db.toLowerCase()), action: () => dropDatabase(c.server, c.db!) },
     { divider: true, label: "" },
-    { label: "Close this database", action: () => closeDatabase(c) },
+    { label: "Close this database", action: () => askCloseDatabase(c) },
   ]);
 }
 
@@ -1625,7 +1654,7 @@ function serverMenu(s: Server, x: number, y: number) {
     { label: "New database…", disabled: !canManageDatabases(s.kind), action: () => createDatabase(s) },
     { label: "Refresh", action: () => s.conns.forEach(refreshDatabase) },
     { divider: true, label: "" },
-    { label: "Disconnect", danger: true, action: () => disconnectServer(s) },
+    { label: "Disconnect", danger: true, action: () => askDisconnect(s) },
   ]);
 }
 
@@ -2171,7 +2200,7 @@ window.addEventListener("keydown", (e) => {
 const handlers: Record<string, (e: KeyboardEvent) => unknown> = {
   newQuery, openConnections, newConnection: openConnections, palette, toggleLog, cancel: cancelActive, builder: toggleBuilder,
   settings: showSettings, theme: () => toggleTheme(), dbPicker: openDatabasePicker, export: exportActive, import: importActive, backup: backupActive, restore: restoreActive,
-  closeTab: () => active && closeTab(active),
+  closeTab: () => active && askCloseTab(active),
   diagram: () => openDiagram(active?.kind === "table" ? active.table : undefined),
   reload: () => active && reload(active),
   run: () => runActive(false), runAll: () => runActive(true),

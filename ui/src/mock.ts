@@ -71,6 +71,10 @@ async function fakeJob(job: number, total: number, steps = 24, ms = 110) {
   return total;
 }
 let currentRows = rows;
+// A tiny valid 2x2 PNG, JSON, and long text so the cell inspector has something to show.
+const PNG = [137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,2,0,0,0,2,8,2,0,0,0,253,212,154,115,0,0,0,18,73,68,65,84,120,156,99,248,207,192,240,31,132,129,225,63,3,3,0,32,141,5,5,168,81,32,160,0,0,0,0,73,69,78,68,174,66,96,130];
+const docRows = Array.from({ length: 450 }, (_, i) => [I(i + 1), T(i % 3 ? `{"name":"item ${i}","tags":["a","b"],"dims":{"w":${i},"h":${i * 2}},"ok":true,"note":null}` : "not json"), T(`Paragraph ${i}. ` + "Lorem ipsum dolor sit amber. ".repeat(12 + (i % 5))), i % 4 === 0 ? { t: "Bytes", v: PNG } : i % 4 === 1 ? { t: "Bytes", v: [0, 1, 2, 250, 251, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77] } : N]);
+const docCols = [["id", "int"], ["meta", "json"], ["bio", "text"], ["thumb", "blob"]].map(([name, type_name]) => ({ name, type_name }));
 const base_run = () => ({ query_id: 1, columns: cols.map((name) => ({ name, type_name: name === "id" || name === "customer_id" ? "int" : name === "total" ? "decimal" : name === "placed_at" ? "datetime" : name === "shipped" ? "tinyint(1)" : "varchar" })), row_count: rows.length, truncated: false, affected: null, elapsed_ms: 4 });
 const handlers: Record<string, (a: any) => unknown> = {
   "plugin:dialog|open": () => "/Users/dev/Downloads/customers_2026.csv",
@@ -108,6 +112,7 @@ const handlers: Record<string, (a: any) => unknown> = {
     // Honour a trailing ORDER BY (and the sort-wrapper) so header sorting is visible in the mock.
     const m = /ORDER BY (.+?)(?: LIMIT \d+)?;?\s*$/is.exec(a.sql ?? "");
     currentRows = rows;
+    if (/\bdocs\b/i.test(a.sql ?? "")) { currentRows = docRows; return { query_id: 2, columns: docCols, row_count: docRows.length, truncated: false, affected: null, elapsed_ms: 3 }; }
     if (m) {
       const keys = m[1].split(",").map((p: string) => { const t = /[`"]?(\w+)[`"]?\s*(ASC|DESC)?/i.exec(p.trim())!; return { i: cols.indexOf(t[1]), desc: /desc/i.test(t[2] ?? "") }; }).filter((k: { i: number }) => k.i >= 0);
       currentRows = [...rows].sort((x: any, y: any) => { for (const k of keys) { const a1 = x[k.i].v ?? "", b1 = y[k.i].v ?? ""; if (a1 < b1) return k.desc ? 1 : -1; if (a1 > b1) return k.desc ? -1 : 1; } return 0; });

@@ -1,5 +1,6 @@
 /** Small stroke icon set (16px grid, currentColor). */
 const P: Record<string, string> = {
+  sidebar: '<rect x="2" y="3" width="12" height="10" rx="1.8"/><path d="M10 3v10"/>',
   star: '<path d="M8 2.2 9.8 6l4.1.5-3 2.9.8 4.1L8 11.5 4.3 13.5l.8-4.1-3-2.9L6.2 6 8 2.2Z"/>',
   table: '<rect x="2" y="3" width="12" height="10" rx="1.6"/><path d="M2 6.5h12M6.5 6.5V13"/>',
   view: '<path d="M1.8 8s2.2-4 6.2-4 6.2 4 6.2 4-2.2 4-6.2 4S1.8 8 1.8 8Z"/><circle cx="8" cy="8" r="1.7"/>',

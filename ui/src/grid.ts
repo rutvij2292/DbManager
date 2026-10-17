@@ -49,7 +49,7 @@ export class Grid {
   /** When set, only these result columns can be edited (the rest are expressions or duplicates). */
   editCols: boolean[] | null = null;
   /** Redraw after the owner changed what is editable. */
-  repaint() { this.render(); }
+  repaint() { this.render(); this.onActive(); }
   canEditCell(c: number) { return this.editable && (!this.editCols || !!this.editCols[c]); }
   onChange: () => void = () => {};
   /** Delete / Backspace pressed on selected rows (set by table tabs, which can stage deletions). */
@@ -149,12 +149,26 @@ export class Grid {
     if (this.allRows) return Array.from({ length: this.total() }, (_, i) => i);
     return [...this.rows].sort((a, b) => a - b);
   }
+  focusBody() { this.body.focus({ preventScroll: true }); }
   /** Called whenever the selection changes. */
   onSelect: () => void = () => {};
+  /** Called when the active cell, its value or the result changes (cell inspector). */
+  onActive: () => void = () => {};
+  /** The outlined cell, if any. */
+  get activeCell(): { r: number; c: number } | null {
+    return this.summary && this.anchor >= 0 && this.activeCol >= 0 && this.anchor < this.total() ? { r: this.anchor, c: this.activeCol } : null;
+  }
+  /** Make a cell the active one, scroll to it and select its row. */
+  gotoCell(r: number, c: number) {
+    this.activeCol = c;
+    this.reveal(r, c);
+    this.setSelection(new Set([r]), r);
+  }
   private setSelection(rows: Set<number>, anchor: number, all = false) {
     this.rows = rows; this.anchor = anchor; this.allRows = all;
     this.render();
     this.onSelect();
+    this.onActive();
   }
   pick(r: number, mode: "single" | "toggle" | "range") {
     const cur = this.allRows ? new Set(this.selectedRows()) : this.rows;
@@ -205,6 +219,7 @@ export class Grid {
     }
     this.render();
     this.onChange();
+    this.onActive();
   }
   columnName(c: number): string { return this.summary?.columns[c]?.name ?? ""; }
   editsOf(r: number) { return this.edits.get(r); }
@@ -248,7 +263,7 @@ export class Grid {
   }
   discard() {
     this.edits.clear(); this.deleted.clear(); this.inserted = [];
-    this.resize(); this.render(); this.onChange();
+    this.resize(); this.render(); this.onChange(); this.onActive();
   }
   private resize() { this.spacer.style.height = this.total() * ROW_H + "px"; }
 
@@ -281,6 +296,7 @@ export class Grid {
           m.size ? this.edits.set(r, m) : this.edits.delete(r);
         }
         this.onChange();
+        this.onActive();
       }
       this.render();
       if (step) { this.body.focus({ preventScroll: true }); this.move(...step); }
@@ -292,6 +308,108 @@ export class Grid {
       else if (e.key === "Tab") { e.preventDefault(); finish(true, [0, e.shiftKey ? -1 : 1]); }
     };
     input.onblur = () => finish(true);
+  }
+
+  // ---------- Find & Replace ----------
+  /** Matching cells (row, column) of the last search, in reading order; null when no search is active. */
+  private matches: [number, number][] | null = null;
+  private matchSet = new Set<number>();
+  private matchCur = -1;
+  private matchKey(r: number, c: number) { return r * (this.summary?.columns.length || 1) + c; }
+  isMatch(r: number, c: number) { return this.matchSet.has(this.matchKey(r, c)); }
+  allMatches(): [number, number][] { return this.matches ? [...this.matches] : []; }
+  /** Id of the result on show (changes with every run / reload). */
+  get resultId() { return this.summary?.query_id ?? -1; }
+  get matchCount() { return this.matches?.length ?? 0; }
+  get matchIndex() { return this.matchCur; }
+  /** Highlight these cells (and drop any earlier highlight). `null` clears. */
+  setMatches(list: [number, number][] | null) {
+    this.matches = list; this.matchSet.clear(); this.matchCur = -1;
+    if (list) for (const [r, c] of list) this.matchSet.add(this.matchKey(r, c));
+    this.render();
+  }
+  /** Jump to the n-th match (wraps around). Returns the new index. */
+  stepMatch(delta: number): number {
+    const m = this.matches;
+    if (!m?.length) return -1;
+    this.matchCur = (this.matchCur + delta + m.length * 2) % m.length;
+    this.gotoCell(m[this.matchCur][0], m[this.matchCur][1]);
+    return this.matchCur;
+  }
+  /** First match at or after the active cell (reading order), so Find starts where you are. */
+  private firstMatchFromCursor() {
+    const m = this.matches, a = this.activeCell;
+    if (!m?.length) return -1;
+    if (!a) return 0;
+    const i = m.findIndex(([r, c]) => r > a.r || (r === a.r && c >= a.c));
+    return i < 0 ? 0 : i;
+  }
+  /** Go to the first match at the cursor; `after` skips a match on the cursor cell itself (used after replacing it). */
+  startMatches(after = false) {
+    const m = this.matches, a = this.activeCell;
+    if (!m?.length) return;
+    let i = this.firstMatchFromCursor();
+    if (after && a && m[i][0] === a.r && m[i][1] === a.c) i++;
+    this.matchCur = (i % m.length) - 1;
+    this.stepMatch(1);
+  }
+
+  /**
+   * Scan the whole result (all pages, not just the cached ones) for cells whose text `test`s true. Pages are read
+   * from Rust one at a time and not kept, so memory stays flat. Staged edits count as the current value.
+   * `col` limits the search to one column. Stops at `cap` matches; `stop()` aborts.
+   */
+  async findCells(test: (text: string) => boolean, col: number | null, cap: number, stop: () => boolean, progress?: (done: number, total: number) => void): Promise<{ cells: [number, number][]; capped: boolean; aborted: boolean }> {
+    const s = this.summary, cells: [number, number][] = [];
+    if (!s) return { cells, capped: false, aborted: false };
+    const ncols = s.columns.length, cols = col === null ? [...Array(ncols).keys()] : [col];
+    const scan = (r: number, row: Val[] | undefined) => {
+      if (!row) return false;
+      const e = this.edits.get(r);
+      for (const c of cols) {
+        const v = e?.get(c) ?? row[c];
+        if (!v || v.t === "Null" || v.t === "Bytes") continue;
+        if (test(show(v))) { cells.push([r, c]); if (cells.length >= cap) return true; }
+      }
+      return false;
+    };
+    for (let p = 0; p * PAGE < s.row_count; p++) {
+      if (stop() || this.summary !== s) return { cells, capped: false, aborted: true };
+      const rows = this.cache.peek(p) ?? await api.getRows(s.query_id, p * PAGE, PAGE);
+      for (let i = 0; i < rows.length; i++) if (scan(p * PAGE + i, rows[i])) return { cells, capped: true, aborted: false };
+      progress?.(Math.min(s.row_count, (p + 1) * PAGE), s.row_count);
+    }
+    for (let i = 0; i < this.inserted.length; i++) if (scan(s.row_count + i, this.inserted[i])) return { cells, capped: true, aborted: false };
+    return { cells, capped: false, aborted: false };
+  }
+
+  /**
+   * Stage many cell values at once (Replace all). The pages holding these rows are loaded and pinned first, because a
+   * commit keys UPDATEs by the rows' original values. Returns how many cells were staged (the rest are not editable).
+   */
+  async stageMany(items: [number, number, Val][]): Promise<number> {
+    const s = this.summary;
+    if (!s) return 0;
+    const n = s.row_count;
+    const usable = items.filter(([r, c]) => this.canEditCell(c) && !this.deleted.has(r));
+    const pages = new Set(usable.filter(([r]) => r < n).map(([r]) => Math.floor(r / PAGE)));
+    const pinned = this.pinnedPages();
+    for (const p of pages) pinned.add(p);
+    for (const p of pages) {
+      if (this.summary !== s) return 0;
+      if (!this.cache.has(p)) this.cache.set(p, await api.getRows(s.query_id, p * PAGE, PAGE), pinned);
+    }
+    for (const [r, c, v] of usable) {
+      if (r >= n) { if (this.inserted[r - n]) this.inserted[r - n][c] = v; continue; }
+      const m = this.edits.get(r) ?? new Map<number, Val>();
+      const orig = this.original(r)?.[c];
+      if (orig && show(orig) === show(v) && (orig.t === "Null") === (v.t === "Null")) m.delete(c); else m.set(c, v);
+      m.size ? this.edits.set(r, m) : this.edits.delete(r);
+    }
+    this.render();
+    this.onChange();
+    this.onActive();
+    return usable.length;
   }
 
   /** The result on show. */
@@ -308,6 +426,8 @@ export class Grid {
     this.head.innerHTML = "";
     this.rowsLayer.innerHTML = "";
     this.body.scrollTop = 0;
+    this.matches = null; this.matchSet.clear(); this.matchCur = -1;
+    this.onActive();
     if (!s) return;
     this.widths = s.columns.map((c) => this.userWidths.get(c.name) ?? Math.max(MIN_W, WIDTH[kindOf(c.type_name)], Math.min(260, c.name.length * 8 + 70)));
     this.headCells = [];
@@ -419,6 +539,10 @@ export class Grid {
         const edited = this.edits.get(r)?.get(i);
         const v = edited ?? row?.[i];
         if (edited) { c.style.background = "var(--edit-soft)"; c.style.boxShadow = "inset 2px 0 0 var(--warn)"; }
+        if (this.matchSet.size && this.matchSet.has(this.matchKey(r, i))) {
+          const cur = this.matchCur >= 0 && this.matches![this.matchCur][0] === r && this.matches![this.matchCur][1] === i;
+          c.style.background = cur ? "var(--find-cur)" : "var(--find)";
+        }
         c.oncontextmenu = (e) => { e.preventDefault(); if (!this.isSelected(r)) this.pick(r, "single"); this.onCellMenu(e.clientX, e.clientY, r, i); };
         if (v) {
           const k = kindOf(col.type_name);

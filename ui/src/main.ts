@@ -11,6 +11,9 @@ import { createBuilder } from "./builder";
 import { showExport, showImport } from "./io";
 import { createStructureView } from "./structure";
 import { createFilterBar } from "./filterbar";
+import { createInspector } from "./inspector";
+import { createGridFind } from "./gridfind";
+import { resultCaption } from "./resultlabel";
 import { lintSql, lintPlan } from "./lint";
 import { renderPlan, hintsPanel } from "./planview";
 import { makeCompletionSource, recordAccepted } from "./complete";
@@ -62,7 +65,7 @@ interface StmtResult { sql: string; summary: Summary | null; affected?: number; 
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; draftId: string; draftTimer?: number; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; pendingPill?: HTMLButtonElement; countSeq?: number;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; draftId: string; draftTimer?: number; inspector?: ReturnType<typeof createInspector>; gridFind?: ReturnType<typeof createGridFind>; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; pendingPill?: HTMLButtonElement; countSeq?: number;
   /** A query result that maps to one table and can be edited in place (see resultedit.ts), and the bar that shows it. */
   edit?: EditTarget; editBar?: HTMLElement; editSeq?: number;
 }
@@ -199,6 +202,19 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   pendingPill.title = "Commit all tables in this database (" + prettyCombo(comboOf("commitAll")) + ")";
   pendingPill.onclick = () => commitAll();
   statusBar.append(pendingPill);
+  const toolBtns: HTMLButtonElement[] = [];
+  if (kind !== "diagram") {
+    const tb = (ic: string, title: string, on: () => void) => {
+      const b = document.createElement("button");
+      b.className = "btn btn-ghost btn-sm shrink-0";
+      b.style.cssText = "width:28px;padding:0;justify-content:center";
+      b.title = title; b.setAttribute("aria-label", title); b.innerHTML = icon(ic, 14); b.onclick = on;
+      toolBtns.push(b); return b;
+    };
+    tb("search", `Find & replace in results (${prettyCombo(comboOf("findReplace"))})`, () => toggleFind(tab));
+    tb("sidebar", `Cell inspector (${prettyCombo(comboOf("inspector"))})`, () => toggleInspector(tab));
+    statusBar.append(...toolBtns);
+  }
   const countBtn = document.createElement("button");
   countBtn.className = "btn btn-ghost btn-sm shrink-0";
   countBtn.style.cssText = "display:none";
@@ -207,6 +223,11 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   selInfo.className = "shrink-0 text-muted";
   statusBar.append(selInfo);
   const tab: Tab = { draftId: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, id: ++tabSeq, title, kind, conn: c, table, root, grid, status, sort: [], countBtn, pendingPill };
+  if (kind !== "diagram") {
+    tab.inspector = createInspector(grid);
+    tab.inspector.onToggle = (on) => { toolBtns[1]?.classList.toggle("btn-active", on); localStorage.setItem("tabnix.inspector", on ? "1" : "0"); };
+    tab.gridFind = createGridFind(grid, () => { toolBtns[0]?.classList.remove("btn-active"); grid.focusBody(); });
+  }
   grid.sortable = kind !== "diagram" && !["redis", "mongo"].includes(c?.kind ?? "");
   grid.onSort = (col, additive, x, y) => {
     if (additive) { applySort(tab, nextSort(tab.sort, col, true)); return; }
@@ -377,13 +398,29 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     root.append(tab.editBar);
     grid.onChange = () => { paintEditBar(tab); syncDirtyRows(); };
   }
-  root.append(gridWrap, statusBar);
+  gridWrap.className = "flex-1 min-w-0 min-h-0 relative";
+  const gridRow = document.createElement("div");
+  gridRow.className = "flex-1 min-h-0 flex";
+  gridRow.append(gridWrap);
+  if (tab.inspector) gridRow.append(tab.inspector.el);
+  if (tab.gridFind) root.append(tab.gridFind.el);
+  root.append(gridRow, statusBar);
   tabs.push(tab);
   freshTabs.add(tab.id);
   activate(tab); // also switches the workspace to this tab's connection
   tab.editor?.focus();
+  if (tab.inspector && localStorage.getItem("tabnix.inspector") === "1") tab.inspector.toggle(true);
   return tab;
 }
+
+function toggleFind(t: Tab) {
+  if (!t.gridFind || t.kind === "diagram") return;
+  if (t.mode === "structure") setMode(t, "data");
+  t.gridFind.toggle();
+  toolBtnState(t);
+}
+const toolBtnState = (t: Tab) => t.root.querySelector<HTMLElement>("[aria-label^='Find & replace']")?.classList.toggle("btn-active", !!t.gridFind?.isOpen);
+function toggleInspector(t: Tab) { t.inspector?.toggle(); }
 
 /** The editor's share of a query tab (remembered between sessions). */
 const editorHeight = () => Math.round(Math.min(0.78, Math.max(0.12, +(localStorage.getItem("tabnix.editorFrac") ?? 0.34))) * 100) + "%";
@@ -1082,6 +1119,9 @@ function cellMenu(t: Tab, x: number, y: number, r: number, c: number) {
     { label: "Copy with column names", action: () => copyRows(t, "tsv", true) },
     { label: "Copy column name", action: () => { navigator.clipboard?.writeText(col); toast("Copied " + col, "ok"); } },
     { divider: true, label: "" },
+    { label: "Inspect cell", hint: prettyCombo(comboOf("inspector")), action: () => t.inspector?.toggle(true) },
+    { label: "Find & replace…", hint: prettyCombo(comboOf("findReplace")), action: () => { if (!t.gridFind?.isOpen) toggleFind(t); } },
+    { divider: true, label: "" },
     { label: "Set to NULL", disabled: !g.canEditCell(c) || isNull, action: () => g.stageEdit(r, c, { t: "Null" }) },
     { label: g.selectedCount > 1 ? `Delete ${g.selectedCount.toLocaleString()} rows…` : "Delete row…", danger: true, disabled: !g.editable || !g.rowOps, action: () => deleteRow(t) },
   ]);
@@ -1130,7 +1170,9 @@ function runActive(all = false) {
   if (!text.trim()) return;
   const n = t.grid.pendingCount;
   const keep = n ? confirmDanger({ title: "Discard pending changes?", body: `Running again replaces this result, so ${n} uncommitted change${n === 1 ? "" : "s"} will be thrown away.`, confirmLabel: "Discard and run" }) : Promise.resolve(true);
-  keep.then((go) => go && guardRun(t, text)).then((ok) => { if (ok) (all ? execAll(t, text) : execOne(t, text)); });
+  // A selection that holds several statements runs them one by one, like Run all.
+  const many = all || (!sel.empty && splitStatements(text).length > 1);
+  keep.then((go) => go && guardRun(t, text)).then((ok) => { if (ok) (many ? execAll(t, text) : execOne(t, text)); });
 }
 
 function execOne(t: Tab, text: string) {
@@ -1236,6 +1278,13 @@ async function showResult(t: Tab, i: number) {
   renderResultBar(t);
 }
 
+/** Show the previous / next result of a run-all (wraps). */
+function stepResult(d: number) {
+  const t = active;
+  if (!t?.results || t.results.length < 2 || t.resultIdx === undefined) return false;
+  showResult(t, (t.resultIdx + d + t.results.length) % t.results.length);
+}
+
 function renderResultBar(t: Tab) {
   const bar = t.resultBar, rs = t.results;
   if (!bar || !rs || rs.length < 2) { bar?.classList.add("hidden"); return; }
@@ -1244,8 +1293,10 @@ function renderResultBar(t: Tab) {
   seg.className = "seg";
   rs.forEach((r, i) => {
     const b = document.createElement("button");
-    const label = r.error ? "error" : r.summary ? `${(r.affected ?? 0).toLocaleString()} rows` : `${(r.affected ?? 0).toLocaleString()} affected`;
-    b.textContent = `${i + 1} · ${label}`;
+    const cap = resultCaption({ sql: r.sql, error: r.error, hasRows: !!r.summary, count: r.affected ?? 0, ms: r.ms });
+    b.innerHTML = `<span></span><span class="text-muted" style="font-weight:400"></span>`;
+    (b.children[0] as HTMLElement).textContent = `${i + 1} · ${cap.label}`;
+    (b.children[1] as HTMLElement).textContent = cap.detail;
     b.title = r.sql;
     b.setAttribute("aria-pressed", String(i === t.resultIdx));
     if (r.error) b.style.color = "var(--danger)";
@@ -2282,6 +2333,9 @@ const handlers: Record<string, (e: KeyboardEvent) => unknown> = {
   commit: () => active?.kind === "table" || (active?.kind === "query" && active.edit) ? commitChanges(active) : false,
   addRow: () => active?.kind === "table" ? active.grid.addRow() : false,
   deleteRow: (e) => active?.kind === "table" && !(e.target instanceof HTMLInputElement) ? deleteRow(active) : false,
+  nextResult: () => stepResult(1), prevResult: () => stepResult(-1),
+  findReplace: () => { if (!active || active.kind === "diagram") return false; toggleFind(active); },
+  inspector: () => { if (!active || active.kind === "diagram") return false; toggleInspector(active); },
   filterTable: () => { if (active?.kind !== "table" || !active.filterBar) return false; if (active.mode === "structure") setMode(active, "data"); active.filterBar.toggle(); },
 };
 

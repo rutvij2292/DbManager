@@ -16,7 +16,7 @@
   --stripe:#f6f9fb; --row-hover:#eaf4f9; --sel:#d3ebf6; --grid-head:#f3f7f9;
   --num:#2f4fb5; --date:#0f6f74; --null:#566879;
   --tbl:#5b9bf0; --tbl-head:#2f6fd0; --tbl-line:rgba(255,255,255,.6);
-  --edit-soft:#fff3d6; --new-soft:#dff5ea; --del-soft:#fde6ea;
+  --find:#ffeaa0; --find-cur:#ffc94d; --edit-soft:#fff3d6; --new-soft:#dff5ea; --del-soft:#fde6ea;
   --tok-keyword:#0b74a0; --tok-string:#1a7f4b; --tok-number:#b5590a; --tok-comment:#627487;
   --tok-type:#8a3fbf; --tok-fn:#c0427a; --tok-op:#5d6e80;
   --shadow-1:0 1px 2px rgb(19 34 48/.06),0 1px 1px rgb(19 34 48/.04);
@@ -46,7 +46,7 @@
   --stripe:#172026; --row-hover:#1a2b33; --sel:#173a4a; --grid-head:#182228;
   --num:#9db4ff; --date:#6fd3d0; --null:#90a3b1;
   --tbl:#4f8fe6; --tbl-head:#2a62bd; --tbl-line:rgba(255,255,255,.45);
-  --edit-soft:#3a2e12; --new-soft:#12301f; --del-soft:#3a1a22;
+  --find:#4d4210; --find-cur:#8a6d0a; --edit-soft:#3a2e12; --new-soft:#12301f; --del-soft:#3a1a22;
   --tok-keyword:#5cc8ee; --tok-string:#7fdba0; --tok-number:#f5b26b; --tok-comment:#6f8291;
   --dirty-stripe:var(--warn); --dirty-row:color-mix(in srgb, var(--warn) 12%, transparent); --danger-solid:#ff8296; --on-danger:#3b0d17;
   --tok-type:#c79bff; --tok-fn:#ff9cc4; --tok-op:#a6b7c2;
@@ -226,3 +226,5 @@ body { background: transparent; }
 .dlg, #ctx, #palette > div { transition: opacity .12s var(--ease-out), transform .12s var(--ease-out); }
 @starting-style { .dlg, #ctx, #palette > div { opacity: 0; transform: scale(.98); } }
 .inactive { --sel: var(--raised2); --accent-soft: var(--raised); }
+
+.btn-active { background: var(--accent-soft, var(--raised)); color: var(--accent); }

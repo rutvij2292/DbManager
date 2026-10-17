@@ -179,7 +179,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .tab[data-dirty="true"] .tab-dot { display: block; }
 .tab[data-dirty="true"]:not(:hover) .tab-x { display: none; }
 .tab[data-dirty="true"]:hover .tab-dot { display: none; }
-@keyframes tab-in { from { opacity: 0; transform: translateY(4px) scale(.96); } }
+@keyframes tab-in { from { opacity: 0; transform: translateY(4px); } }
 @keyframes running { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 @keyframes pulse { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); } to { box-shadow: 0 0 0 6px transparent; } }
 @keyframes flash-ok { from { background: var(--ok-soft); } }

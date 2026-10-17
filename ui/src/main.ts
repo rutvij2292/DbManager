@@ -187,8 +187,8 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   }
   statusBar.append(status);
   const countBtn = document.createElement("button");
-  countBtn.className = "btn btn-ghost shrink-0";
-  countBtn.style.cssText = "height:24px;display:none";
+  countBtn.className = "btn btn-ghost btn-sm shrink-0";
+  countBtn.style.cssText = "display:none";
   statusBar.append(countBtn);
   const selInfo = document.createElement("span");
   selInfo.className = "shrink-0 text-muted";
@@ -553,7 +553,7 @@ function renderLog() {
   const head = document.createElement("div");
   head.className = "h-8 shrink-0 flex items-center gap-2 px-3 text-[12.5px] text-muted border-b border-line";
   head.innerHTML = `<span class="font-medium text-soft">SQL</span><span class="truncate">${esc(mine !== null ? active!.title : conn?.db ?? conn?.name ?? "")}</span><span class="flex-1"></span>`;
-  const mk = (label: string, f: () => void) => { const b = document.createElement("button"); b.className = "btn btn-ghost"; b.style.height = "24px"; b.textContent = label; b.onclick = f; return b; };
+  const mk = (label: string, f: () => void) => { const b = document.createElement("button"); b.className = "btn btn-ghost btn-sm"; b.textContent = label; b.onclick = f; return b; };
   head.append(
     mk(logScope === "tab" ? "This tab" : "Whole database", () => { logScope = logScope === "tab" ? "db" : "tab"; localStorage.setItem("tabnix.logScope", logScope); renderLog(); }),
     mk(hl ? "Highlight: on" : "Highlight: off", () => { localStorage.setItem("tabnix.logHl", hl ? "0" : "1"); renderLog(); }),

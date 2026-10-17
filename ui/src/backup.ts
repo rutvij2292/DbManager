@@ -93,7 +93,7 @@ export async function showRestore(connId: number, connName: string, dbName: stri
       </div>
       <label class="flex items-start gap-2"><input id="keep" type="checkbox" class="mt-0.5"/><span>Keep going after errors<br/><span class="text-muted text-[13px]">Off by default: the restore stops at the first failing statement and tells you which one.</span></span></label>
       ${prod ? `<label class="flex items-start gap-2"><input id="ack" type="checkbox" class="mt-0.5"/><span>I understand this will change the production database.</span></label>` : ""}
-      <div class="flex justify-end gap-2 mt-1"><button id="x" class="btn btn-ghost">Cancel</button><button id="go" class="btn btn-primary" ${prod ? "disabled" : ""}>${icon("restore", 14)}<span>Restore</span></button></div>
+      <div class="flex justify-end gap-2 mt-1"><button id="x" class="btn btn-ghost">Cancel</button><button id="go" class="btn ${prod ? "btn-danger" : "btn-primary"}" ${prod ? "disabled" : ""}>${icon("restore", 14)}<span>Restore</span></button></div>
     </div>`, 520);
   m.q("#x").onclick = m.close;
   if (prod) m.q<HTMLInputElement>("#ack").onchange = () => { m.q<HTMLButtonElement>("#go").disabled = !m.q<HTMLInputElement>("#ack").checked; };

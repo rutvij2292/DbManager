@@ -16,7 +16,7 @@ export function createFilterBar(columns: () => string[], quote: () => Quote, app
   const submit = () => apply(raw ? rawText.trim() : buildWhere(rules.filter((r) => r.col), quote()));
   const sel = (opts: [string, string][], val: string, on: (v: string) => void, w: string) => {
     const s = document.createElement("select");
-    s.className = "field";
+    s.className = "field field-sm";
     s.style.width = w;
     s.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(l)}</option>`).join("");
     s.onchange = () => on(s.value);
@@ -31,29 +31,28 @@ export function createFilterBar(columns: () => string[], quote: () => Quote, app
     top.className = "flex items-center gap-2 mb-1.5";
     top.innerHTML = `<span class="text-soft">${icon("filter", 14)}</span><span class="font-medium">Filter rows</span>`;
     const seg = document.createElement("div");
-    seg.className = "inline-flex p-0.5 rounded-lg bg-raised ml-2";
+    seg.className = "seg ml-2";
     for (const [id, label] of [["rules", "Rules"], ["sql", "SQL"]] as const) {
       const b = document.createElement("button");
       const on = (id === "sql") === raw;
       b.textContent = label;
-      b.className = "btn btn-ghost";
-      b.style.cssText = `height:22px;${on ? "background:var(--panel);color:var(--ink);box-shadow:0 1px 2px rgb(20 28 46 / .12)" : ""}`;
+      b.setAttribute("aria-pressed", String(on));
       b.onclick = () => { raw = id === "sql"; draw(); };
       seg.append(b);
     }
     const spacer = document.createElement("span"); spacer.className = "flex-1";
     const clear = document.createElement("button");
-    clear.className = "btn btn-ghost"; clear.textContent = "Clear";
+    clear.className = "btn btn-ghost btn-sm"; clear.textContent = "Clear";
     clear.onclick = () => { rules = [{ col: cols[0] ?? "", op: "=", value: "" }]; rawText = ""; draw(); apply(""); };
     const go = document.createElement("button");
-    go.className = "btn btn-primary"; go.innerHTML = `<span>Apply</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">↵</span>`;
+    go.className = "btn btn-primary btn-sm"; go.innerHTML = `<span>Apply</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">↵</span>`;
     go.onclick = submit;
     top.append(seg, spacer, clear, go);
     el.append(top);
 
     if (raw) {
       const inp = document.createElement("input");
-      inp.className = "field mono w-full";
+      inp.className = "field field-sm mono w-full";
       inp.placeholder = "status = 'paid' AND total > 100";
       inp.value = rawText;
       inp.oninput = () => { rawText = inp.value; };
@@ -72,7 +71,7 @@ export function createFilterBar(columns: () => string[], quote: () => Quote, app
       row.append(sel(cols.map((c) => [c, c]), r.col, (v) => { r.col = v; }, "170px"));
       row.append(sel(FILTER_OPS.map((o) => [o, o]), r.op, (v) => { r.op = v as FilterOp; draw(); }, "128px"));
       const val = document.createElement("input");
-      val.className = "field flex-1";
+      val.className = "field field-sm flex-1";
       val.style.minWidth = "120px";
       val.value = r.value;
       val.placeholder = r.op === "in list" ? "a, b, c" : "value";

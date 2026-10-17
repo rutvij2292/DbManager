@@ -40,7 +40,7 @@ export function createBuilder(getTables: () => SchemaTable[], quote: () => Quote
   function button(label: string, on: () => void, cls = "") {
     const b = document.createElement("button");
     b.textContent = label;
-    b.className = "px-2 py-0.5 rounded bg-raised hover:bg-raised2 " + cls;
+    b.className = "btn btn-sm " + cls;
     b.onclick = on;
     return b;
   }

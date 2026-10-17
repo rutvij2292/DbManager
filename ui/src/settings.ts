@@ -202,7 +202,6 @@ export function showSettings() {
   };
   window.addEventListener("keydown", onKey, true);
   q("#done").onclick = m.close;
-  const obs = new MutationObserver(() => { if (!document.body.contains(m.o)) { window.removeEventListener("keydown", onKey, true); capturing = false; obs.disconnect(); } });
-  obs.observe(document.body, { childList: true });
+  m.onClose = () => { window.removeEventListener("keydown", onKey, true); capturing = false; };
   drawKeys();
 }

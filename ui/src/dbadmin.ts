@@ -100,7 +100,7 @@ export function promptName(title: string, hint: string, confirmLabel: string, in
       <div class="px-5 py-3 border-t border-line flex justify-end gap-2"><button id="no" class="btn">Cancel</button><button id="yes" class="btn btn-primary">${esc(confirmLabel)}</button></div>`, 440);
     let done = false;
     const finish = (v: string | null) => { if (done) return; done = true; m.close(); resolve(v); };
-    new MutationObserver(() => { if (!document.body.contains(m.o)) finish(null); }).observe(document.body, { childList: true });
+    m.onClose = () => finish(null);
     const n = m.q<HTMLInputElement>("#n");
     const go = () => {
       const v = n.value.trim();
@@ -130,7 +130,7 @@ export function confirmDanger(opts: { title: string; body: string; confirmLabel:
     if (opts.sql?.length) m.q("#sql").textContent = opts.sql.join(";\n") + ";";
     let done = false;
     const finish = (v: boolean) => { if (done) return; done = true; m.close(); resolve(v); };
-    new MutationObserver(() => { if (!document.body.contains(m.o)) finish(false); }).observe(document.body, { childList: true });
+    m.onClose = () => finish(false);
     const yes = m.q<HTMLButtonElement>("#yes");
     if (opts.option) m.q<HTMLInputElement>("#opt").onchange = (e) => { opts.option!.checked = (e.target as HTMLInputElement).checked; };
     m.q("#no").onclick = () => finish(false);

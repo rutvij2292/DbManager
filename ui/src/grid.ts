@@ -70,7 +70,7 @@ export class Grid {
   constructor() {
     this.el.className = "h-full flex flex-col text-[13.5px] bg-panel";
     this.head.className = "flex overflow-hidden shrink-0";
-    this.head.style.cssText = "background:var(--grid-head);border-bottom:1px solid var(--line-strong);height:34px";
+    this.head.style.cssText = "background:var(--grid-head);border-bottom:1px solid var(--line-strong);height:34px;display:none";
     this.body.className = "flex-1 overflow-auto relative";
     this.spacer.style.position = "relative";
     this.rowsLayer.style.position = "absolute";
@@ -298,6 +298,7 @@ export class Grid {
     if (this.summary && release) api.release(this.summary.query_id);
     this.edits.clear(); this.deleted.clear(); this.inserted = [];
     this.summary = s;
+    this.head.style.display = s ? "" : "none";
     this.cache.clear();
     this.loading.clear();
     this.rows = new Set(); this.anchor = -1; this.activeCol = -1; this.allRows = false;

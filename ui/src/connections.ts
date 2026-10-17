@@ -23,6 +23,7 @@ const field = "w-full bg-panel border border-line-strong rounded px-2 py-1 outli
 export function showConnectionManager(onConnect: (connId: number, p: Profile) => Promise<void>) {
   const overlay = document.createElement("div");
   overlay.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50 select-none";
+  overlay.dataset.modal = "";
   overlay.innerHTML = `
     <div class="w-[760px] h-[620px] bg-raised rounded-lg shadow-2xl border border-line-strong flex overflow-hidden">
       <div class="w-56 bg-panel border-r border-line-strong flex flex-col">

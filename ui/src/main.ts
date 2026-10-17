@@ -221,8 +221,10 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
           autocompletion({ override: [makeCompletionSource(() => tab.conn?.schema ?? [])], activateOnTyping: true, icons: false }),
           EditorView.updateListener.of((u) => { if (u.docChanged) scheduleDraft(tab); for (const tr of u.transactions) { const c = tr.annotation(pickedCompletion); if (c) recordAccepted(c.label); } }),
           keymap.of([
-            { key: "Mod-Enter", run: () => (runActive(), true) },
-            { key: "Mod-Shift-Enter", run: () => (runActive(true), true) },
+            // ⌘↵ / ⌘⇧↵ are run by the global (rebindable) shortcut handler. These entries only stop CodeMirror's own
+            // Mod-Enter (insertBlankLine) from also inserting a newline.
+            { key: "Mod-Enter", run: () => true },
+            { key: "Mod-Shift-Enter", run: () => true },
             { key: "Mod-i", run: (v) => (formatEditor(v, tab.conn), true) },
             ...searchKeymap, ...completionKeymap, ...defaultKeymap, ...historyKeymap,
           ]),
@@ -264,6 +266,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       tab.shown = recent;
       const box = document.createElement("div");
       box.className = "pointer-events-auto text-left mt-5 w-[min(560px,90%)]";
+      box.dataset.recent = "";
       box.innerHTML = `<div class="text-[12px] uppercase tracking-wide text-muted mb-1.5 px-1">Recent queries on ${esc(c!.db ?? c!.name)}</div>`;
       for (const r of recent) {
         const row = document.createElement("button");
@@ -865,6 +868,7 @@ function confirmSql(stmts: string[], title?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const o = document.createElement("div");
     o.className = "fixed inset-0 bg-black/50 flex items-center justify-center z-50";
+    o.dataset.modal = "";
     o.innerHTML = `<div class="w-[640px] max-h-[70vh] bg-raised rounded-lg border border-line-strong shadow-2xl flex flex-col">
       <div class="px-4 py-2 border-b border-line-strong font-semibold">${title ? `${title} (one transaction per table)` : `Review changes (${stmts.length} statement${stmts.length > 1 ? "s" : ""}, one transaction)`}</div>
       <pre class="mono text-[13px] p-4 overflow-auto flex-1 select-text whitespace-pre-wrap"></pre>
@@ -873,7 +877,10 @@ function confirmSql(stmts: string[], title?: string): Promise<boolean> {
         <button id="yes" class="px-3 py-1 rounded btn-primary">Commit</button></div></div>`;
     o.querySelector("pre")!.textContent = stmts.join("\n");
     const done = (v: boolean) => { o.remove(); window.removeEventListener("keydown", key, true); resolve(v); };
-    const key = (e: KeyboardEvent) => { if (e.key === "Escape") done(false); else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) done(true); };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }
+      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); done(true); }
+    };
     window.addEventListener("keydown", key, true);
     (o.querySelector("#no") as HTMLElement).onclick = () => done(false);
     (o.querySelector("#yes") as HTMLElement).onclick = () => done(true);
@@ -1337,7 +1344,9 @@ dropLegacyHistory();
 function openQueryTab(c: Conn, sql: string, title = "Query", draftId?: string) {
   const t = makeTab("query", title, undefined, c);
   if (draftId) t.draftId = draftId;
-  t.empty?.remove(); t.empty = undefined;
+  // Keep the "Results appear here" state, but not the Recent list: clicking one would replace this tab's text.
+  t.empty?.querySelector("[data-recent]")?.remove();
+  t.shown = undefined; // nothing was shown, so closing this tab must not forget any recent session
   t.editor?.dispatch({ changes: { from: 0, to: t.editor.state.doc.length, insert: sql }, selection: { anchor: sql.length } });
   return t;
 }
@@ -2123,6 +2132,7 @@ async function cancelActive() {
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && active?.running) { e.preventDefault(); cancelActive(); return; }
   if (capturing) return;
+  if (document.querySelector("[data-modal]")) return; // dialogs own the keyboard (their own listeners run first)
   const k = e.key.toLowerCase();
   const inText = e.target instanceof HTMLElement && !!e.target.closest("input, textarea, .cm-editor, [contenteditable]");
   if (e.metaKey && !inText && !e.altKey && !e.shiftKey && active && active.kind !== "diagram") {

@@ -18,10 +18,7 @@ export function pickDatabase(databases: string[], current: string | null | undef
     let idx = 0, shown: string[] = [], showSystem = false;
     let done = false;
     const finish = (v: string | null) => { if (done) return; done = true; m.close(); resolve(v); };
-    const origClose = m.o.querySelector("#q");
-    void origClose;
-    // Escape / backdrop dismissal is handled by modal(); watch for the overlay disappearing.
-    new MutationObserver(() => { if (!document.body.contains(m.o)) finish(null); }).observe(document.body, { childList: true });
+    m.onClose = () => finish(null);
 
     const draw = () => {
       const term = q.value.toLowerCase();

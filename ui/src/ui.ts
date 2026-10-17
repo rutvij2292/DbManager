@@ -1,18 +1,20 @@
 /** Shared dialog + toast helpers. */
-export function modal(inner: string, width = 560) {
+export function modal(inner: string, width = 560, opts: { backdropClose?: boolean } = {}) {
   const o = document.createElement("div");
+  o.dataset.modal = "";
   o.className = "fixed inset-0 flex items-center justify-center z-50 select-none";
   o.style.background = "color-mix(in srgb, var(--ink) 28%, transparent)";
   o.style.backdropFilter = "blur(8px) saturate(1.2)";
   (o.style as CSSStyleDeclaration & { webkitBackdropFilter: string }).webkitBackdropFilter = "blur(8px) saturate(1.2)";
-  o.innerHTML = `<div class="glass-strong rounded-2xl flex flex-col max-h-[86vh]" style="width:${width}px;max-width:94vw">${inner}</div>`;
+  o.innerHTML = `<div class="glass-strong dlg rounded-2xl flex flex-col max-h-[86vh]" style="width:${width}px;max-width:94vw">${inner}</div>`;
   document.body.append(o);
-  const close = () => { o.remove(); window.removeEventListener("keydown", onKey, true); };
-  /** Set by a dialog that wants to handle Esc itself (e.g. while recording a shortcut). */
-  const api = { o, close, blockEsc: undefined as (() => boolean) | undefined, q: <T extends HTMLElement>(s: string) => o.querySelector(s) as T };
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !api.blockEsc?.()) close(); };
+  let closed = false;
+  const close = () => { if (closed) return; closed = true; o.remove(); window.removeEventListener("keydown", onKey, true); api.onClose?.(); };
+  /** `blockEsc`: set by a dialog that wants to handle Esc itself (e.g. while recording a shortcut). `onClose`: runs once however the dialog closes. */
+  const api = { o, close, blockEsc: undefined as (() => boolean) | undefined, onClose: undefined as (() => void) | undefined, q: <T extends HTMLElement>(s: string) => o.querySelector(s) as T };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !api.blockEsc?.()) { e.preventDefault(); e.stopPropagation(); close(); } };
   window.addEventListener("keydown", onKey, true);
-  o.addEventListener("mousedown", (e) => { if (e.target === o) close(); });
+  o.addEventListener("mousedown", (e) => { if (opts.backdropClose !== false && e.target === o) close(); });
   return api;
 }
 

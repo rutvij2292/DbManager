@@ -22,7 +22,7 @@ import { buildOrder, nextSort, setSort, detectSort, countSql, wrapForSort, type 
 import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
-import { applyAppearance, capturing, matchAction, showSettings } from "./settings";
+import { applyAppearance, capturing, comboOf, matchAction, prettyCombo, showSettings } from "./settings";
 import { applyTheme, currentTheme, esc, toast, contextMenu, tagChip, tagHue as tagHueOf } from "./ui";
 import { showTablePlusImport } from "./tpimport";
 import { tabsOf, nextAfterClose, nthTab, cycleTab, tabForSwitch } from "./workspace";
@@ -173,6 +173,9 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
   grip.ondblclick = () => { sb.style.width = "272px"; localStorage.setItem("tabnix.sidebarW", "272"); };
 }
 
+/** A key hint inside a coloured button (Commit ⌘S). */
+const kbd = (x: string) => `<span class="kbd" style="color:inherit;border-color:currentColor;opacity:.7;background:transparent">${x}</span>`;
+
 function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | null = conn): Tab {
   const root = document.createElement("div");
   root.className = "h-full flex flex-col min-h-0";
@@ -283,7 +286,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   tab.gridWrap = gridWrap;
   if (kind === "table") {
     const bar = document.createElement("div");
-    bar.className = "h-11 shrink-0 flex items-center gap-1.5 px-3 bg-canvas text-[13px]";
+    bar.className = "tbar h-11 shrink-0 flex items-center gap-1.5 px-3 bg-canvas text-[13px]";
     const btn = (label: string, title: string, f: () => void, ic?: string, cls = "btn") => {
       const b = document.createElement("button");
       b.innerHTML = (ic ? icon(ic, 14) : "") + `<span>${label}</span>`;
@@ -291,10 +294,11 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       b.dataset.label = label;
       return b;
     };
-    const commit = btn("Commit", "Review & commit changes (⌘S)", () => commitChanges(tab), "commit");
-    const discard = btn("Discard", "Discard pending changes (⌘⌥Z)", () => discardChanges(tab), "undo");
+    const commit = btn("Commit", "Review & commit changes (⌘S)", () => commitChanges(tab), "commit", "btn keep-label");
+    commit.innerHTML = icon("commit", 14) + "<span>Commit</span>" + kbd(prettyCombo(comboOf("commit")));
+    const discard = btn("Discard", "Discard pending changes (⌘⌥Z)", () => discardChanges(tab), "undo", "btn keep-label");
     const info = document.createElement("span");
-    info.className = "hint text-muted ml-2 truncate";
+    info.className = "hint text-muted truncate flex-1 min-w-0 ml-2";
     const segWrap = document.createElement("div");
     segWrap.className = "seg mr-2";
     const seg = (label: string, mode: "data" | "structure", ic: string) => {
@@ -317,19 +321,34 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
         (where) => { tab.filterWhere = where || undefined; paintFilter(tab); reload(tab); },
       );
     }
-    const diagBtn = btn("Diagram", "Show this table's relations (⌘⇧D)", () => openDiagram(tab.table), "diagram", "btn btn-ghost");
+    const diagBtn = btn("", "Show this table's relations (⌘⇧D)", () => openDiagram(tab.table), "diagram", "btn btn-ghost");
+    diagBtn.dataset.label = "Diagram";
+    diagBtn.style.cssText = "width:30px;padding:0;justify-content:center";
+    diagBtn.setAttribute("aria-label", "Diagram");
     // Labels drive which buttons are hidden in Structure mode, so set them on the buttons themselves.
-    const addRow = btn("Row", "Insert row (⌘I)", () => grid.addRow(), "plus", "btn btn-ghost");
-    const delRow = btn("Row", "Delete selected row (⌘⌫)", () => deleteRow(tab), "minus", "btn btn-ghost");
+    const addRow = btn("Add row", `Insert row (${prettyCombo(comboOf("addRow"))})`, () => grid.addRow(), "plus", "btn btn-ghost");
+    const delRow = btn("Delete row", `Delete selected rows (${prettyCombo(comboOf("deleteRow"))})`, () => deleteRow(tab), "minus", "btn btn-ghost");
     addRow.dataset.label = "+ Row";
     delRow.dataset.label = "− Row";
-    bar.append(segWrap, ...(sqlLike ? [filterBtn, diagBtn] : []), addRow, delRow, sep, commit, discard, info);
+    // Staged changes sit at the right edge in a fixed cluster, so Commit never moves the buttons on its left.
+    const changes = document.createElement("div");
+    changes.className = "data-only flex items-center gap-1.5 shrink-0";
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    pill.innerHTML = `<span style="width:6px;height:6px;border-radius:3px;background:var(--dirty-stripe)"></span><span></span>`;
+    const idle = document.createElement("span");
+    idle.className = "text-muted text-[12px]";
+    idle.textContent = "No changes";
+    changes.append(pill, commit, discard, idle);
+    bar.append(segWrap, ...(sqlLike ? [filterBtn, diagBtn] : []), addRow, delRow, sep, info, changes);
     const refreshBar = () => {
       const n = grid.pendingCount;
-      commit.style.display = discard.style.display = n ? "" : "none";
-      commit.querySelector("span")!.textContent = n ? `Commit ${n}` : "Commit";
-      commit.className = n ? (isCareful(tab.conn?.env) && tab.conn?.env === "production" ? "btn btn-careful" : "btn btn-primary") : "btn";
-      info.textContent = !tab.cols ? "" : grid.editable ? (n ? `${n} pending change${n > 1 ? "s" : ""}` : "Double-click a cell to edit") : "Read-only: this table has no primary key";
+      pill.style.display = commit.style.display = discard.style.display = n ? "" : "none";
+      pill.lastElementChild!.textContent = `${n} change${n === 1 ? "" : "s"}`;
+      commit.className = "btn keep-label " + (isCareful(tab.conn?.env) && tab.conn?.env === "production" ? "btn-careful" : "btn-primary");
+      idle.style.display = !n && grid.editable && tab.cols ? "" : "none";
+      const obj = tab.conn?.objects.find((x) => x.name === tab.table);
+      info.textContent = !tab.cols ? "" : grid.editable ? `Double-click, Enter or type to edit · ${prettyCombo(comboOf("addRow"))} adds a row` : tab.conn && safetyLevel(tab.conn.server.profile) === "readonly" ? "Read-only connection" : obj?.kind === "view" ? "Read-only: views can't be edited here" : "Read-only: this table has no primary key";
     };
     grid.onChange = () => { refreshBar(); syncDirtyRows(); };
     grid.onDeleteKey = () => { if (grid.editable && grid.rowOps) deleteRow(tab); };
@@ -344,7 +363,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     tab.resultBar.className = "hidden shrink-0 px-3 py-1.5 bg-canvas overflow-x-auto";
     root.append(tab.resultBar);
     tab.editBar = document.createElement("div");
-    tab.editBar.className = "hidden shrink-0 h-9 flex items-center gap-1.5 px-3 bg-canvas text-[13px]";
+    tab.editBar.className = "tbar hidden shrink-0 h-9 flex items-center gap-1.5 px-3 bg-canvas text-[13px]";
     root.append(tab.editBar);
     grid.onChange = () => paintEditBar(tab);
   }
@@ -855,13 +874,16 @@ function paintEditBar(t: Tab, why?: string) {
   if (!t.grid.currentSummary || (!editable && !bar.dataset.why)) { bar.classList.add("hidden"); bar.replaceChildren(); return; }
   bar.classList.remove("hidden");
   const info = document.createElement("span");
-  info.className = "hint text-muted truncate flex-1";
+  info.className = "hint text-muted truncate flex-1 min-w-0";
   info.textContent = editable ? (n ? `${n} pending change${n > 1 ? "s" : ""} in ${t.edit!.table}` : `Double-click a cell to edit ${t.edit!.table}`) : `Read-only: ${bar.dataset.why}`;
   bar.replaceChildren(info);
   if (!n) return;
-  const mk = (label: string, ic: string, cls: string, f: () => void) => { const b = document.createElement("button"); b.className = cls; b.innerHTML = icon(ic, 14) + `<span>${label}</span>`; b.onclick = f; return b; };
+  const mk = (label: string, ic: string, cls: string, f: () => void, key = "") => { const b = document.createElement("button"); b.className = cls; b.innerHTML = icon(ic, 14) + `<span>${label}</span>` + key; b.onclick = f; return b; };
   const prod = isCareful(t.conn?.env) && t.conn?.env === "production";
-  bar.append(mk(`Commit ${n}`, "commit", prod ? "btn btn-careful" : "btn btn-primary", () => commitChanges(t)), mk("Discard", "undo", "btn", () => discardChanges(t)));
+  const pill = document.createElement("span");
+  pill.className = "pill";
+  pill.innerHTML = `<span style="width:6px;height:6px;border-radius:3px;background:var(--dirty-stripe)"></span><span>${n} change${n === 1 ? "" : "s"}</span>`;
+  bar.append(pill, mk("Commit", "commit", "btn keep-label " + (prod ? "btn-careful" : "btn-primary"), () => commitChanges(t), kbd(prettyCombo(comboOf("commit")))), mk("Discard", "undo", "btn keep-label", () => discardChanges(t)));
 }
 
 function confirmSql(stmts: string[], title?: string): Promise<boolean> {
@@ -895,9 +917,9 @@ function setMode(t: Tab, mode: "data" | "structure") {
   t.bar?.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
   });
-  const dataOnly = ["+ Row", "− Row", "Commit", "Discard", "Filter"];
+  const dataOnly = ["+ Row", "− Row", "Filter"];
   if (mode === "structure" && t.filterBar?.open) t.filterBar.toggle();
-  t.bar?.querySelectorAll<HTMLElement>(".hint").forEach((h) => { h.style.display = mode === "data" ? "" : "none"; });
+  t.bar?.querySelectorAll<HTMLElement>(".hint, .data-only").forEach((h) => { h.style.display = mode === "data" ? "" : "none"; });
   t.bar?.querySelectorAll<HTMLElement>("button[data-label]").forEach((b) => { if (dataOnly.includes(b.dataset.label ?? "")) b.style.display = mode === "data" ? "" : "none"; });
   if (mode === "data") { t.gridWrap.replaceChildren(t.grid.el); t.grid.onChange(); return; }
   const conn = t.conn, name = t.table;
@@ -1868,7 +1890,7 @@ function openDatabasePicker() {
 
 function queryBar(tab: Tab): HTMLElement {
   const bar = document.createElement("div");
-  bar.className = "h-11 shrink-0 flex items-center gap-1 px-3 bg-canvas text-[13px]";
+  bar.className = "tbar h-11 shrink-0 flex items-center gap-1 px-3 bg-canvas text-[13px]";
   const b = (html: string, title: string, f: () => void, cls = "btn btn-ghost") => {
     const el = document.createElement("button");
     el.innerHTML = html; el.title = title; el.className = cls; el.onclick = f;
@@ -1879,7 +1901,7 @@ function queryBar(tab: Tab): HTMLElement {
   pill.className = "pill ml-auto";
   pill.innerHTML = tab.conn ? `<span style="width:7px;height:7px;border-radius:4px;background:${envColor(tab.conn.env)}"></span>${esc(tab.conn.name)}${tab.conn.db ? `<span class="text-muted"> / ${esc(tab.conn.db)}</span>` : ""}` : "No connection";
   bar.append(
-    b(`${icon("play", 13)}<span>Run</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘↵</span>`, "Run the selection or the statement under the cursor (⌘Enter). ⌘⇧Enter runs every statement.", () => { activate(tab); runActive(); }, "btn btn-primary"),
+    b(`${icon("play", 13)}<span>Run</span><span class="kbd" style="color:inherit;border-color:rgb(255 255 255 / .4);background:transparent">⌘↵</span>`, "Run the selection or the statement under the cursor (⌘Enter). ⌘⇧Enter runs every statement.", () => { activate(tab); runActive(); }, "btn btn-primary keep-label"),
     b(`${icon("stop", 13)}<span>Stop</span>`, "Cancel the running query (⌘.)", () => { activate(tab); cancelActive(); }),
     sep(),
     b(`${icon("plan", 14)}<span>Explain</span>`, "Show the query plan and suggestions (⌘E)", () => { activate(tab); explainActive(false); }),

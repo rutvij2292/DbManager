@@ -216,6 +216,9 @@ export class Grid {
     this.rows = new Set([this.total() - 1]); this.anchor = this.total() - 1; this.allRows = false;
     this.resize();
     this.body.scrollTop = this.body.scrollHeight;
+    this.activeCol = Math.max(0, this.editCols ? this.editCols.indexOf(true) : 0);
+    this.render();
+    this.body.focus({ preventScroll: true }); // Delete, arrows and typing now act on the new row
     this.onChange();
   }
   /** Is this a row that exists in the database (not a new, unsaved one)? */

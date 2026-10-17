@@ -131,6 +131,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .field-sm { height: 26px; padding: 0 8px; font-size: 13px; }
 .kbd { font-family: var(--font-mono); font-size: 11px; color: var(--muted); padding: 0 5px; border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--panel); }
 .pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: var(--r-pill); background: var(--raised); color: var(--soft); font-size: 12px; font-weight: 500; }
+/* Toolbars: labels collapse to icons when the main column is narrow (the width of #main, not the window) */
+#main { container: main / inline-size; }
+.tbar { overflow: hidden; }
+.tbar > .btn, .tbar > .seg { flex-shrink: 0; }
+.tbar > .pill { min-width: 0; flex-shrink: 1; overflow: hidden; white-space: nowrap; }
+@container main (max-width: 820px) {
+  .tbar .btn:not(.keep-label) > span:not(.kbd) { display: none; }
+  .tbar .btn:not(.keep-label) { padding: 0 8px; }
+  .tbar .btn .kbd, .tbar .hint { display: none; }
+}
 
 /* Segmented control */
 .seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--r-md); background: var(--raised); }

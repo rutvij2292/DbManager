@@ -162,6 +162,9 @@ impl Connection for MsConn {
         Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl: None, ..Default::default() })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
+        self.query_capped(sql, usize::MAX).await
+    }
+    async fn query_capped(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
         let start = Instant::now();
         let mut client = self.0.lock().await;
         let mut out = QueryResult::default();
@@ -170,7 +173,7 @@ impl Connection for MsConn {
             let sets = stream.into_results().await.map_err(DbError::msg)?;
             if let Some(rows) = sets.into_iter().find(|s| !s.is_empty()) {
                 out.columns = rows[0].columns().iter().map(|c| ColumnMeta { name: c.name().to_string(), type_name: format!("{:?}", c.column_type()).to_lowercase() }).collect();
-                out.rows = rows.into_iter().map(|r| r.into_iter().map(convert).collect()).collect();
+                out.rows = rows.into_iter().take(max_rows).map(|r| r.into_iter().map(convert).collect()).collect();
             }
         } else {
             let res = client.execute(sql, &[]).await.map_err(DbError::msg)?;

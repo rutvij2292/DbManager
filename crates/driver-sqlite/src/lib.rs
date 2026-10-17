@@ -25,7 +25,7 @@ fn quote_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
-fn run(c: &rusqlite::Connection, sql: &str) -> Result<QueryResult> {
+fn run(c: &rusqlite::Connection, sql: &str, max_rows: usize) -> Result<QueryResult> {
     let start = Instant::now();
     let mut stmt = c.prepare(sql).map_err(DbError::msg)?;
     let n = stmt.column_count();
@@ -52,6 +52,7 @@ fn run(c: &rusqlite::Connection, sql: &str) -> Result<QueryResult> {
             });
         }
         rows.push(out);
+        if rows.len() >= max_rows { break; }
     }
     Ok(QueryResult { columns, rows, affected: None, elapsed_ms: start.elapsed().as_millis() })
 }
@@ -233,9 +234,12 @@ impl Connection for SqliteConn {
         Ok(PlanNode { op: "Query".into(), children: build(0, &rows), ..Default::default() })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
+        self.query_capped(sql, usize::MAX).await
+    }
+    async fn query_capped(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
         let conn = self.0.clone();
         let sql = sql.to_string();
-        tokio::task::spawn_blocking(move || run(&conn.lock().unwrap(), &sql))
+        tokio::task::spawn_blocking(move || run(&conn.lock().unwrap(), &sql, max_rows))
             .await
             .map_err(DbError::msg)?
     }
@@ -255,6 +259,16 @@ mod tests {
         assert_eq!(c.objects().await.unwrap()[0].name, "t");
         let d = c.describe(None, "t").await.unwrap();
         assert!(d.columns[0].primary_key && !d.columns[1].nullable);
+    }
+
+    #[tokio::test]
+    async fn query_capped_stops_reading() {
+        let c = SqliteDriver.connect(&ConnConfig { kind: "sqlite".into(), ..Default::default() }).await.unwrap();
+        let sql = "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<1000000) SELECT i FROM c";
+        let r = c.query_capped(sql, 11).await.unwrap();
+        assert_eq!(r.rows.len(), 11, "one row past the cap tells the caller it was cut");
+        assert_eq!(c.query_capped(sql, 5000000).await.unwrap().rows.len(), 1_000_000);
+        assert_eq!(c.query("SELECT 1 WHERE 0").await.unwrap().rows.len(), 0);
     }
 
     #[tokio::test]

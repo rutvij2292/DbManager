@@ -198,6 +198,12 @@ pub trait Connection: Send + Sync {
     }
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo>;
     async fn query(&self, sql: &str) -> Result<QueryResult>;
+    /// Like `query`, but reads at most `max_rows` rows, so a `SELECT *` on a huge table never has to fit in memory.
+    /// Callers ask for one row more than they will show to learn that the result was cut. The default reads everything.
+    async fn query_capped(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
+        let _ = max_rows;
+        self.query(sql).await
+    }
     /// Stream the result of `sql` to `sink` in batches of up to `batch_rows` rows, so exports of
     /// huge tables use constant memory. The sink always sees the columns at least once (even for an
     /// empty result); returning `Ok(false)` stops early. Returns the number of rows delivered.

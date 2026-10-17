@@ -485,9 +485,11 @@ async fn run_query(state: State<'_, AppState>, conn_id: u64, sql: String) -> Res
     if !dbcore::is_read_only_sql(&sql) {
         state.writable(conn_id, "this statement")?;
     }
-    let mut r = state.conn(conn_id)?.query(&sql).await.map_err(|e| e.to_string())?;
+    // Ask for one row more than we keep: that is how we know the result was cut, without reading the rest of a huge table.
+    let mut r = state.conn(conn_id)?.query_capped(&sql, MAX_ROWS + 1).await.map_err(|e| e.to_string())?;
     let truncated = r.rows.len() > MAX_ROWS;
     r.rows.truncate(MAX_ROWS);
+    r.rows.shrink_to_fit();
     let query_id = state.id();
     let summary = QuerySummary {
         query_id,

@@ -20,7 +20,7 @@ for a in "$@"; do case "$a" in
   --check) CHECK=1 ;; --update) UPDATE=1 ;; --no-build) BUILD=0 ;;
   -*) echo "unknown option $a" >&2; exit 2 ;; *) WANT+=("$a") ;;
 esac; done
-ALL=(cold connected large_view large tabs20 wide10 after_close)
+ALL=(cold connected large_view large huge inspect find replace tabs20 wide10 after_close)
 [ ${#WANT[@]} -eq 0 ] && WANT=("${ALL[@]}")
 SETTLE="${SETTLE:-8}"
 OUT=bench/mem-latest.json

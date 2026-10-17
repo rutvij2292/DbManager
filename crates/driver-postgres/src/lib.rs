@@ -350,6 +350,9 @@ impl Connection for PgConn {
         Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl: None, index_details, foreign_keys })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
+        self.query_capped(sql, usize::MAX).await
+    }
+    async fn query_capped(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
         let start = Instant::now();
         // Column type names come from a prepare; this fails for multi-statement text, which is fine.
         let types: Vec<String> = match self.0.prepare(sql).await {
@@ -369,7 +372,10 @@ impl Connection for PgConn {
                             .map(|(i, c)| ColumnMeta { name: c.name().to_string(), type_name: types.get(i).cloned().unwrap_or_default() })
                             .collect();
                     }
-                    res.rows.push((0..row.len()).map(|i| convert(types.get(i).map(String::as_str).unwrap_or(""), row.get(i))).collect());
+                    // Rows past the cap are dropped unconverted (the protocol already buffered them as raw text).
+                    if res.rows.len() < max_rows {
+                        res.rows.push((0..row.len()).map(|i| convert(types.get(i).map(String::as_str).unwrap_or(""), row.get(i))).collect());
+                    }
                 }
                 SimpleQueryMessage::CommandComplete(n) => {
                     if res.columns.is_empty() {

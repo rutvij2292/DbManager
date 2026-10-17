@@ -94,7 +94,7 @@ impl Session for MySession {
     }
 }
 
-async fn run_on(conn: &mut mysql_async::Conn, sql: &str) -> Result<QueryResult> {
+async fn run_on(conn: &mut mysql_async::Conn, sql: &str, max_rows: usize) -> Result<QueryResult> {
     let mut result = conn.query_iter(sql).await.map_err(DbError::msg)?;
     let mut out = QueryResult::default();
     out.columns = result
@@ -106,8 +106,11 @@ async fn run_on(conn: &mut mysql_async::Conn, sql: &str) -> Result<QueryResult> 
         out.affected = Some(result.affected_rows());
     } else {
         let types: Vec<ColumnType> = result.columns_ref().iter().map(|c| c.column_type()).collect();
-        let rows: Vec<mysql_async::Row> = result.collect().await.map_err(DbError::msg)?;
-        out.rows = rows.into_iter().map(|r| r.unwrap().into_iter().zip(&types).map(|(v, t)| convert_col(v, *t)).collect()).collect();
+        // One row at a time: no second, raw copy of the whole result, and reading stops at the cap.
+        while let Some(r) = result.next().await.map_err(DbError::msg)? {
+            out.rows.push(r.unwrap().into_iter().zip(&types).map(|(v, t)| convert_col(v, *t)).collect());
+            if out.rows.len() >= max_rows { break; }
+        }
     }
     Ok(out)
 }
@@ -181,11 +184,14 @@ impl Connection for MyConn {
         Ok(ObjectInfo { columns, indexes: idx.rows.iter().map(|r| r[0].display()).collect(), ddl, index_details, foreign_keys })
     }
     async fn query(&self, sql: &str) -> Result<QueryResult> {
+        self.query_capped(sql, usize::MAX).await
+    }
+    async fn query_capped(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
         let start = Instant::now();
         let mut conn = self.pool.get_conn().await.map_err(DbError::msg)?;
         let tid = conn.id();
         self.running.lock().unwrap().push(tid);
-        let res = run_on(&mut conn, sql).await;
+        let res = run_on(&mut conn, sql, max_rows).await;
         self.running.lock().unwrap().retain(|t| *t != tid);
         let mut out = res?;
         out.elapsed_ms = start.elapsed().as_millis();

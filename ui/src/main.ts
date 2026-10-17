@@ -37,6 +37,7 @@ import { analyzeSelect, resolveEdit } from "./resultedit";
 import { pushHistory, loadSaved, findFavorite, addFavorite, renameQuery, deleteQuery, loadDrafts, saveDraft, removeDraft, dropLegacyHistory, type HistoryItem } from "./qstore";
 import { clickSelect, type Selection } from "./selection";
 import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, truncateTablesSql, dropTablesSql, promptName, confirmDanger } from "./dbadmin";
+import { touchRecent, sortByRecent, type Used } from "./recent";
 import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
 
 /**
@@ -178,6 +179,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 /** A key hint inside a coloured button (Commit ⌘S). */
 const kbd = (x: string) => `<span class="kbd" style="color:inherit;border-color:currentColor;opacity:.7;background:transparent">${x}</span>`;
 
+const freshTabs = new Set<number>(); // tabs that still owe their one-time entry animation
 function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | null = conn): Tab {
   const root = document.createElement("div");
   root.className = "h-full flex flex-col min-h-0";
@@ -377,6 +379,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
   }
   root.append(gridWrap, statusBar);
   tabs.push(tab);
+  freshTabs.add(tab.id);
   activate(tab); // also switches the workspace to this tab's connection
   tab.editor?.focus();
   return tab;
@@ -481,6 +484,7 @@ function renderTabs() {
       const on = t === active;
       const d = document.createElement("div");
       d.className = "group tab";
+      if (freshTabs.delete(t.id)) d.classList.add("tab-new");
       d.setAttribute("role", "tab");
       d.dataset.tab = String(t.id);
       if (t.grid.pendingCount) d.dataset.dirty = "true";
@@ -499,15 +503,18 @@ function renderTabs() {
       dot.setAttribute("aria-hidden", "true");
       d.append(dot, x);
       d.onclick = () => activate(t);
+      if (on) requestAnimationFrame(() => d.scrollIntoView({ inline: "nearest", block: "nearest" }));
       d.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); }; // no autoscroll on middle-click
       d.onauxclick = (e) => { if (e.button === 1) askCloseTab(t); };
       return d;
     }),
   );
+  fadeTabs();
   renderRail();
   renderObjects();
   renderLog();
 }
+const fadeTabs = () => { const el = $("tabs"); el.classList.toggle("fade-end", el.scrollLeft + el.clientWidth < el.scrollWidth - 1); };
 
 // ---------- connection rail: the narrow strip at the far left that switches between connections ----------
 /** Database name, numbered when the same database is open more than once on a connection. */
@@ -1305,19 +1312,20 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
     d.style.setProperty("--hue", o.hue ?? "var(--accent)");
     d.dataset.env = o.env ?? "local";
     d.innerHTML = chev + (o.badge ?? "") +
-      `<span class="min-w-0 flex-1"><span class="block truncate font-semibold text-[14px] leading-tight">${esc(o.label)}</span><span class="block truncate text-[12px] text-muted">${esc(o.sub ?? "")}</span></span>` +
+      `<span class="min-w-0 flex-1"><span class="block truncate font-semibold text-[13px] leading-tight">${esc(o.label)}</span><span class="block truncate text-[12px] text-muted">${esc(o.sub ?? "")}</span></span>` +
       (o.env && o.env !== "local" ? `<span class="pill shrink-0 group-hover:hidden" style="color:${envColor(o.env)};background:color-mix(in srgb, ${envColor(o.env)} 13%, transparent)">${esc(o.env)}</span>` : "");
   } else {
-    const h = o.level === 1 ? 32 : o.level === 2 ? 28 : 30;
+    const h = ({ 1: 30, 2: 24, 3: 26 } as Record<number, number>)[o.level] ?? 26;
     d.className = "group tree-row flex items-center gap-1.5 pr-1.5 select-none";
     d.style.height = h + "px";
-    d.style.paddingLeft = 6 + (o.level - 1) * 16 + "px";
+    d.style.paddingLeft = ({ 1: 6, 2: 14, 3: 28 } as Record<number, number>)[o.level] + "px";
     if (o.active) d.setAttribute("aria-current", "true");
     if (o.selected) d.dataset.selected = "true";
     if (o.name !== undefined) d.dataset.name = o.name;
-    d.innerHTML = chev + `<span class="${o.active ? "" : "text-muted"} shrink-0">${icon(o.ic, 15)}</span>` +
-      `<span class="min-w-0 flex-1 truncate ${o.level === 2 ? "text-soft font-medium text-[13px]" : ""} ${o.level === 1 ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}</span>` +
-      (o.count !== undefined ? `<span class="text-muted text-[12px] shrink-0 group-hover:hidden">${o.count}</span>` : "");
+    const grp = o.level === 2; // kind group header: a small caps label, no icon
+    d.innerHTML = chev + (grp ? "" : `<span class="${o.active ? "" : "text-muted"} shrink-0">${icon(o.ic, 15)}</span>`) +
+      `<span class="min-w-0 flex-1 truncate ${grp ? "text-[11px] font-semibold uppercase tracking-wide text-muted" : ""} ${o.level === 1 ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}</span>` +
+      (o.count !== undefined ? `<span class="text-muted ${grp ? "text-[11px]" : "text-[12px]"} shrink-0 group-hover:hidden">${o.count}</span>` : "");
   }
   if (o.title) d.title = o.title;
   if (o.actions?.length) {
@@ -1607,7 +1615,7 @@ function renderObjects() {
     const first = s.conns[0];
     frag.append(treeRow({
       level: 0, ic: "plug", label: s.name, hue: engineVar(s.kind), env: s.env, sub: [ENGINE_NAMES[s.kind] ?? s.kind, s.conns.length > 1 ? `${s.conns.length} databases` : s.conns[0]?.db].filter(Boolean).join(" · "), strong: true,
-      badge: engineBadge(s.kind, 28), chevron: sOpen ? "open" : "shut", title: `${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}`,
+      badge: engineBadge(s.kind, 22), chevron: sOpen ? "open" : "shut", title: `${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}`,
       click: () => { if (first) conn = first; sOpen ? collapsed.add(sKey) : collapsed.delete(sKey); renderObjects(); },
       menu: (x, y) => serverMenu(s, x, y),
       actions: [{ ic: "plus", title: s.dbs.length ? "Open a database" : "New query", fn: () => (s.dbs.length ? pickAndOpen(s) : makeTab("query", "Query", undefined, s.conns[0] ?? null)) }, { ic: "close", title: "Disconnect", fn: () => askDisconnect(s) }],
@@ -1700,6 +1708,7 @@ async function addDatabase(s: Server, connId: number, db: string | null): Promis
   conn = c;
   activeServer = s; launcherOpen = false;
   collapsed.delete("s:" + s.id); collapsed.delete("d:" + c.id);
+  for (const k of ROUTINE_KINDS) collapsed.add(`g:${c.id}:${k}`); // routine groups start collapsed
   renderObjects();
   refreshDatabase(c);
   // Query tabs left open last time come back (not when the same database is already open in another workspace).
@@ -2006,7 +2015,7 @@ async function showLauncher() {
     rows.innerHTML = `<div class="card px-6 py-10 text-center"><div class="inline-flex text-muted mb-2">${icon("database", 28)}</div>
       <div class="text-[16px] font-semibold">No saved connections yet</div><div class="text-soft mt-1">Add a connection, or import the ones you already have.</div></div>`;
   }
-  const sorted = [...profiles].sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = sortByRecent(profiles, readUsed());
   const tagList = [...new Set(sorted.flatMap((p) => p.tags ?? []))].sort((a, b) => a.localeCompare(b));
   const untagged = sorted.filter((p) => !p.tags?.length);
   if (launcherTag !== "all" && launcherTag !== "__none" && !tagList.includes(launcherTag)) launcherTag = "all";
@@ -2023,10 +2032,10 @@ async function showLauncher() {
     const edge = p.environment === "production" ? `<span class="absolute inset-y-0 left-0" style="width:4px;background:repeating-linear-gradient(135deg,var(--env-production) 0 3px,transparent 3px 6px);opacity:.8"></span>` : p.environment === "staging" ? `<span class="absolute inset-y-0 left-0" style="width:3px;background:var(--env-staging)"></span>` : "";
     const live = servers.find((sv) => sv.id === p.id);
     row.innerHTML = `${edge}${engineBadge(p.kind, 42)}
-      <div class="min-w-0 flex-1"><div class="font-semibold text-[15px] truncate">${esc(p.name)}</div><div class="mono text-[12px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div>
+      <div class="min-w-0 flex-1"><div class="flex items-center gap-1.5"><span class="font-semibold text-[15px] truncate">${esc(p.name)}</span>${live ? `<span title="Connected" class="shrink-0" style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>` : ""}</div><div class="mono text-[12px] text-muted truncate">${esc(where)}${p.ssh_host ? " · via SSH" : ""}</div>
         ${p.tags?.length ? `<div class="flex gap-1.5 mt-1.5 overflow-hidden">${p.tags.slice(0, 3).map((t) => tagChip(t)).join("")}${p.tags.length > 3 ? `<span class="text-muted text-[12px] leading-5">+${p.tags.length - 3}</span>` : ""}</div>` : ""}</div>
-      <div class="relative shrink-0 self-start mt-3.5" style="width:96px;height:30px">
-        ${live ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:var(--ok);background:var(--ok-soft)"><span style="width:6px;height:6px;border-radius:3px;background:var(--ok)"></span>connected</span>` : p.environment && p.environment !== "local" ? `<span class="pill absolute right-0 top-[5px] group-hover:opacity-0" style="color:${envColor(p.environment)};background:color-mix(in srgb, ${envColor(p.environment)} 13%, transparent)">${esc(p.environment)}</span>` : ""}
+      <div class="relative shrink-0 self-start mt-3.5" style="width:128px;height:30px">
+        <span class="absolute right-0 top-[5px] h-[20px] flex items-center gap-1.5 group-hover:opacity-0">${p.environment && p.environment !== "local" ? `<span class="pill" style="color:${envColor(p.environment)};background:color-mix(in srgb, ${envColor(p.environment)} 13%, transparent)">${esc(p.environment)}</span>` : ""}<span class="text-muted inline-flex">${icon("chevron", 16)}</span></span>
         <button class="btn btn-primary absolute right-0 top-0 opacity-0 group-hover:opacity-100 focus:opacity-100">${live ? "Open" : "Connect"}</button>
       </div>`;
     const go = async () => {
@@ -2092,9 +2101,12 @@ async function showLauncher() {
   (wrap.querySelector("#newconn") as HTMLElement).onclick = openConnections;
 }
 
+const readUsed = (): Used => { try { return JSON.parse(localStorage.getItem("tabnix.lastUsed") || "{}") || {}; } catch { return {}; } };
 async function connectProfile(p: Profile) {
-  if (servers.some((sv) => sv.id === p.id)) return useConnection(-1, p); // already connected: just go there
+  const stamp = () => { try { localStorage.setItem("tabnix.lastUsed", JSON.stringify(touchRecent(readUsed(), p.id, Date.now()))); } catch { /* storage full or blocked */ } };
+  if (servers.some((sv) => sv.id === p.id)) { stamp(); return useConnection(-1, p); } // already connected: just go there
   const id = await api.connectSaved(p.id);
+  stamp();
   await useConnection(id, p);
 }
 
@@ -2229,6 +2241,12 @@ async function cancelActive() {
   t.status.textContent = "Cancelling…";
   try { await api.cancelQuery(t.conn.id); } catch (e) { t.status.textContent = "Cancel failed: " + e; }
 }
+
+// Tab overflow fade, and dimming of selection colours while the window is in the background
+$("tabs").addEventListener("scroll", fadeTabs, { passive: true });
+new ResizeObserver(fadeTabs).observe($("tabs"));
+addEventListener("blur", () => document.documentElement.classList.add("inactive"));
+addEventListener("focus", () => document.documentElement.classList.remove("inactive"));
 
 // Keyboard shortcuts (TablePlus-style)
 window.addEventListener("keydown", (e) => {

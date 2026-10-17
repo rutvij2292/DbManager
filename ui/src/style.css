@@ -152,11 +152,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .dark .seg > button[aria-pressed="true"] { background: var(--raised2); }
 
 /* Sidebar */
-.srv-card { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 0 8px 0 10px; margin: 4px 0 6px; border-radius: var(--r-lg); background: color-mix(in srgb, var(--hue) 9%, var(--panel)); border: 1px solid color-mix(in srgb, var(--hue) 20%, transparent); position: relative; overflow: hidden; cursor: default; }
+.srv-card { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 8px 0 10px; margin: 2px 0 4px; border-radius: var(--r-lg); background: color-mix(in srgb, var(--hue) 9%, var(--panel)); border: 1px solid color-mix(in srgb, var(--hue) 20%, transparent); position: relative; overflow: hidden; cursor: default; }
 .srv-card[data-env="staging"] { box-shadow: inset 3px 0 0 var(--env-staging); }
 .srv-card[data-env="production"]::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: repeating-linear-gradient(135deg, var(--env-production) 0 3px, transparent 3px 6px); opacity: .75; }
 .glyph { display: inline-grid; place-items: center; flex: none; background: var(--hue); color: #fff; font-weight: 600; box-shadow: inset 0 1px 0 rgb(255 255 255/.25); }
 .dark .glyph { color: #0e1418; }
+#objects { font-size: 13px; }
 .tree-row { border-radius: var(--r-md); color: var(--ink); }
 .tree-row:hover { background: var(--raised); }
 .tree-row[aria-current="true"] { background: var(--accent-soft); font-weight: 500; box-shadow: inset 3px 0 0 var(--accent); }
@@ -168,8 +169,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 /* Tabs */
 .tab { height: 32px; padding: 0 8px 0 12px; margin-top: 8px; border-radius: 8px 8px 0 0; font-size: 13px; color: var(--soft); display: flex; align-items: center; gap: 7px; position: relative; flex: none; max-width: 240px; cursor: default; }
+.tab:not([aria-selected="true"]) { background: color-mix(in srgb, var(--panel) 35%, transparent); }
 .tab:hover { background: var(--raised); }
-.tab[aria-selected="true"] { background: var(--panel); color: var(--ink); font-weight: 500; box-shadow: var(--shadow-1); animation: tab-in .24s var(--ease-spring); }
+.tab[aria-selected="true"] { background: var(--panel); color: var(--ink); font-weight: 500; box-shadow: var(--shadow-1); }
+.tab.tab-new { animation: tab-in .24s var(--ease-spring); }
+#tabs.fade-end { -webkit-mask-image: linear-gradient(90deg,#000 calc(100% - 24px),transparent); mask-image: linear-gradient(90deg,#000 calc(100% - 24px),transparent); }
 .tab[aria-selected="true"]::before { content: ""; position: absolute; left: 8px; right: 8px; top: 0; height: 2px; border-radius: 0 0 2px 2px; background: var(--hue, var(--accent)); }
 .tab-dot { display: none; width: 6px; height: 6px; margin: 0 7px; border-radius: 3px; background: var(--dirty-stripe); flex: none; }
 .tab[data-dirty="true"] .tab-dot { display: block; }
@@ -217,3 +221,8 @@ body { background: transparent; }
 .cm-panel.cm-search label { color: var(--soft); }
 .cm-searchMatch { background: color-mix(in srgb, var(--warn) 28%, transparent); }
 .cm-searchMatch.cm-searchMatch-selected { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+/* ---------- Entry motion and inactive window ---------- */
+.dlg, #ctx, #palette > div { transition: opacity .12s var(--ease-out), transform .12s var(--ease-out); }
+@starting-style { .dlg, #ctx, #palette > div { opacity: 0; transform: scale(.98); } }
+.inactive { --sel: var(--raised2); --accent-soft: var(--raised); }

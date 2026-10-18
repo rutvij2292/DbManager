@@ -50,6 +50,7 @@ export const api = {
     invoke<string[]>("apply_structure", { connId, schema, table, changes, preview }),
   tableplusScan: () => invoke<TpEntry[]>("tableplus_scan"),
   tableplusImport: (ids: string[], passwords: boolean) => invoke<{ imported: number; passwords_copied: number; passwords_missing: number }>("tableplus_import", { ids, passwords }),
+  databaseSizes: (connId: number) => invoke<Record<string, number>>("list_database_sizes", { connId }),
   listDatabases: (connId: number) => invoke<string[]>("list_databases", { connId }),
   openDatabase: (connId: number, database: string) => invoke<number>("open_database", { connId, database }),
   switchDatabase: (connId: number, database: string) => invoke<void>("switch_database", { connId, database }),

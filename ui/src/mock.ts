@@ -93,6 +93,7 @@ const handlers: Record<string, (a: any) => unknown> = {
   connect_saved: (a) => { const id = nextId++; dbOf.set(id, profiles.find((p) => p.id === a.id)?.database ?? null); profOf.set(id, a.id); return id; },
   open_database: (a) => { const id = nextId++; dbOf.set(id, a.database); profOf.set(id, profOf.get(a.connId) ?? ""); return id; },
   list_databases: (a) => { const k = profiles.find((p) => p.id === profOf.get(a.connId))?.kind; return k === "mysql" ? ["analytics", "information_schema", "mysql", "performance_schema", "shop", "shop_staging", "sys"] : k === "postgres" ? ["billing", "postgres", "warehouse"] : []; },
+  list_database_sizes: (a) => { const k = profiles.find((p) => p.id === profOf.get(a.connId))?.kind; return k === "mysql" ? { analytics: 5.2e9, information_schema: 0, mysql: 2.5e6, performance_schema: 0, shop: 1.4e9, shop_staging: 8.2e8, sys: 16384 } : k === "postgres" ? { billing: 3.1e8, postgres: 8.6e6, warehouse: 2.2e10 } : {}; },
   switch_database: () => null,
   connect: () => 1,
   test_connection: () => null,

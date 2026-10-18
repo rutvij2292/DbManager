@@ -137,6 +137,10 @@ impl Connection for MsConn {
         let r = self.query("SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1 ORDER BY name").await?;
         Ok(r.rows.iter().map(|r| r[0].display()).collect())
     }
+    async fn database_sizes(&self) -> Result<Vec<(String, u64)>> {
+        let r = self.query("SELECT d.name, SUM(CAST(f.size AS BIGINT)) * 8192 FROM sys.master_files f JOIN sys.databases d ON d.database_id = f.database_id GROUP BY d.name").await?;
+        Ok(dbcore::name_sizes(&r))
+    }
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo> {
         let schema = schema.unwrap_or("dbo");
         let cols = self.query(&format!(

@@ -1793,7 +1793,7 @@ async function useConnection(id: number, p: Profile) {
 /** Choose a database on a server and open it as its own workspace (also one that is already open: a second, independent workspace). */
 async function pickAndOpen(s: Server) {
   if (!s.dbs.length) return;
-  const chosen = await pickDatabase(s.dbs, null, new Set(s.conns.map((c) => c.db ?? "")));
+  const chosen = await pickDatabase(s.dbs, null, new Set(s.conns.map((c) => c.db ?? "")), api.databaseSizes(s.rootId));
   if (chosen) openDatabaseOn(s, chosen, s.conns.some((c) => c.db === chosen));
 }
 

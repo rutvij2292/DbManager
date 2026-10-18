@@ -156,6 +156,10 @@ impl Connection for MongoConn {
         names.sort();
         Ok(names)
     }
+    async fn database_sizes(&self) -> Result<Vec<(String, u64)>> {
+        let specs = self.client.list_databases().await.map_err(DbError::msg)?;
+        Ok(specs.into_iter().map(|d| (d.name, d.size_on_disk)).collect())
+    }
     async fn objects(&self) -> Result<Vec<ObjectRef>> {
         let mut names = self.db.list_collection_names().await.map_err(DbError::msg)?;
         names.sort();

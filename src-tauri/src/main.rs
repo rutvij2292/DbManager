@@ -295,6 +295,12 @@ async fn connect_saved(app: tauri::AppHandle, state: State<'_, AppState>, id: St
     Ok(cid)
 }
 
+/// On-disk size in bytes per database on this connection's server.
+#[tauri::command]
+async fn list_database_sizes(state: State<'_, AppState>, conn_id: u64) -> Result<HashMap<String, u64>, String> {
+    Ok(state.conn(conn_id)?.database_sizes().await.map_err(|e| e.to_string())?.into_iter().collect())
+}
+
 /// Databases available on this connection's server.
 #[tauri::command]
 async fn list_databases(state: State<'_, AppState>, conn_id: u64) -> Result<Vec<String>, String> {
@@ -634,7 +640,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, list_routines, object_definition, set_read_only, run_query, run_statements, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, list_database_sizes, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, list_routines, object_definition, set_read_only, run_query, run_statements, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Tabnix");
 }

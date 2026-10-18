@@ -187,6 +187,11 @@ pub struct ConnConfig {
     pub ssh_key: Option<String>,
 }
 
+/// Rows of `(name, size)` from a size query; sizes may come back as integers, decimals or text.
+pub fn name_sizes(r: &QueryResult) -> Vec<(String, u64)> {
+    r.rows.iter().map(|row| (row[0].display(), row[1].display().parse::<f64>().map_or(0, |f| f as u64))).collect()
+}
+
 #[async_trait]
 pub trait Connection: Send + Sync {
     fn dialect(&self) -> &'static str;
@@ -194,6 +199,10 @@ pub trait Connection: Send + Sync {
     async fn objects(&self) -> Result<Vec<ObjectRef>>;
     /// Databases on the server this connection can open (empty when the engine has no such notion).
     async fn databases(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    /// On-disk size in bytes of each database on the server (empty when the engine can't tell).
+    async fn database_sizes(&self) -> Result<Vec<(String, u64)>> {
         Ok(vec![])
     }
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo>;

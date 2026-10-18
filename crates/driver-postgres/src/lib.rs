@@ -307,6 +307,10 @@ impl Connection for PgConn {
         let r = self.query("SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname").await?;
         Ok(r.rows.iter().map(|r| r[0].display()).collect())
     }
+    async fn database_sizes(&self) -> Result<Vec<(String, u64)>> {
+        let r = self.query("SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistemplate AND datallowconn").await?;
+        Ok(dbcore::name_sizes(&r))
+    }
     async fn describe(&self, schema: Option<&str>, name: &str) -> Result<ObjectInfo> {
         let schema = schema.unwrap_or("public");
         let cols = self.query(&format!(

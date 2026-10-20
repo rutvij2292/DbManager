@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatRows, nextSelection } from "../.test-build/copyfmt.mjs";
+import { extendRange, formatRows, nextSelection } from "../.test-build/copyfmt.mjs";
 
 const T = (v) => ({ t: "Text", v }), I = (v) => ({ t: "I64", v }), N = { t: "Null" };
 const rows = [[I(1), T('a "q", b'), N], [I(2), T("it's\nnew"), { t: "Bool", v: true }]];
@@ -42,4 +42,22 @@ test("selection: click, toggle, range", () => {
   assert.deepEqual([...s.rows].sort(), [3, 4, 6]);
   s = nextSelection(s.rows, 9, 7, "range");
   assert.deepEqual([...s.rows].sort(), [7, 8, 9]);
+});
+
+test("Shift+Arrow grows the range from a fixed anchor, and shrinks it back", () => {
+  let s = extendRange(2, 2, 1, 10);
+  assert.deepEqual([...s.rows], [2, 3]);
+  s = extendRange(2, s.cursor, 1, 10);
+  assert.deepEqual([...s.rows], [2, 3, 4]);
+  s = extendRange(2, s.cursor, -1, 10);
+  assert.deepEqual([...s.rows], [2, 3]);
+  s = extendRange(2, 2, -1, 10);
+  assert.deepEqual([...s.rows], [1, 2]);
+  assert.equal(s.cursor, 1);
+});
+
+test("Shift+Arrow stops at the first and last row", () => {
+  assert.deepEqual([...extendRange(0, 0, -1, 5).rows], [0]);
+  assert.deepEqual([...extendRange(3, 4, 1, 5).rows], [3, 4]);
+  assert.equal(extendRange(3, 4, 1, 5).cursor, 4);
 });

@@ -1,7 +1,7 @@
 import { api, show, type Summary, type Val } from "./api";
 import type { SortKey } from "./builder-sql";
 import { PageCache } from "./pagecache";
-import { nextSelection } from "./copyfmt";
+import { extendRange, nextSelection } from "./copyfmt";
 
 const ROW_H = 30, PAGE = 200, MIN_W = 80, GUTTER = 52;
 /** Pages kept in memory (~2,400 rows); older ones are dropped and fetched again from Rust if scrolled back to. */
@@ -37,6 +37,8 @@ export class Grid {
   /** Selected rows (click, ⌘-click toggles, Shift-click ranges, ⌘A all). `anchor` is the row ranges grow from. */
   private rows = new Set<number>();
   private anchor = -1;
+  /** The moving end of a Shift+Arrow range (equals `anchor` when no range is being grown). */
+  private cursor = -1;
   /** Column of the active cell (the outlined one); its row is `anchor`. */
   private activeCol = -1;
   private allRows = false;
@@ -110,10 +112,16 @@ export class Grid {
   }
 
   /** Move the active cell (and select its row). */
-  private move(dr: number, dc: number) {
+  private move(dr: number, dc: number, extend = false) {
     const n = this.total(), cols = this.summary?.columns.length ?? 0;
     if (!n || !cols) return;
     const first = this.anchor < 0 || this.activeCol < 0;
+    if (extend && dr && !first) {
+      const e = extendRange(this.anchor, this.cursor < 0 ? this.anchor : this.cursor, dr, n);
+      this.reveal(e.cursor, this.activeCol);
+      this.setSelection(e.rows, this.anchor, false, e.cursor);
+      return;
+    }
     const r = first ? Math.max(0, this.anchor) : Math.min(n - 1, Math.max(0, this.anchor + dr));
     this.activeCol = first ? Math.max(0, this.activeCol) : Math.min(cols - 1, Math.max(0, this.activeCol + dc));
     this.reveal(r, this.activeCol);
@@ -132,7 +140,7 @@ export class Grid {
     if (e.target !== this.body || !this.summary) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
-    if (arrows[e.key]) { e.preventDefault(); this.move(...arrows[e.key]); }
+    if (arrows[e.key]) { e.preventDefault(); this.move(...arrows[e.key], e.shiftKey); }
     else if (e.key === "Tab") { e.preventDefault(); this.move(0, e.shiftKey ? -1 : 1); }
     else if ((e.key === "Delete" || e.key === "Backspace") && this.selectedCount > 0 && this.onDeleteKey) { e.preventDefault(); this.onDeleteKey(); }
     else if (e.key === "Enter" || e.key === "F2") { if (this.anchor >= 0 && this.activeCol >= 0 && this.canEditCell(this.activeCol)) { e.preventDefault(); this.startEdit(this.anchor, this.activeCol); } else if (e.key === "Enter") this.move(1, 0); }
@@ -165,8 +173,8 @@ export class Grid {
     this.reveal(r, c);
     this.setSelection(new Set([r]), r);
   }
-  private setSelection(rows: Set<number>, anchor: number, all = false) {
-    this.rows = rows; this.anchor = anchor; this.allRows = all;
+  private setSelection(rows: Set<number>, anchor: number, all = false, cursor = anchor) {
+    this.rows = rows; this.anchor = anchor; this.cursor = cursor; this.allRows = all;
     this.render();
     this.onSelect();
     this.onActive();
@@ -174,7 +182,7 @@ export class Grid {
   pick(r: number, mode: "single" | "toggle" | "range") {
     const cur = this.allRows ? new Set(this.selectedRows()) : this.rows;
     const n = nextSelection(cur, this.anchor, r, mode);
-    this.setSelection(n.rows, n.anchor);
+    this.setSelection(n.rows, n.anchor, false, r);
   }
   selectAll() { if (this.total()) this.setSelection(new Set(), 0, true); }
   clearSelection() { if (this.anchor >= 0 || this.rows.size || this.allRows) this.setSelection(new Set(), -1); }
@@ -229,7 +237,7 @@ export class Grid {
   addRow() {
     if (!this.summary) return;
     this.inserted.push(this.summary.columns.map(() => ({ t: "Null" }) as Val));
-    this.rows = new Set([this.total() - 1]); this.anchor = this.total() - 1; this.allRows = false;
+    this.rows = new Set([this.total() - 1]); this.anchor = this.cursor = this.total() - 1; this.allRows = false;
     this.resize();
     this.body.scrollTop = this.body.scrollHeight;
     this.activeCol = Math.max(0, this.editCols ? this.editCols.indexOf(true) : 0);
@@ -255,7 +263,7 @@ export class Grid {
     }
     if (fresh.length) {
       for (const r of fresh.sort((a, b) => b - a)) this.inserted.splice(r - n, 1);
-      this.rows = new Set(saved); this.anchor = saved[0] ?? -1; this.allRows = false;
+      this.rows = new Set(saved); this.anchor = this.cursor = saved[0] ?? -1; this.allRows = false;
       this.resize();
     }
     this.render();
@@ -423,7 +431,7 @@ export class Grid {
     this.head.style.display = s ? "" : "none";
     this.cache.clear();
     this.loading.clear();
-    this.rows = new Set(); this.anchor = -1; this.activeCol = -1; this.allRows = false;
+    this.rows = new Set(); this.anchor = -1; this.cursor = -1; this.activeCol = -1; this.allRows = false;
     this.head.innerHTML = "";
     this.rowsLayer.innerHTML = "";
     this.body.scrollTop = 0;

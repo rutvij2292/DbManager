@@ -80,3 +80,11 @@ export function nextSelection(current: ReadonlySet<number>, anchor: number, row:
   for (let i = a; i <= b; i++) rows.add(i);
   return { rows, anchor };
 }
+
+/** Shift+↑/↓: the range from the fixed `anchor` to the moving `cursor` row after it steps by `dr`, clamped to `total` rows. */
+export function extendRange(anchor: number, cursor: number, dr: number, total: number): { rows: Set<number>; cursor: number } {
+  const to = Math.min(total - 1, Math.max(0, cursor + dr));
+  const rows = new Set<number>();
+  for (let i = Math.min(anchor, to); i <= Math.max(anchor, to); i++) rows.add(i);
+  return { rows, cursor: to };
+}

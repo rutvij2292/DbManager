@@ -574,8 +574,8 @@ function renderRail() {
     b.setAttribute("aria-label", `${label} on ${s.name}${on ? " (current)" : ""}`);
     b.title = `${s.name}${c?.db ? ` / ${label}` : ""} · ${ENGINE_NAMES[s.kind] ?? s.kind}${s.env && s.env !== "local" ? " · " + s.env : ""}\n${c ? `${n} tab${n === 1 ? "" : "s"}` : "no database open"}`;
     b.innerHTML = engineBadge(s.kind, 36) +
-      `<span class="text-[11px] leading-[1.15] text-center w-full truncate text-muted">${esc(s.name)}</span>` +
-      (c?.db ? `<span class="text-[11px] leading-[1.15] text-center w-full truncate -mt-0.5 ${on ? "text-ink font-medium" : "text-soft"}">${esc(label)}</span>` : "") +
+      `<span class="text-[12px] leading-[1.15] text-center w-full truncate text-muted">${esc(s.name)}</span>` +
+      (c?.db ? `<span class="text-[12px] leading-[1.15] text-center w-full truncate -mt-0.5 ${on ? "text-ink font-medium" : "text-soft"}">${esc(label)}</span>` : "") +
       (on ? `<span class="absolute" style="left:-7px;top:18px;width:4px;height:24px;border-radius:0 3px 3px 0;background:var(--hue-active,var(--accent))"></span>` : "") +
       (s.env && s.env !== "local" ? `<span class="absolute" style="right:7px;top:5px;width:10px;height:10px;border-radius:5px;background:${envColor(s.env)};border:2px solid var(--panel)"></span>` : "") +
       (n > 1 ? `<span class="absolute text-[11px] font-semibold rounded-full bg-raised2 text-soft" style="right:4px;top:30px;min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 4px">${n}</span>` : "");
@@ -1365,10 +1365,10 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
     d.style.setProperty("--hue", o.hue ?? "var(--accent)");
     d.dataset.env = o.env ?? "local";
     d.innerHTML = chev + (o.badge ?? "") +
-      `<span class="min-w-0 flex-1"><span class="block truncate font-semibold text-[13px] leading-tight">${esc(o.label)}</span><span class="block truncate text-[12px] text-muted">${esc(o.sub ?? "")}</span></span>` +
+      `<span class="min-w-0 flex-1"><span class="block truncate font-semibold text-[15px] leading-tight">${esc(o.label)}</span><span class="block truncate text-[13px] text-muted">${esc(o.sub ?? "")}</span></span>` +
       (o.env && o.env !== "local" ? `<span class="pill shrink-0 group-hover:hidden" style="color:${envColor(o.env)};background:color-mix(in srgb, ${envColor(o.env)} 13%, transparent)">${esc(o.env)}</span>` : "");
   } else {
-    const h = ({ 1: 30, 2: 24, 3: 26 } as Record<number, number>)[o.level] ?? 26;
+    const h = ({ 1: 32, 2: 26, 3: 28 } as Record<number, number>)[o.level] ?? 28;
     d.className = "group tree-row flex items-center gap-1.5 pr-1.5 select-none";
     d.style.height = h + "px";
     d.style.paddingLeft = ({ 1: 6, 2: 14, 3: 28 } as Record<number, number>)[o.level] + "px";
@@ -1377,8 +1377,8 @@ function treeRow(o: RowOpts & { hue?: string; env?: string | null }): HTMLElemen
     if (o.name !== undefined) d.dataset.name = o.name;
     const grp = o.level === 2; // kind group header: a small caps label, no icon
     d.innerHTML = chev + (grp ? "" : `<span class="${o.active ? "" : "text-muted"} shrink-0">${icon(o.ic, 15)}</span>`) +
-      `<span class="min-w-0 flex-1 truncate ${grp ? "text-[11px] font-semibold uppercase tracking-wide text-muted" : ""} ${o.level === 1 ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}</span>` +
-      (o.count !== undefined ? `<span class="text-muted ${grp ? "text-[11px]" : "text-[12px]"} shrink-0 group-hover:hidden">${o.count}</span>` : "");
+      `<span class="min-w-0 flex-1 truncate ${grp ? "text-[12px] font-semibold uppercase tracking-wide text-muted" : ""} ${o.level === 1 ? "font-medium" : ""} ${o.muted ? "text-muted" : ""}">${esc(o.label)}</span>` +
+      (o.count !== undefined ? `<span class="text-muted ${grp ? "text-[12px]" : "text-[13px]"} shrink-0 group-hover:hidden">${o.count}</span>` : "");
   }
   if (o.title) d.title = o.title;
   if (o.actions?.length) {
@@ -1491,7 +1491,7 @@ function openQueryTab(c: Conn, sql: string, title = "Query", draftId?: string) {
 
 function sideHeader(title: string, action?: { label: string; fn: () => void }): HTMLElement {
   const h = document.createElement("div");
-  h.className = "flex items-center px-3 h-8 text-[12px] uppercase tracking-wide text-muted";
+  h.className = "flex items-center px-3 h-8 text-[13px] uppercase tracking-wide text-muted";
   h.innerHTML = `<span class="flex-1">${esc(title)}</span>`;
   if (action) { const b = document.createElement("button"); b.className = "normal-case tracking-normal text-accent hover:underline"; b.textContent = action.label; b.onclick = action.fn; h.append(b); }
   return h;
@@ -1500,7 +1500,7 @@ function sideHeader(title: string, action?: { label: string; fn: () => void }): 
 function sideRow(title: string, sub: string, o: { click: () => void; menu: (x: number, y: number) => void; tone?: "bad"; star?: { on: boolean; fn: () => void } }): HTMLElement {
   const d = document.createElement("div");
   d.className = "group px-3 py-1.5 rounded-lg cursor-default hover:bg-raised flex items-center gap-2";
-  d.innerHTML = `<div class="flex-1 min-w-0"><div class="truncate ${o.tone === "bad" ? "text-danger" : ""}"></div><div class="text-[12px] text-muted truncate"></div></div>`;
+  d.innerHTML = `<div class="flex-1 min-w-0"><div class="truncate text-[15px] ${o.tone === "bad" ? "text-danger" : ""}"></div><div class="text-[13px] text-muted truncate"></div></div>`;
   (d.firstElementChild!.children[0] as HTMLElement).textContent = title;
   (d.firstElementChild!.children[1] as HTMLElement).textContent = sub;
   d.title = title;

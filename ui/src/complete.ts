@@ -7,7 +7,7 @@ import type { SchemaTable } from "./api";
 const NOT_ALIAS = new Set(["where", "on", "join", "inner", "left", "right", "full", "cross", "natural", "group", "order", "having", "limit", "union", "set", "using", "values", "select", "offset", "returning"]);
 const CLAUSE = /\b(select|from|join|where|on|group\s+by|order\s+by|having|set|into|update|values|and|or|using|limit)\b/gi;
 
-const FUNCTIONS = ["COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "NULLIF", "LOWER", "UPPER", "LENGTH", "TRIM", "SUBSTRING", "REPLACE", "CONCAT", "ROUND", "ABS", "CAST", "NOW", "DATE", "EXTRACT", "ROW_NUMBER", "RANK", "DENSE_RANK", "LAG", "LEAD", "STRING_AGG", "GROUP_CONCAT", "JSON_EXTRACT"];
+export const FUNCTIONS = ["COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "NULLIF", "LOWER", "UPPER", "LENGTH", "TRIM", "SUBSTRING", "REPLACE", "CONCAT", "ROUND", "ABS", "CAST", "NOW", "DATE", "EXTRACT", "ROW_NUMBER", "RANK", "DENSE_RANK", "LAG", "LEAD", "STRING_AGG", "GROUP_CONCAT", "JSON_EXTRACT"];
 const KEYWORDS = ["SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "HAVING", "LIMIT", "OFFSET", "JOIN", "LEFT JOIN", "INNER JOIN", "RIGHT JOIN", "ON", "AS", "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS NULL", "IS NOT NULL", "DISTINCT", "UNION", "UNION ALL", "CASE WHEN", "THEN", "ELSE", "END", "ASC", "DESC", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE TABLE", "ALTER TABLE", "DROP TABLE", "WITH", "EXPLAIN"];
 const SNIPPETS: Completion[] = [
   snippetCompletion("SELECT ${*} FROM ${table}", { label: "sel", detail: "SELECT … FROM", type: "text" }),

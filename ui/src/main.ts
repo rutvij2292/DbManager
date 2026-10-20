@@ -16,6 +16,7 @@ import { createGridFind } from "./gridfind";
 import { resultCaption } from "./resultlabel";
 import { lintSql, lintPlan } from "./lint";
 import { renderPlan, hintsPanel } from "./planview";
+import { functionNames, statementBand } from "./stmtband";
 import { makeCompletionSource, recordAccepted } from "./complete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
@@ -86,13 +87,13 @@ let active: Tab | null = null;
 let tabSeq = 0;
 const sqlLang = new Compartment();
 const sqlHighlight = HighlightStyle.define([
-  { tag: [t.keyword, t.operatorKeyword, t.modifier], color: "var(--tok-keyword)", fontWeight: "600" },
-  { tag: [t.string, t.special(t.string)], color: "var(--tok-string)" },
+  { tag: [t.keyword, t.operatorKeyword, t.modifier], color: "var(--tok-keyword)" },
+  { tag: t.string, color: "var(--tok-string)" },
+  { tag: t.special(t.string), color: "var(--tok-ident)" }, // `quoted` / "quoted" identifiers
   { tag: [t.number, t.bool, t.null], color: "var(--tok-number)" },
   { tag: [t.lineComment, t.blockComment], color: "var(--tok-comment)", fontStyle: "italic" },
   { tag: [t.typeName, t.standard(t.typeName)], color: "var(--tok-type)" },
-  { tag: [t.function(t.variableName), t.standard(t.name)], color: "var(--tok-fn)" },
-  { tag: [t.punctuation, t.operator], color: "var(--soft)" },
+  { tag: [t.function(t.variableName), t.standard(t.name), t.punctuation, t.operator, t.paren], color: "var(--ink)" },
 ]);
 
 function langFor(c: Conn | null) {
@@ -251,7 +252,7 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
       state: EditorState.create({
         doc: "",
         extensions: [
-          lineNumbers(), history(), search({ top: true }), syntaxHighlighting(sqlHighlight), sqlLang.of(langFor(c)),
+          lineNumbers(), history(), search({ top: true }), statementBand, functionNames, syntaxHighlighting(sqlHighlight), sqlLang.of(langFor(c)),
           autocompletion({ override: [makeCompletionSource(() => tab.conn?.schema ?? [])], activateOnTyping: true, icons: false }),
           EditorView.updateListener.of((u) => { if (u.docChanged) scheduleDraft(tab); for (const tr of u.transactions) { const c = tr.annotation(pickedCompletion); if (c) recordAccepted(c.label); } }),
           keymap.of([

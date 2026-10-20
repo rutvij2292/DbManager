@@ -10,7 +10,7 @@ export interface Settings {
   keys: Record<string, string>;
 }
 const KEY = "tabnix.settings";
-export const DEFAULT_EDITOR_SIZE = 13.5;
+export const DEFAULT_EDITOR_SIZE = 15;
 const blank = (): Settings => ({ uiFont: "", editorFont: "", editorSize: DEFAULT_EDITOR_SIZE, bgLight: "", bgDark: "", keys: {} });
 
 let cache: Settings | null = null;
@@ -18,6 +18,7 @@ export function settings(): Settings {
   if (!cache) {
     try { cache = { ...blank(), ...JSON.parse(localStorage.getItem(KEY) ?? "{}") }; } catch { cache = blank(); }
     cache!.keys ||= {};
+    if (cache!.editorSize === 13.5) cache!.editorSize = DEFAULT_EDITOR_SIZE; // the old default: follow the new one
   }
   return cache!;
 }

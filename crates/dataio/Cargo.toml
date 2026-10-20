@@ -8,6 +8,7 @@ dbcore = { path = "../dbcore" }
 serde.workspace = true
 serde_json.workspace = true
 csv = "1"
+rust_xlsxwriter = { version = "0.100.0", features = ["constant_memory"] }
 
 [dev-dependencies]
 driver-sqlite = { path = "../driver-sqlite" }

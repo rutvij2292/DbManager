@@ -386,6 +386,14 @@ async fn export_data(app: tauri::AppHandle, state: State<'_, AppState>, conn_id:
     res.map_err(|e| e.to_string())
 }
 
+/// Write rows the UI already holds (the user's selection) to an .xlsx file.
+#[tauri::command]
+async fn export_rows_xlsx(path: String, columns: Vec<String>, rows: Vec<Vec<dbcore::Value>>) -> Result<u64, String> {
+    tokio::task::spawn_blocking(move || dataio::write_xlsx(std::path::Path::new(&path), columns, &rows).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[derive(Serialize, Clone)]
 struct BackupEvent {
     job: u64,
@@ -640,7 +648,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, list_database_sizes, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, list_routines, object_definition, set_read_only, run_query, run_statements, get_rows, release_query])
+        .invoke_handler(tauri::generate_handler![profile_scenario, profile_fixture, profile_log, profile_ready, open_database, backup_database, restore_database, er_schema, list_databases, list_database_sizes, switch_database, tableplus_scan, tableplus_import, apply_structure, cancel_io, export_data, export_rows_xlsx, import_preview, import_data, cancel_query, apply_changes, explain, list_connections, save_connection, delete_connection, test_connection, connect_saved, schema_map, select_all_sql, connect, disconnect, list_objects, describe, list_routines, object_definition, set_read_only, run_query, run_statements, get_rows, release_query])
         .run(tauri::generate_context!())
         .expect("error while running Tabnix");
 }

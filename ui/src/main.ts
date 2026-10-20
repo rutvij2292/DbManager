@@ -8,7 +8,7 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { search, searchKeymap } from "@codemirror/search";
 import { autocompletion, completionKeymap, pickedCompletion } from "@codemirror/autocomplete";
 import { createBuilder } from "./builder";
-import { showExport, showImport } from "./io";
+import { exportRowsXlsx, showExport, showImport } from "./io";
 import { createStructureView } from "./structure";
 import { createFilterBar } from "./filterbar";
 import { createInspector } from "./inspector";
@@ -22,7 +22,7 @@ import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { sql, SQLite, PostgreSQL, MySQL, MSSQL } from "@codemirror/lang-sql";
 import { buildOrder, nextSort, setSort, detectSort, countSql, wrapForSort, type SortKey, type FilterRule } from "./builder-sql";
-import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val } from "./api";
+import { api, show, type ObjectRef, type Summary, type Profile, type SchemaTable, type ColumnInfo, type Change, type Val, type ExportFormat } from "./api";
 import { showConnectionManager } from "./connections";
 import { icon, engineBadge, engineVar, envColor, isCareful, ENGINE_NAMES } from "./icons";
 import { applyAppearance, capturing, matchAction, showSettings, ACTIONS, comboOf, prettyCombo } from "./settings";
@@ -1115,6 +1115,8 @@ function cellMenu(t: Tab, x: number, y: number, r: number, c: number) {
     { label: "Copy as CSV", action: () => copyRows(t, "csv", true) },
     { label: "Copy as JSON", action: () => copyRows(t, "json") },
     { label: "Copy as Markdown", action: () => copyRows(t, "markdown") },
+    { label: g.selectedCount > 1 ? `Export ${g.selectedCount.toLocaleString()} selected rows as Excel…` : "Export selected row as Excel…", action: () => exportSelectedExcel(t) },
+    { label: "Export all rows as Excel…", disabled: !t.conn || (t.kind !== "table" && t.kind !== "query"), action: () => exportActive("xlsx") },
     { label: "Copy as SQL INSERT", disabled: ["redis", "mongo"].includes(t.conn?.kind ?? ""), action: () => copyRows(t, "sql") },
     { label: "Copy with column names", action: () => copyRows(t, "tsv", true) },
     { label: "Copy column name", action: () => { navigator.clipboard?.writeText(col); toast("Copied " + col, "ok"); } },
@@ -2241,7 +2243,7 @@ function palette() {
 }
 
 /** ⌘⌥E: export the active tab's full result (not just the rows on screen) to a file. */
-async function exportActive() {
+async function exportActive(format: ExportFormat = "csv") {
   const t = active;
   if (!t?.conn) return;
   let sqlText: string;
@@ -2251,7 +2253,19 @@ async function exportActive() {
   } else if (t.kind === "query") sqlText = currentSql(t);
   else return;
   if (!sqlText.trim()) return;
-  showExport(t.conn.id, sqlText, t.table ?? "export", (m) => { t.status.textContent = m; });
+  showExport(t.conn.id, sqlText, t.table ?? "export", (m) => { t.status.textContent = m; }, undefined, format);
+}
+
+/** Save the selected rows (staged edits included) as an .xlsx. Selecting every row exports the full result instead, which streams and has no row cap. */
+async function exportSelectedExcel(t: Tab) {
+  const g = t.grid;
+  if (g.allSelected) return exportActive("xlsx");
+  const rows = g.selectedRows();
+  if (!rows.length) return;
+  try {
+    const msg = await exportRowsXlsx(t.table ?? "selection", g.columns.map((c) => c.name), await g.rowValues(rows));
+    if (msg) { t.status.textContent = msg; toast(msg, "ok"); }
+  } catch (e) { toast("Couldn't export: " + e, "error"); }
 }
 
 /** ⌘⌥I: import CSV / TSV / JSON into a table. */
@@ -2319,7 +2333,7 @@ window.addEventListener("keydown", (e) => {
 /** What each rebindable shortcut does (ids and default keys live in settings.ts). Returning false leaves the key event alone. */
 const handlers: Record<string, (e: KeyboardEvent) => unknown> = {
   newQuery, openConnections, newConnection: openConnections, palette, toggleLog, cancel: cancelActive, builder: toggleBuilder,
-  settings: showSettings, theme: () => toggleTheme(), dbPicker: openDatabasePicker, export: exportActive, import: importActive, backup: backupActive, restore: restoreActive,
+  settings: showSettings, theme: () => toggleTheme(), dbPicker: openDatabasePicker, export: () => exportActive(), exportExcel: () => exportActive("xlsx"), import: importActive, backup: backupActive, restore: restoreActive,
   closeTab: () => active && askCloseTab(active),
   diagram: () => openDiagram(active?.kind === "table" ? active.table : undefined),
   reload: () => active && reload(active),
@@ -2362,7 +2376,7 @@ $("more").onclick = () => {
     { label: "Import a file…", hint: prettyCombo(comboOf("import")), disabled: !conn, action: importActive },
   ]);
 };
-$("export").onclick = exportActive;
+$("export").onclick = () => exportActive();
 $("newtab").onclick = newQuery;
 $("open").onclick = openConnections;
 $("addconn").onclick = () => showLauncher();

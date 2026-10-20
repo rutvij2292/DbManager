@@ -79,6 +79,7 @@ const base_run = () => ({ query_id: 1, columns: cols.map((name) => ({ name, type
 const handlers: Record<string, (a: any) => unknown> = {
   "plugin:dialog|open": () => "/Users/dev/Downloads/customers_2026.csv",
   "plugin:dialog|save": () => "/Users/dev/Documents/orders_2026-10-14.csv",
+  export_rows_xlsx: (a) => a.rows.length,
   export_data: async (a) => fakeJob(a.job, 1_240_000),
   import_preview: () => ({ headers: ["id", "name", "email", "country", "signup_date", "lifetime_value", "notes"], types: ["integer", "text", "text", "text", "text", "real", "text"], delimiter: ",", format: "delimited",
     sample: [["1", "Ada Lovelace", "ada@example.com", "UK", "2024-03-02", "1280.50", "Early adopter"], ["2", "Grace Hopper", "grace@example.com", "US", "2024-03-09", "940.00", null], ["3", "Linus T.", "linus@example.com", "FI", "2024-04-11", "55.25", "Asked for a refund"]] }),

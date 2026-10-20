@@ -162,3 +162,24 @@ async fn large_roundtrip_is_fast() {
     assert_eq!(c.query("SELECT SUM(id) FROM big2").await.unwrap().rows[0][0], Value::I64(5_000_050_000));
     assert!(export_ms < 5000 && import_ms < 10000, "too slow: export {export_ms} ms, import {import_ms} ms");
 }
+
+#[tokio::test]
+async fn xlsx_export_and_selected_rows_write_a_valid_workbook() {
+    let c = db().await;
+    seed(&c).await;
+    let f = tmp("a.xlsx");
+    let n = export(c.as_ref(), "SELECT * FROM t ORDER BY id", &f, &eo(ExportFormat::Xlsx), &|_| {}, &NO_CANCEL).await.unwrap();
+    assert_eq!(n, 4);
+    assert_eq!(&std::fs::read(&f).unwrap()[..2], b"PK");
+
+    let g = tmp("b.xlsx");
+    let rows = vec![vec![Value::I64(1), Value::Text("a".into()), Value::Null, Value::Bool(true), Value::Bytes(vec![1, 255])]];
+    assert_eq!(write_xlsx(&g, vec!["a".into(); 5], &rows).unwrap(), 1);
+    assert_eq!(&std::fs::read(&g).unwrap()[..2], b"PK");
+
+    // Cancelling leaves no file behind.
+    let h = tmp("c.xlsx");
+    let stop = AtomicBool::new(true);
+    assert!(export(c.as_ref(), "SELECT * FROM t", &h, &eo(ExportFormat::Xlsx), &|_| {}, &stop).await.is_err());
+    assert!(!h.exists());
+}

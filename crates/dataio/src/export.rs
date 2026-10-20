@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
+use crate::xlsx::XlsxWriter;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -13,6 +14,7 @@ pub enum ExportFormat {
     Json,
     Jsonl,
     Sql,
+    Xlsx,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -120,6 +122,9 @@ pub async fn export(
     progress: &(dyn Fn(u64) + Send + Sync),
     cancel: &AtomicBool,
 ) -> Result<u64> {
+    if opts.format == ExportFormat::Xlsx {
+        return export_xlsx(conn, sql, path, opts, progress, cancel).await;
+    }
     let mut w = BufWriter::with_capacity(1 << 20, File::create(path).map_err(io)?);
     let delim = match opts.format {
         ExportFormat::Tsv => '\t',
@@ -199,6 +204,7 @@ pub async fn export(
                         w.write_all(b"\n").map_err(io)?;
                     }
                 }
+                ExportFormat::Xlsx => unreachable!("handled by export_xlsx"),
                 ExportFormat::Sql => {
                     let names = cols.iter().map(|c| conn.quote(&c.name)).collect::<Vec<_>>().join(", ");
                     for chunk in rows.chunks(500) {
@@ -238,4 +244,30 @@ pub async fn export(
             Err(e)
         }
     }
+}
+
+/// Stream the result into an .xlsx. The workbook is only written to `path` on success, so a cancel or
+/// failure leaves nothing behind.
+async fn export_xlsx(conn: &dyn Connection, sql: &str, path: &Path, opts: &ExportOptions, progress: &(dyn Fn(u64) + Send + Sync), cancel: &AtomicBool) -> Result<u64> {
+    let mut w: Option<XlsxWriter> = None;
+    let mut total = 0u64;
+    conn.query_batches(sql, opts.batch_rows.max(1), &mut |cols, rows| {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(DbError::Cancelled);
+        }
+        if w.is_none() {
+            w = Some(XlsxWriter::new(cols.iter().map(|c| c.name.clone()).collect(), opts.header)?);
+        }
+        let x = w.as_mut().unwrap();
+        for row in &rows {
+            x.write_row(row)?;
+        }
+        total += rows.len() as u64;
+        progress(total);
+        Ok(true)
+    })
+    .await?;
+    w.map_or_else(|| XlsxWriter::new(Vec::new(), false), Ok)?.save(path)?;
+    progress(total);
+    Ok(total)
 }

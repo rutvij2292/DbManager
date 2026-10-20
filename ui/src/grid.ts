@@ -143,6 +143,7 @@ export class Grid {
   /** The primary selected row (the anchor), or -1. */
   get selected() { return this.anchor; }
   isSelected(r: number) { return this.allRows ? r < this.total() : this.rows.has(r); }
+  get allSelected() { return this.allRows; }
   get selectedCount() { return this.allRows ? this.total() : this.rows.size; }
   /** Selected row numbers, ascending. */
   selectedRows(): number[] {

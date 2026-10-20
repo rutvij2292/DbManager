@@ -1,6 +1,6 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { api, type ExportFormat, type ImportPreview, type ObjectRef } from "./api";
+import { api, type ExportFormat, type Val, type ImportPreview, type ObjectRef } from "./api";
 import { icon } from "./icons";
 import { esc, modal } from "./ui";
 
@@ -31,19 +31,19 @@ async function withProgress<T>(m: ReturnType<typeof modal>, job: number, label: 
   try { return await run(); } finally { un(); }
 }
 
-const EXT: Record<ExportFormat, string> = { csv: "csv", tsv: "tsv", json: "json", jsonl: "jsonl", sql: "sql" };
-const FORMATS: [ExportFormat, string, string][] = [["csv", "CSV", "Spreadsheets"], ["tsv", "TSV", "Tab-separated"], ["json", "JSON", "One array"], ["jsonl", "JSON Lines", "One per line"], ["sql", "SQL", "INSERT statements"]];
+const EXT: Record<ExportFormat, string> = { csv: "csv", tsv: "tsv", json: "json", jsonl: "jsonl", sql: "sql", xlsx: "xlsx" };
+const FORMATS: [ExportFormat, string, string][] = [["xlsx", "Excel", ".xlsx workbook"], ["csv", "CSV", "Text, any tool"], ["tsv", "TSV", "Tab-separated"], ["json", "JSON", "One array"], ["jsonl", "JSON Lines", "One per line"], ["sql", "SQL", "INSERT statements"]];
 
 /** Export dialog. `sql` is run in full (no row cap) and streamed to the chosen file. */
-export function showExport(connId: number, sql: string, suggestedName: string, status: (s: string) => void, many?: { name: string; sql: string }[]) {
+export function showExport(connId: number, sql: string, suggestedName: string, status: (s: string) => void, many?: { name: string; sql: string }[], initial: ExportFormat = "csv") {
   const m = modal(`
     ${head("download", many ? `Export ${many.length} tables` : `Export ${esc(suggestedName)}`, many ? "One file per table, written to a folder you choose. There is no row limit." : "Streams straight from the database to a file. There is no row limit.")}
     <div id="body" class="px-6 pb-5 flex flex-col gap-4 overflow-auto">
       <div>
         <div class="font-medium mb-2">Format</div>
-        <div id="fmts" class="grid gap-2" style="grid-template-columns:repeat(5,1fr)">
+        <div id="fmts" class="grid gap-2" style="grid-template-columns:repeat(6,1fr)">
           ${FORMATS.map(([f, label, hint], i) => `<label data-card="${f}" class="cursor-default rounded-xl px-2.5 py-2.5 text-center" style="background:var(--panel)">
-            <input type="radio" name="fmt" value="${f}" class="sr-only" ${i === 0 ? "checked" : ""}/><div class="font-semibold">${label}</div><div class="text-[12px] text-muted">${hint}</div></label>`).join("")}
+            <input type="radio" name="fmt" value="${f}" class="sr-only" ${f === initial ? "checked" : ""}/><div class="font-semibold">${label}</div><div class="text-[12px] text-muted">${hint}</div></label>`).join("")}
         </div>
       </div>
       <div class="flex items-center gap-6 flex-wrap">
@@ -61,7 +61,8 @@ export function showExport(connId: number, sql: string, suggestedName: string, s
     c.style.boxShadow = on ? "inset 0 0 0 2px var(--accent)" : "inset 0 0 0 1px var(--line-strong)";
     c.style.background = on ? "var(--accent-soft)" : "var(--panel)";
     m.q<HTMLInputElement>("#delim").disabled = (m.o.querySelector('input[name="fmt"]:checked') as HTMLInputElement).value !== "csv";
-    m.q<HTMLInputElement>("#hdr").disabled = !["csv", "tsv"].includes((m.o.querySelector('input[name="fmt"]:checked') as HTMLInputElement).value);
+    m.q<HTMLInputElement>("#delim").parentElement!.style.display = m.q<HTMLInputElement>("#delim").disabled ? "none" : "";
+    m.q<HTMLInputElement>("#hdr").disabled = !["csv", "tsv", "xlsx"].includes((m.o.querySelector('input[name="fmt"]:checked') as HTMLInputElement).value);
   });
   m.o.querySelectorAll<HTMLInputElement>('input[name="fmt"]').forEach((r) => (r.onchange = paintCards));
   paintCards();
@@ -217,4 +218,12 @@ export async function showImport(connId: number, objects: ObjectRef[], currentTa
     m.close();
   };
   await loadTarget();
+}
+
+/** Save rows the grid already holds (the user's selection) as an Excel workbook. Returns a status line, or null if cancelled. */
+export async function exportRowsXlsx(name: string, columns: string[], rows: Val[][]): Promise<string | null> {
+  const path = await save({ defaultPath: `${name}.xlsx`, filters: [{ name: "Excel", extensions: ["xlsx"] }] });
+  if (!path) return null;
+  const n = await api.exportRowsXlsx(path, columns, rows);
+  return `Exported ${n.toLocaleString()} row${n === 1 ? "" : "s"} to ${path}`;
 }

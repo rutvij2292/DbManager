@@ -98,6 +98,7 @@ export const ACTIONS: Action[] = [
   A("Navigate", "diagram", "Database diagram", "meta+shift+d"),
   A("Navigate", "toggleLog", "SQL log", "meta+j"),
   A("Data", "export", "Export result", "meta+alt+e"),
+  A("Data", "exportExcel", "Export result as Excel", "meta+alt+x"),
   A("Data", "import", "Import a file", "meta+alt+i"),
   A("Data", "backup", "Back up database", "meta+alt+b"),
   A("Data", "restore", "Restore a backup", "meta+alt+r"),

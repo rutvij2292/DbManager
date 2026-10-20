@@ -39,6 +39,7 @@ export const api = {
   schemaMap: (connId: number) => invoke<SchemaTable[]>("schema_map", { connId }),
   selectAllSql: (connId: number, schema: string | null, name: string, limit?: number, filter?: string, order?: string) => invoke<string>("select_all_sql", { connId, schema, name, limit, filter, order }),
   exportData: (connId: number, sql: string, path: string, options: ExportOptions, job: number) => invoke<number>("export_data", { connId, sql, path, options, job }),
+  exportRowsXlsx: (path: string, columns: string[], rows: Val[][]) => invoke<number>("export_rows_xlsx", { path, columns, rows }),
   importPreview: (path: string, hasHeader: boolean, delimiter?: string) => invoke<ImportPreview>("import_preview", { path, hasHeader, delimiter }),
   importData: (connId: number, path: string, options: ImportOptions, job: number) => invoke<{ rows: number; created: boolean }>("import_data", { connId, path, options, job }),
   cancelIo: (job: number) => invoke<void>("cancel_io", { job }),
@@ -72,7 +73,7 @@ export function show(v: Val): string {
   }
 }
 
-export type ExportFormat = "csv" | "tsv" | "json" | "jsonl" | "sql";
+export type ExportFormat = "csv" | "tsv" | "json" | "jsonl" | "sql" | "xlsx";
 export interface ExportOptions { format: ExportFormat; header: boolean; delimiter?: string; table?: string; batch_rows?: number }
 export interface ImportPreview { headers: string[]; sample: (string | null)[][]; types: ("integer" | "real" | "text")[]; delimiter: string; format: string }
 export interface ImportOptions { schema: string | null; table: string; create: boolean; has_header: boolean; delimiter?: string; mapping: (string | null)[]; empty_as_null: boolean }

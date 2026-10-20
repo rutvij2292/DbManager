@@ -1,7 +1,7 @@
 //! Excel (.xlsx) writer. Worksheets use the crate's constant-memory mode, so rows go to a temp file
 //! as they are written and a multi-million-row export doesn't grow the heap.
 use dbcore::{DbError, Result, Value};
-use rust_xlsxwriter::{Format, Workbook, XlsxError};
+use rust_xlsxwriter::{Format, FormatAlign, Workbook, XlsxError};
 use std::path::Path;
 
 /// Rows per sheet in the .xlsx format (the header counts as one).
@@ -18,13 +18,14 @@ pub struct XlsxWriter {
     names: Vec<String>,
     header: bool,
     bold: Format,
+    cell: Format,
     sheet: usize,
     row: u32,
 }
 
 impl XlsxWriter {
     pub fn new(names: Vec<String>, header: bool) -> Result<Self> {
-        let mut w = XlsxWriter { book: Workbook::new(), names, header, bold: Format::new().set_bold(), sheet: 0, row: 0 };
+        let mut w = XlsxWriter { book: Workbook::new(), names, header, bold: Format::new().set_bold().set_align(FormatAlign::Top), cell: Format::new().set_align(FormatAlign::Top), sheet: 0, row: 0 };
         w.add_sheet()?;
         Ok(w)
     }
@@ -50,23 +51,24 @@ impl XlsxWriter {
             self.add_sheet()?;
         }
         let r = self.row;
+        let cell = &self.cell;
         let ws = self.book.worksheet_from_index(self.sheet).map_err(err)?;
         for (c, v) in row.iter().enumerate().take(16_384) {
             let c = c as u16;
             match v {
                 Value::Null => continue,
-                Value::Bool(b) => ws.write_boolean(r, c, *b).map(|_| ()),
-                Value::I64(i) => ws.write_number(r, c, *i as f64).map(|_| ()),
-                Value::F64(f) if f.is_finite() => ws.write_number(r, c, *f).map(|_| ()),
-                Value::F64(f) => ws.write_string(r, c, f.to_string()).map(|_| ()),
-                Value::Text(t) => ws.write_string(r, c, clip(t)).map(|_| ()),
+                Value::Bool(b) => ws.write_boolean_with_format(r, c, *b, cell).map(|_| ()),
+                Value::I64(i) => ws.write_number_with_format(r, c, *i as f64, cell).map(|_| ()),
+                Value::F64(f) if f.is_finite() => ws.write_number_with_format(r, c, *f, cell).map(|_| ()),
+                Value::F64(f) => ws.write_string_with_format(r, c, f.to_string(), cell).map(|_| ()),
+                Value::Text(t) => ws.write_string_with_format(r, c, clip(t), cell).map(|_| ()),
                 Value::Bytes(b) => {
                     use std::fmt::Write as _;
                     let mut s = String::from("0x");
                     for x in b.iter().take(CELL_CHARS / 2 - 2) {
                         let _ = write!(s, "{x:02x}");
                     }
-                    ws.write_string(r, c, s).map(|_| ())
+                    ws.write_string_with_format(r, c, s, cell).map(|_| ())
                 }
             }
             .map_err(err)?;

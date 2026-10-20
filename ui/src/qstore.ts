@@ -1,23 +1,42 @@
 /**
- * Favourite queries (stored, per saved connection), query history (memory only, per open database) and
- * drafts of open query tabs (stored, so an editor survives a restart or a disconnect).
+ * Favourite queries (stored, per saved connection), query history (stored, newest 100 per connection + database)
+ * and drafts of open query tabs (stored, so an editor survives a restart or a disconnect).
  */
-export interface HistoryItem { sql: string; at: number; ms: number; ok: boolean }
+/** `ms` / `ok` are absent for text that was kept when its tab closed but never run. */
+export interface HistoryItem { sql: string; at: number; ms?: number; ok?: boolean }
 export interface SavedQuery { id: string; name: string; sql: string; at: number }
 export interface Draft { id: string; title: string; sql: string; at: number }
 
-const FKEY = "tabnix.savedQueries", DKEY = "tabnix.drafts";
-const HISTORY_MAX = 100, SQL_MAX = 4000, DRAFTS_MAX = 12;
+const FKEY = "tabnix.savedQueries", DKEY = "tabnix.drafts", HKEY = "tabnix.queryHistory";
+const HISTORY_MAX = 100, SQL_MAX = 20_000, DRAFTS_MAX = 50;
 
 const read = <T>(key: string): Record<string, T[]> => { try { return JSON.parse(localStorage.getItem(key) ?? "{}"); } catch { return {}; } };
 const write = (key: string, v: unknown) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* best effort */ } };
 
-// ---------- history: kept in memory by the caller, never persisted ----------
+// ---------- history: newest 100 per connection + database, saved so it survives closing the database and the app ----------
 /** The list with `item` on top; running the same text again moves it up instead of repeating it. Newest first, capped. */
 export function pushHistory(list: readonly HistoryItem[], item: HistoryItem, max = HISTORY_MAX): HistoryItem[] {
   const sql = item.sql.trim();
   if (!sql) return [...list];
   return [{ ...item, sql: sql.length > SQL_MAX ? sql.slice(0, SQL_MAX) : sql }, ...list.filter((h) => h.sql !== sql)].slice(0, max);
+}
+
+/** The saved history of one connection + database (see `sessionKey`), newest first. */
+export function loadHistory(key: string): HistoryItem[] {
+  return (read<HistoryItem>(HKEY)[key] ?? []).slice(0, HISTORY_MAX);
+}
+
+export function saveHistory(key: string, list: readonly HistoryItem[]) {
+  const all = read<HistoryItem>(HKEY);
+  if (list.length) all[key] = list.slice(0, HISTORY_MAX); else delete all[key];
+  write(HKEY, all);
+}
+
+/** Keep the text of a tab that was closed. Text already in the list is left alone, so it keeps its run time and result. */
+export function rememberClosed(list: readonly HistoryItem[], sql: string, at: number): HistoryItem[] {
+  const text = sql.trim();
+  if (!text || list.some((h) => h.sql === text)) return list as HistoryItem[];
+  return pushHistory(list, { sql: text, at });
 }
 
 // ---------- favourites ----------
@@ -81,3 +100,18 @@ export function removeDraft(key: string, id: string) { saveDraft(key, id, "", ""
 
 /** The old persistent history is gone; drop what earlier versions left behind. */
 export function dropLegacyHistory() { try { localStorage.removeItem("tabnix.history"); } catch { /* ignore */ } }
+
+/** Earlier versions kept the text of closed tabs in `tabnix.sessions` (8 per database, shown once). Fold it into the history. */
+export function migrateSessions() {
+  try {
+    const old = JSON.parse(localStorage.getItem("tabnix.sessions") ?? "null") as Record<string, { sql: string; at: number }[]> | null;
+    if (!old) return;
+    for (const [key, items] of Object.entries(old)) {
+      let list = loadHistory(key);
+      for (const it of [...items].sort((a, b) => a.at - b.at)) list = rememberClosed(list, it.sql, it.at);
+      // rememberClosed puts each item on top; restore newest-first order by time
+      saveHistory(key, list.slice().sort((a, b) => b.at - a.at));
+    }
+    localStorage.removeItem("tabnix.sessions");
+  } catch { /* unreadable: leave it */ }
+}

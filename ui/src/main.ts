@@ -37,11 +37,11 @@ import { Grid } from "./grid";
 import { formatRows, type CopyFormat } from "./copyfmt";
 import { splitStatements, statementAt } from "./sqlsplit";
 import { analyzeSelect, resolveEdit } from "./resultedit";
-import { pushHistory, loadSaved, findFavorite, addFavorite, renameQuery, deleteQuery, loadDrafts, saveDraft, removeDraft, dropLegacyHistory, type HistoryItem } from "./qstore";
+import { pushHistory, loadSaved, findFavorite, addFavorite, renameQuery, deleteQuery, loadDrafts, saveDraft, removeDraft, dropLegacyHistory, loadHistory, saveHistory, rememberClosed, migrateSessions, type HistoryItem } from "./qstore";
 import { clickSelect, type Selection } from "./selection";
 import { SYSTEM_DBS, canManageDatabases, canTruncateAll, canIgnoreForeignKeys, ignoreFkLabel, destructiveKind, isReadOnlySql, safetyLevel, isForeignKeyError, createDatabaseSql, dropDatabaseSql, truncateAllSql, truncateTableSql, dropTableSql, truncateTablesSql, dropTablesSql, promptName, confirmDanger } from "./dbadmin";
 import { touchRecent, sortByRecent, type Used } from "./recent";
-import { sessionKey, loadSessions, addSession, removeSessions, ago, type Session } from "./qhistory";
+import { sessionKey, ago } from "./qhistory";
 
 /**
  * The webview offers its own "recent entries" dropdown on text inputs (palette, search, connection form).
@@ -65,7 +65,7 @@ interface StmtResult { sql: string; summary: Summary | null; affected?: number; 
 interface Tab {
   id: number; title: string; kind: "query" | "table" | "diagram";
   conn: Conn | null; table?: string;
-  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; shown?: Session[]; draftId: string; draftTimer?: number; inspector?: ReturnType<typeof createInspector>; gridFind?: ReturnType<typeof createGridFind>; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; pendingPill?: HTMLButtonElement; countSeq?: number;
+  root: HTMLElement; grid: Grid; panel?: HTMLElement; gridWrap?: HTMLElement; cols?: ColumnInfo[]; schemaName?: string | null; bar?: HTMLElement; builder?: HTMLElement; edWrap?: HTMLElement; sort: SortKey[]; baseSql?: string; running?: boolean; cancelled?: boolean; empty?: HTMLElement; runBar?: HTMLElement; structure?: ReturnType<typeof createStructureView>; mode?: "data" | "structure"; filterBar?: ReturnType<typeof createFilterBar>; filterWhere?: string; filterBtn?: HTMLElement; editor?: EditorView; status: HTMLElement; draftId: string; draftTimer?: number; inspector?: ReturnType<typeof createInspector>; gridFind?: ReturnType<typeof createGridFind>; results?: StmtResult[]; resultIdx?: number; resultBar?: HTMLElement; lastMs?: number; failed?: boolean; countBtn?: HTMLButtonElement; pendingPill?: HTMLButtonElement; countSeq?: number;
   /** A query result that maps to one table and can be edited in place (see resultedit.ts), and the bar that shows it. */
   edit?: EditTarget; editBar?: HTMLElement; editSeq?: number;
 }
@@ -295,9 +295,8 @@ function makeTab(kind: Tab["kind"], title: string, table?: string, c: Conn | nul
     empty.innerHTML = `<div style="color:var(--soft)">${ART_RESULTS}</div><div class="text-[16px] font-semibold mt-2">Results appear here</div><div class="text-soft">Write a query above and press <span class="kbd">⌘↵</span> to run it.</div>`;
     gridWrap.append(empty);
     tab.empty = empty;
-    const recent = c?.server ? loadSessions(sessionKey(c.server.id, c.db)).slice(0, 5) : [];
+    const recent = (c?.history ?? []).slice(0, 5);
     if (recent.length) {
-      tab.shown = recent;
       const box = document.createElement("div");
       box.className = "pointer-events-auto text-left mt-5 w-[min(560px,90%)]";
       box.dataset.recent = "";
@@ -486,12 +485,12 @@ function switchServer(s: Server) {
   showHome();
 }
 
-/** Keep a query tab's text for the next new tab of this database. `closing` also drops the sessions this tab was showing. */
-function rememberSession(t: Tab, closing: boolean) {
+/** A query tab that is closed on its own keeps its text in the database's history (it is not lost). */
+function rememberClosedTab(t: Tab) {
   if (t.kind !== "query" || !t.conn?.server || !t.editor) return;
-  const key = sessionKey(t.conn.server.id, t.conn.db);
-  if (closing && t.shown) { removeSessions(key, t.shown); t.shown = undefined; }
-  addSession(key, t.editor.state.doc.toString());
+  const c = t.conn;
+  c.history = rememberClosed(c.history ?? [], t.editor.state.doc.toString(), Date.now());
+  saveHistory(draftKey(c), c.history);
 }
 
 /** `keepDraft`: the whole database is being closed, not just this tab, so its text is kept to reopen with the database. */
@@ -503,7 +502,7 @@ function closeTab(t: Tab, keepDraft = false) {
   t.grid.setResult(null);
   syncDirtyRows();
   if (keepDraft) flushDraft(t);
-  else { rememberSession(t, true); clearTimeout(t.draftTimer); if (t.conn && t.kind === "query") removeDraft(draftKey(t.conn), t.draftId); }
+  else { rememberClosedTab(t); clearTimeout(t.draftTimer); if (t.conn && t.kind === "query") removeDraft(draftKey(t.conn), t.draftId); }
   releaseResults(t);
   t.editor?.destroy();
   if (t.conn && t.conn.lastTab === t) t.conn.lastTab = null;
@@ -1461,8 +1460,8 @@ function renderSideTabs() {
 }
 
 const oneLine = (sql: string, n = 90) => { const t = sql.replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "…" : t; };
-/** History lives in memory for as long as the database stays open; it is never written to disk. */
-function recordHistory(c: Conn, item: HistoryItem) { c.history = pushHistory(c.history ?? [], item); }
+/** The newest 100 queries per connection + database are saved, so they are there after closing the database or the app. */
+function recordHistory(c: Conn, item: HistoryItem) { c.history = pushHistory(c.history ?? [], item); saveHistory(draftKey(c), c.history); }
 
 // ---------- drafts: open query tabs are saved as you type and come back when the database is opened again ----------
 const draftKey = (c: Conn) => sessionKey(c.server.id, c.db);
@@ -1477,6 +1476,7 @@ function scheduleDraft(t: Tab) {
 }
 window.addEventListener("pagehide", () => { for (const t of tabs) flushDraft(t); });
 dropLegacyHistory();
+migrateSessions();
 
 /** New query tab holding `sql` (nothing is run). */
 function openQueryTab(c: Conn, sql: string, title = "Query", draftId?: string) {
@@ -1484,7 +1484,6 @@ function openQueryTab(c: Conn, sql: string, title = "Query", draftId?: string) {
   if (draftId) t.draftId = draftId;
   // Keep the "Results appear here" state, but not the Recent list: clicking one would replace this tab's text.
   t.empty?.querySelector("[data-recent]")?.remove();
-  t.shown = undefined; // nothing was shown, so closing this tab must not forget any recent session
   t.editor?.dispatch({ changes: { from: 0, to: t.editor.state.doc.length, insert: sql }, selection: { anchor: sql.length } });
   return t;
 }
@@ -1572,11 +1571,11 @@ function renderHistory() {
   const all = c.history ?? [];
   const list = all.filter((h) => !q || h.sql.toLowerCase().includes(q));
   const frag = document.createDocumentFragment();
-  frag.append(sideHeader(`This session · ${c.db ?? c.name}`, all.length ? { label: "Clear", fn: async () => { if (await confirmDanger({ title: "Clear history?", body: `Forgets the queries run on <b>${esc(c.db ?? c.name)}</b> in this session. Favorites are kept.`, confirmLabel: "Clear history" })) { c.history = []; renderObjects(); } } } : undefined));
+  frag.append(sideHeader(`History · ${c.db ?? c.name}`, all.length ? { label: "Clear", fn: async () => { if (await confirmDanger({ title: "Clear history?", body: `Forgets the queries run on <b>${esc(c.db ?? c.name)}</b> on this database, including the ones saved from earlier sessions. Favorites are kept.`, confirmLabel: "Clear history" })) { c.history = []; saveHistory(draftKey(c), []); renderObjects(); } } } : undefined));
   for (const h of list) {
     const fav = findFavorite(pid, h.sql);
-    frag.append(sideRow(oneLine(h.sql), `${ago(h.at)} · ${h.ok ? `${h.ms} ms` : "failed"}`, {
-      tone: h.ok ? undefined : "bad",
+    frag.append(sideRow(oneLine(h.sql), `${ago(h.at)} · ${h.ok === false ? "failed" : h.ms == null ? "not run" : `${h.ms} ms`}`, {
+      tone: h.ok === false ? "bad" : undefined,
       click: () => openQueryTab(c, h.sql),
       star: { on: !!fav, fn: () => { if (fav) removeFavorite(pid, fav).then(() => renderObjects()); else { addFavorite(pid, h.sql); toast("Added to favorites", "ok"); renderObjects(); } } },
       menu: (x, y) => contextMenu(x, y, [
@@ -1584,11 +1583,11 @@ function renderHistory() {
         { label: "Copy SQL", action: () => { navigator.clipboard?.writeText(h.sql); toast("Copied", "ok"); } },
         { label: fav ? "Remove from favorites…" : "Add to favorites", action: () => { if (fav) removeFavorite(pid, fav).then(() => renderObjects()); else { addFavorite(pid, h.sql); toast("Added to favorites", "ok"); renderObjects(); } } },
         { divider: true, label: "" },
-        { label: "Remove from history", action: () => { c.history = (c.history ?? []).filter((x) => x !== h); renderObjects(); } },
+        { label: "Remove from history", action: () => { c.history = (c.history ?? []).filter((x) => x !== h); saveHistory(draftKey(c), c.history); renderObjects(); } },
       ]),
     }));
   }
-  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "Queries you run in a query tab show up here until you close the database."; frag.append(e); }
+  if (!list.length) { const e = document.createElement("div"); e.className = "px-3 py-6 text-muted text-center"; e.textContent = q ? "No matches." : "The last 100 queries you run or close on this database are kept here."; frag.append(e); }
   host.replaceChildren(frag);
 }
 
@@ -1755,7 +1754,7 @@ function afterWorkspaceChange() {
 
 /** Register an open database under its server and load its tables. */
 async function addDatabase(s: Server, connId: number, db: string | null): Promise<Conn> {
-  const c: Conn = { id: connId, name: s.name, kind: s.kind, env: s.env, db, dbs: s.dbs, objects: [], schema: [], server: s, loading: true };
+  const c: Conn = { id: connId, name: s.name, kind: s.kind, env: s.env, db, dbs: s.dbs, objects: [], schema: [], server: s, loading: true, history: loadHistory(sessionKey(s.id, db)) };
   s.conns.push(c);
   if (safetyOf(s) === "readonly") api.setReadOnly(connId, true).catch(() => {}); // the backend refuses every write on it
   conn = c;

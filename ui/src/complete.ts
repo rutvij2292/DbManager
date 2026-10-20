@@ -98,6 +98,9 @@ export function makeCompletionSource(getTables: () => SchemaTable[]) {
       if (ref) {
         return { from, options: ref.table.columns.map((c) => ({ label: c, type: "property", detail: ref.table.name, boost: boostFor(c) })) };
       }
+      // No FROM yet (e.g. while writing COUNT(DISTINCT tbl.): a plain table name qualifies too.
+      const named = tables.find((t) => t.name.toLowerCase() === qual.toLowerCase());
+      if (named) return { from, options: named.columns.map((c) => ({ label: c, type: "property", detail: named.name, boost: boostFor(c) })) };
       const inSchema = tables.filter((t) => (t.schema ?? "").toLowerCase() === qual.toLowerCase());
       if (inSchema.length) return { from, options: inSchema.map((t) => ({ label: t.name, type: "class", boost: boostFor(t.name) })) };
       return null;
@@ -129,7 +132,9 @@ export function makeCompletionSource(getTables: () => SchemaTable[]) {
       }
       options.push(...columnsOf(refs));
     } else if (clause) {
-      options.push(...columnsOf(findRefs(clean, tables)));
+      const refs = findRefs(clean, tables);
+      if (refs.length) options.push(...columnsOf(refs));
+      else options.push(...looseColumns(tables), ...tables.map(tableOpt)); // no FROM yet: every column, and tables to qualify with
       options.push(...FUNCTIONS.map((f) => ({ label: f, type: "function", apply: f + "(", boost: -5 + boostFor(f) })));
     }
     // Aliases are valid qualifiers anywhere an expression is.
@@ -151,6 +156,16 @@ function columnsOf(refs: Ref[]): Completion[] {
     }
   }
   return out;
+}
+
+/** Columns of every table, for a statement that has no FROM yet. A name shared by several tables is listed once and says where it lives. */
+function looseColumns(tables: SchemaTable[]): Completion[] {
+  const where = new Map<string, string[]>();
+  for (const t of tables) for (const c of t.columns) where.set(c, [...(where.get(c) ?? []), t.name]);
+  return [...where].slice(0, 2000).map(([c, ts]) => ({
+    label: c, type: "property", boost: 12 + boostFor(c),
+    detail: ts.length <= 3 ? ts.join(", ") : `${ts.slice(0, 2).join(", ")} +${ts.length - 2}`,
+  }));
 }
 
 /** Remember accepted completions so frequent picks float to the top. */
